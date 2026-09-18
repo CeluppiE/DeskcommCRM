@@ -30,6 +30,46 @@ import type { Lead } from "@/lib/types/leads";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Consultas por `.in()` cujo tamanho escala com o funil (uma linha por lead ou
+ * por contato) vão em LOTES, nunca numa consulta só.
+ *
+ * O filtro `in` vai na QUERYSTRING do PostgREST: um uuid custa ~37 bytes na
+ * URL, e um funil de 500 leads produz uma lista perto de 18 KB — mais que o
+ * dobro do buffer default de cabeçalho de requisição do Nginx (8 KB) e de
+ * proxies equivalentes na frente do Supabase. Passar do limite não devolve uma
+ * resposta menor: derruba a conexão, e o `fetch` do Node (por baixo do
+ * `supabase-js`) sobe como `TypeError: fetch failed` crua — sem `code`, sem
+ * corpo — porque a falha é de REDE, não da consulta. Foi exatamente isso que
+ * apareceu na tela do funil "Disparo" (500 leads): nenhuma das consultas
+ * abaixo tinha teto, e cada lead novo empurrava a URL um pouco mais para o
+ * limite.
+ *
+ * Mesma conta de `lib/leads/radar-de-risco.ts` (`IDS_POR_CONSULTA`) e
+ * `lib/extensions/service.ts` (`IN_BATCH`) — o helper é local porque o formato
+ * de retorno de cada função abaixo já é `{ leads, error }`, diferente dos dois.
+ */
+const LOTE_DE_IDS = 100;
+
+async function emLotes<R>(
+  ids: readonly string[],
+  consulta: (
+    lote: string[],
+  ) => PromiseLike<{ data: R[] | null; error: { message: string } | null }>,
+): Promise<{ data: R[]; error: string | null }> {
+  const unicos = [...new Set(ids)];
+  const lotes: string[][] = [];
+  for (let i = 0; i < unicos.length; i += LOTE_DE_IDS) lotes.push(unicos.slice(i, i + LOTE_DE_IDS));
+
+  const resultados = await Promise.all(lotes.map((lote) => consulta(lote)));
+  const data: R[] = [];
+  for (const r of resultados) {
+    if (r.error) return { data: [], error: r.error.message };
+    data.push(...((r.data ?? []) as R[]));
+  }
+  return { data, error: null };
+}
+
 interface RouteCtx {
   params: Promise<{ id: string }>;
 }
@@ -187,27 +227,28 @@ async function withScores(
 ): Promise<{ leads: Lead[]; error: string | null }> {
   if (leads.length === 0) return { leads, error: null };
 
-  const { data, error } = await supabase
-    .from("crm_lead_scores")
-    .select(
-      "lead_id, ai_probability, ai_probability_reason, ai_probability_band, ai_probability_evidence, ai_probability_at",
-    )
-    .eq("organization_id", organizationId)
-    .in(
-      "lead_id",
-      leads.map((l) => l.id),
-    );
-  if (error) return { leads, error: error.message };
-
-  const porLead = new Map<string, NonNullable<Lead["score"]>>();
-  for (const row of (data ?? []) as Array<{
+  const { data, error } = await emLotes<{
     lead_id: string;
     ai_probability: number | string | null;
     ai_probability_reason: string | null;
     ai_probability_band: string | null;
     ai_probability_evidence: { factors?: unknown } | null;
     ai_probability_at: string | null;
-  }>) {
+  }>(
+    leads.map((l) => l.id),
+    (lote) =>
+      supabase
+        .from("crm_lead_scores")
+        .select(
+          "lead_id, ai_probability, ai_probability_reason, ai_probability_band, ai_probability_evidence, ai_probability_at",
+        )
+        .eq("organization_id", organizationId)
+        .in("lead_id", lote),
+  );
+  if (error) return { leads, error };
+
+  const porLead = new Map<string, NonNullable<Lead["score"]>>();
+  for (const row of data) {
     // `numeric` chega como string no supabase-js; `null` continua null — e a
     // diferença entre null e 0 é justamente o que não pode se perder aqui.
     if (row.ai_probability === null || row.ai_probability_band === null) continue;
@@ -244,6 +285,10 @@ async function withScores(
  *
  * Ordena por `last_message_at` e fica com a primeira de cada contato — as
  * conversas já vêm ordenadas, então o primeiro visto é o mais recente.
+ *
+ * A busca vai em `emLotes`, mas a ordenação continua válida: cada `contact_id`
+ * pertence a UM lote só, então "primeira vista vence" segue correto dentro do
+ * lote onde aquele contato caiu — a ordem entre lotes diferentes não importa.
  */
 async function withConversas(
   supabase: Awaited<ReturnType<typeof createClient>>,
@@ -253,22 +298,24 @@ async function withConversas(
   const contactIds = [...new Set(leads.map((l) => l.contact_id).filter((c): c is string => !!c))];
   if (contactIds.length === 0) return { leads, error: null };
 
-  const { data, error } = await supabase
-    .from("conversations")
-    .select("id, contact_id, last_message_preview, last_message_at, unread_count_for_assignee")
-    .eq("organization_id", organizationId)
-    .in("contact_id", contactIds)
-    .order("last_message_at", { ascending: false, nullsFirst: false });
-  if (error) return { leads, error: error.message };
-
-  const porContato = new Map<string, NonNullable<Lead["conversa"]>>();
-  for (const row of (data ?? []) as Array<{
+  const { data, error } = await emLotes<{
     id: string;
     contact_id: string;
     last_message_preview: string | null;
     last_message_at: string | null;
     unread_count_for_assignee: number | null;
-  }>) {
+  }>(contactIds, (lote) =>
+    supabase
+      .from("conversations")
+      .select("id, contact_id, last_message_preview, last_message_at, unread_count_for_assignee")
+      .eq("organization_id", organizationId)
+      .in("contact_id", lote)
+      .order("last_message_at", { ascending: false, nullsFirst: false }),
+  );
+  if (error) return { leads, error };
+
+  const porContato = new Map<string, NonNullable<Lead["conversa"]>>();
+  for (const row of data) {
     // Primeira vista vence: a consulta já veio ordenada por atividade.
     if (porContato.has(row.contact_id)) continue;
     porContato.set(row.contact_id, {
@@ -301,30 +348,30 @@ async function withNextActions(
 
   const [{ data: estados, error: estadosErr }, { data: candidatos, error: candErr }] =
     await Promise.all([
-      supabase
-        .from("lead_state")
-        .select("contact_id, next_action, next_action_seq, updated_at")
-        .eq("organization_id", organizationId)
-        .in("contact_id", contactIds)
-        .not("next_action", "is", null),
-      supabase
-        .from("crm_leads")
-        .select(
-          "id, organization_id, pipeline_id, status, last_activity_at, created_at, contact_id",
-        )
-        .eq("organization_id", organizationId)
-        .eq("status", "open")
-        .in("contact_id", contactIds),
+      emLotes<EstadoDoContato>(contactIds, (lote) =>
+        supabase
+          .from("lead_state")
+          .select("contact_id, next_action, next_action_seq, updated_at")
+          .eq("organization_id", organizationId)
+          .in("contact_id", lote)
+          .not("next_action", "is", null),
+      ),
+      emLotes<LeadCandidate & { contact_id: string | null }>(contactIds, (lote) =>
+        supabase
+          .from("crm_leads")
+          .select(
+            "id, organization_id, pipeline_id, status, last_activity_at, created_at, contact_id",
+          )
+          .eq("organization_id", organizationId)
+          .eq("status", "open")
+          .in("contact_id", lote),
+      ),
     ]);
-  if (estadosErr) return { leads, error: estadosErr.message };
-  if (candErr) return { leads, error: candErr.message };
-  if (!estados || estados.length === 0) return { leads, error: null };
+  if (estadosErr) return { leads, error: estadosErr };
+  if (candErr) return { leads, error: candErr };
+  if (estados.length === 0) return { leads, error: null };
 
-  const { porLead, ambiguas } = roteiaProximasAcoes(
-    estados as EstadoDoContato[],
-    (candidatos ?? []) as Array<LeadCandidate & { contact_id: string | null }>,
-    { defaultPipelineId },
-  );
+  const { porLead, ambiguas } = roteiaProximasAcoes(estados, candidatos, { defaultPipelineId });
 
   // Recusar o palpite não pode virar silêncio: a proposta que não achou dono vai
   // para a caixa, onde um humano desambigua. Escrever a partir de um GET não é
