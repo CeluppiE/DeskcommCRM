@@ -7844,8 +7844,8 @@ export const DICIONARIO: Traducoes = {
 
   // ─── Importar leads de planilha (extraído do PR #418) ───
   "Importar leads de uma planilha": { es: "Importar leads desde una planilla" },
-  "Um arquivo CSV com uma linha por lead. Os leads entram na primeira etapa aberta do funil escolhido.": {
-    es: "Un archivo CSV con una línea por lead. Los leads entran en la primera etapa abierta del embudo elegido.",
+  "Um arquivo CSV com uma linha por lead. Os leads entram na primeira etapa aberta do funil escolhido. Máximo de 500 linhas e 5MB por arquivo.": {
+    es: "Un archivo CSV con una línea por lead. Los leads entran en la primera etapa abierta del embudo elegido. Máximo 500 líneas y 5MB por archivo.",
   },
   "Funil de destino": { es: "Embudo de destino" },
   // As duas mensagens de recusa da ROTA de importação. Nasceram no #597, que

@@ -103,7 +103,7 @@ export function ImportarLeads({ funis }: { funis: FunilDaLista[] }) {
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
               {t(
-                "Um arquivo CSV com uma linha por lead. Os leads entram na primeira etapa aberta do funil escolhido.",
+                "Um arquivo CSV com uma linha por lead. Os leads entram na primeira etapa aberta do funil escolhido. Máximo de 500 linhas e 5MB por arquivo.",
               )}
             </p>
 
