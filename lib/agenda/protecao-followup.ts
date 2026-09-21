@@ -66,6 +66,19 @@ function indisponivel(agora: Date): ProtecaoAgenda {
     reavaliar_em: new Date(agora.getTime() + 60_000).toISOString(),
   };
 }
+/**
+ * Contatos por consulta ao `calendar_appointments` — a lista vai na
+ * QUERYSTRING do PostgREST (~37 bytes por uuid). Uma organização com muitos
+ * negócios abertos passa fácil dos ~8 KB de buffer de cabeçalho que os proxies
+ * costumam usar por padrão; estourar não devolve uma resposta menor, derruba
+ * a conexão (`TypeError: fetch failed` cru), e isso cai direto no `catch`
+ * abaixo como "leitura indisponível" pra TODOS os contatos do lote — inclusive
+ * os que tinham compromisso. Mesma conta de `IDS_POR_CONSULTA`
+ * (`lib/leads/radar-de-risco.ts`) e do `emLotes`
+ * (`app/api/v1/pipelines/[id]/board/route.ts`).
+ */
+const CONTATOS_POR_CONSULTA = 100;
+
 export async function protecaoAgendaSupabase(
   db: SupabaseClient,
   org: string,
@@ -75,26 +88,29 @@ export async function protecaoAgendaSupabase(
   if (!contatos.length) return new Map();
   try {
     const appointments: CompromissoProtetor[] = [];
-    let after: string | undefined;
-    // Keyset estável: uma resposta bem-sucedida pode ter sido truncada pelo
-    // max_rows do PostgREST. Só página VAZIA prova que a leitura terminou.
-    for (;;) {
-      let query = db
-        .from("calendar_appointments")
-        .select("id,contact_id,revision,starts_at,ends_at,status")
-        .eq("organization_id", org)
-        .in("contact_id", contatos)
-        .in("status", ["pending", "confirmed"])
-        .order("id", { ascending: true })
-        .limit(500);
-      if (after) query = query.gt("id", after);
-      const page = await query;
-      if (page.error) throw page.error;
-      if (!page.data?.length) break;
-      const last = page.data[page.data.length - 1]!.id;
-      if (after && last <= after) throw new Error("agenda_page_did_not_advance");
-      appointments.push(...page.data);
-      after = last;
+    for (let i = 0; i < contatos.length; i += CONTATOS_POR_CONSULTA) {
+      const lote = contatos.slice(i, i + CONTATOS_POR_CONSULTA);
+      let after: string | undefined;
+      // Keyset estável: uma resposta bem-sucedida pode ter sido truncada pelo
+      // max_rows do PostgREST. Só página VAZIA prova que a leitura terminou.
+      for (;;) {
+        let query = db
+          .from("calendar_appointments")
+          .select("id,contact_id,revision,starts_at,ends_at,status")
+          .eq("organization_id", org)
+          .in("contact_id", lote)
+          .in("status", ["pending", "confirmed"])
+          .order("id", { ascending: true })
+          .limit(500);
+        if (after) query = query.gt("id", after);
+        const page = await query;
+        if (page.error) throw page.error;
+        if (!page.data?.length) break;
+        const last = page.data[page.data.length - 1]!.id;
+        if (after && last <= after) throw new Error("agenda_page_did_not_advance");
+        appointments.push(...page.data);
+        after = last;
+      }
     }
     const organization = await db.from("organizations").select("settings").eq("id", org).single();
     if (organization.error) throw organization.error;
