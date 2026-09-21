@@ -20,6 +20,7 @@ import { evaluateConditions, type RuleCondition } from "@/lib/automation/conditi
 import { getAction } from "@/lib/automation/actions";
 import type { ActionResultDetail } from "@/lib/automation/types";
 import { audit } from "@/lib/audit";
+import { regraDoEvento } from "@/lib/automation/gatilho-de-data-do-funil";
 import { ENTIDADE_ESPERADA_POR_GATILHO } from "@/lib/schemas/webhooks";
 import { logger } from "@/lib/logger";
 
@@ -178,7 +179,25 @@ export async function runAutomationForEvent(
   if (error) {
     return { consumer_key: AUTOMATION_CONSUMER_KEY, status: "error", detail: error.message };
   }
-  const matched = (rules ?? []) as unknown as RuleRow[];
+  const todas = (rules ?? []) as unknown as RuleRow[];
+  if (!todas.length) {
+    return { consumer_key: AUTOMATION_CONSUMER_KEY, status: "ok", detail: "no_rules" };
+  }
+
+  // ═══ EVENTO DIRIGIDO: A REGRA QUE O RELÓGIO APONTOU ═══
+  //
+  // O gatilho de data do funil (`lead.date_field_due`) não nasce de uma ação de
+  // ninguém: quem o emite é a varredura `cron/lead-date-field-due`, e ela sabe
+  // PARA QUAL REGRA — o payload traz `rule_id`. Sem este recorte, duas regras do
+  // mesmo gatilho com `dias` diferentes (240 dias antes do casamento e 60
+  // depois dele) rodariam as duas no mesmo evento, porque aqui só se casa
+  // `event_type`: a confirmação de entrega sairia junto com o aviso de 240 dias.
+  //
+  // Todo outro gatilho emite payload sem `rule_id`, então `regraDoEvento`
+  // devolve `null` e a seleção segue exatamente como sempre foi: todas as
+  // regras ativas daquele tipo.
+  const regraApontada = regraDoEvento(row.payload);
+  const matched = regraApontada ? todas.filter((r) => r.id === regraApontada) : todas;
   if (!matched.length) {
     return { consumer_key: AUTOMATION_CONSUMER_KEY, status: "ok", detail: "no_rules" };
   }

@@ -43,7 +43,7 @@ export async function enviarPushDaOrg(
   const rows = data ?? [];
   if (rows.length === 0) return { sent: 0, gone: 0 };
 
-  webpush.setVapidDetails(vapidSubject(), vapidPublica()!, env.VAPID_PRIVATE_KEY.trim());
+  webpush.setVapidDetails(await vapidSubject(), vapidPublica()!, env.VAPID_PRIVATE_KEY.trim());
 
   let sent = 0;
   let gone = 0;

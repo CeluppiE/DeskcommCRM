@@ -175,7 +175,7 @@ async function book(page: Page, f: Fixture) {
   await page.goto(`/app/inbox/${f.conversation}`);
   await page.getByRole("link", { name: "Marcar compromisso", exact: true }).click();
   await expect(page.getByTestId("painel-de-marcacao")).toBeVisible();
-  await expect(page.getByLabel("Quem será atendido")).toHaveValue(f.contact);
+  await expect(page.getByTestId("quem-sera-atendido")).toHaveAttribute("data-contact-id", f.contact);
   await expect(page.getByLabel("Conversa vinculada (opcional)")).toHaveValue(f.conversation);
   await page.keyboard.press("Escape");
   const days = await irParaASemanaSeguinte(page);
@@ -451,7 +451,22 @@ test("marca Meet, copia link, autoriza em atendimento humano e entrega novamente
     expect(channel.bodies[0]!.text).toContain(link);
     const original = (await row(f, id)).meeting_delivery;
     await detail(page, id);
-    await expect(meet(page).getByRole("button", { name: "Link já enviado" })).toBeDisabled();
+    // ⛔ ESTA LINHA ERA `"Link já enviado"` + `toBeDisabled()`, e era o defeito:
+    // o botão ficava preso PARA SEMPRE depois do primeiro envio, e quem
+    // precisava reenviar não tinha caminho nenhum pelo produto.
+    await expect(meet(page).getByRole("button", { name: "Enviar de novo" })).toBeEnabled();
+    // E o destravamento NÃO abre porta para envio em dobro: o clique pede
+    // confirmação. É o que substitui, na tela, o `return false` que o banco dá
+    // ao `deliver` em estado `sent` — e é por isso que a `resend` passa reto lá.
+    await meet(page).getByRole("button", { name: "Enviar de novo" }).click();
+    const confirmacao = page.getByRole("dialog", { name: "Confirmar reenvio" });
+    await expect(
+      confirmacao.getByText("Mandar de novo o link desta reunião para o cliente?"),
+    ).toBeVisible();
+    await confirmacao.getByRole("button", { name: "Cancelar" }).click();
+    await expect(confirmacao).toHaveCount(0);
+    // CONTROLE: cancelar não mexeu no estado da entrega.
+    expect((await row(f, id)).meeting_delivery.state).toBe("sent");
     const after = (
       await db
         .from("conversations")
@@ -462,7 +477,7 @@ test("marca Meet, copia link, autoriza em atendimento humano e entrega novamente
     ).data;
     expect(after).toEqual(before);
     expect((await db.from("contacts").select("force_human,ai_authorized_at").eq("organization_id",f.org).eq("id",f.contact).single()).data).toEqual({force_human:true,ai_authorized_at:null});
-    await capture(page, info, "sent-desktop", "Link já enviado");
+    await capture(page, info, "sent-desktop", "Enviar de novo");
     const noOp = await page.request.post(`/api/v1/agenda/agendamentos/${id}/google/meet/deliver`, {
       data: sentRequest,
     });
@@ -522,7 +537,8 @@ test("marca Meet, copia link, autoriza em atendimento humano e entrega novamente
     ).toEqual(oldLedger);
     expect((await pool.query("select * from job_queue where organization_id=$1 and id=$2", [f.org, firstJob])).rows).toEqual(oldJob);
     await detail(page, id);
-    await expect(meet(page).getByRole("button", { name: "Link já enviado" })).toBeDisabled();
+    // Mesma troca da primeira ocorrência: o botão destrava em vez de morrer.
+    await expect(meet(page).getByRole("button", { name: "Enviar de novo" })).toBeEnabled();
     expect(google.requests.filter((r) => r.method === "POST")).toHaveLength(1);
   } finally {
     await page.close();

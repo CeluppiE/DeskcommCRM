@@ -76,10 +76,38 @@ const CHAMADAS = [
  * período nenhum.
  */
 const DISPENSADAS: Record<string, string> = {
+  "agenda-primeira-pintura-no-fuso.spec.ts":
+    "não escolhe dia nem bloco — mede QUAL SEMANA o servidor pinta antes da hidratação, e " +
+    "por isso não pode navegar: `irParaASemanaSeguinte` precisa da página viva, que esta " +
+    "spec desliga de propósito (bloqueia os pacotes da aplicação). O que ela lê das colunas " +
+    "é a CHAVE do dia — comparada com a semana daquele fuso no mesmo instante —, nunca " +
+    "disponibilidade: nenhuma asserção depende de haver vaga, de que dia é hoje ou da hora. " +
+    "⚠️ A dispensa VENCE se ela passar a afirmar algo sobre horário livre ou bloco clicável.",
+  "agenda-portao-de-hidratacao.spec.ts":
+    "não escolhe dia nem bloco — ela mede o PORTÃO de hidratação do próprio módulo do " +
+    "período (`aguardarGradeHidratada`), e por isso não pode passar por " +
+    "`irParaASemanaSeguinte`: navegar exige justamente o que ela sabota. O que ela lê da " +
+    "grade é a PRESENÇA das colunas que o servidor desenhou (`toBeAttached`), para provar " +
+    "que a sabotagem deixou a página desenhada e morta em vez de vazia — nenhuma asserção " +
+    "dela depende de haver vaga, de que dia é hoje ou de que horas são. " +
+    "⚠️ A dispensa VENCE no instante em que ela afirmar qualquer coisa sobre horário livre, " +
+    "bloco clicável ou dia escolhido: aí ela volta a medir o calendário, e precisa do módulo.",
   "agenda-kit-visual.spec.ts":
     "roda contra /vitrine-agenda, que PASSA o instante como fixture — é o padrão certo, " +
     "não a exceção: por isso ela clica num `dia-2026-08-24` fixo e segue verde com essa " +
     "data no passado.",
+  "agenda-papel-de-leitura.spec.ts":
+    "não escolhe dia nem bloco — conta a EXISTÊNCIA da camada de marcação, que é o gesto " +
+    "de escrita que o `viewer` não pode ter: `toHaveCount(0)` para quem só lê e `> 0` para " +
+    "o atendente, na mesma tela e no mesmo banco. `CamadaDeMarcacao` desenha um `bloco-` " +
+    "por célula de `CELULAS` em TODA coluna de dia sempre que `interacao` existe " +
+    "(`components/agenda/GradeDaAgenda.tsx`), e `CELULAS` é constante " +
+    "(`(ULTIMA_HORA - PRIMEIRA_HORA + 1) * 60 / PASSO_DA_CELULA_MIN`): a disponibilidade " +
+    "mora em `data-livre`/`disabled`, não na presença do botão. As duas contagens, " +
+    "portanto, não leem a semana desenhada nem a hora — o que o período muda é quantos " +
+    "blocos são LIVRES, e esta spec não lê isso. " +
+    "⚠️ A dispensa VENCE se a camada passar a desenhar só os horários livres: aí `> 0` " +
+    "volta a medir o calendário, e a spec precisa de `irParaASemanaSeguinte`.",
 };
 
 /**

@@ -13,6 +13,33 @@ set -euo pipefail
 # Migrations novas (status A) neste commit
 new_migrations=$(git diff --cached --name-status \
   | awk '$1 == "A" && $2 ~ /^supabase\/migrations\/.*\.sql$/ { print $2 }')
+
+# ── O que JÁ ESTÁ na `main` não é novidade deste commit ───────────────────
+#
+# Um `git merge origin/main` encena as migrations da main como status `A`
+# relativo à branch, e o guard as tratava como se o autor as tivesse criado.
+# O efeito medido em 18/09/2026: o merge da main foi BLOQUEADO acusando 0267,
+# 0268 e 0277 — as três já na `main` — como colisão com outra branch, que as
+# tinha pelo mesmo motivo (também mergeou a main).
+#
+# E a orientação do guard era impossível de seguir: "escolha outro NNNN e
+# troque o timestamp" aplicado a uma migration que já está na `main` significa
+# renumerar arquivo que todo mundo já tem. Não havia resposta certa dentro do
+# que ele oferecia — só a válvula de escape, aberta por rotina, que é como uma
+# guarda deixa de proteger.
+#
+# A guarda REAL — colisão de NNNN entre duas branches de trabalho — continua
+# inteira: só sai da conta o que é alcançável por `origin/main`.
+#
+# Sem `origin/main` (clone raso do CI, repositório novo) o filtro é no-op e o
+# comportamento antigo vale, em vez de o guard emudecer.
+if git rev-parse --verify --quiet origin/main >/dev/null; then
+  new_migrations=$(while IFS= read -r p; do
+    [ -z "$p" ] && continue
+    git cat-file -e "origin/main:$p" 2>/dev/null || printf '%s\n' "$p"
+  done <<<"$new_migrations")
+fi
+
 [ -z "$new_migrations" ] && exit 0
 
 staged=$(git diff --cached --name-only)

@@ -23,8 +23,32 @@ export const moveLeadSchema = z.object({
   stage_id: z.string().uuid(),
   position_in_stage: z.number().finite(),
   expected_updated_at: flexibleTimestamp,
+  /**
+   * O motivo da perda, quando a etapa de destino é de perda (issue #917). É o
+   * caminho do ARRASTO: a decisão de exigir/gravar mora em
+   * `lib/leads/motivo-da-perda.ts` — aqui só se aceita o campo, e um motivo em
+   * branco é tratado lá como ausente (uma recusa de negócio, uma só, para os três
+   * caminhos; string vazia morrendo no Zod daria uma mensagem de validação
+   * diferente da que o /lose devolve para o mesmo caso).
+   */
+  lost_reason: z.string().max(500).optional(),
 });
 export type MoveLeadInput = z.infer<typeof moveLeadSchema>;
+
+/**
+ * cloneLeadSchema → POST /api/v1/leads/[id]/clone (P-01).
+ *
+ * O caminho para OUTRO funil: `pipeline_id` é obrigatório, `stage_id` é opcional
+ * (sem ele a primeira etapa aberta do funil destino recebe o negócio) e
+ * `lost_reason` é o motivo do encerramento da ORIGEM — canônico ou estendido pelo
+ * funil (o trigger do banco é a fonte de verdade, como em `loseLeadSchema`).
+ */
+export const cloneLeadSchema = z.object({
+  pipeline_id: z.string().uuid(),
+  stage_id: z.string().uuid().optional(),
+  lost_reason: z.string().min(1).max(500).optional(),
+});
+export type CloneLeadInput = z.infer<typeof cloneLeadSchema>;
 
 export const winLeadSchema = z.object({}).passthrough();
 export type WinLeadInput = z.infer<typeof winLeadSchema>;
@@ -42,6 +66,15 @@ export const CANONICAL_LOST_REASONS = [
   "cancelled_by_customer",
   "payment_failed",
   "other",
+  /**
+   * Motivo do SISTEMA, não da lista do operador: é com ele que a troca de funil
+   * encerra a origem (`lib/leads/motivo-da-perda.ts`, `MOTIVO_DA_TRANSFERENCIA`)
+   * e é ele que `fn_attendant_metrics` NÃO conta como perda (migration 0266).
+   * Consta aqui porque esta lista é o espelho do array canônico do trigger
+   * `fn_validate_lost_reason_required`: um motivo aceito pelo banco e ausente
+   * daqui é uma recusa de tela para uma escrita que funciona.
+   */
+  "moved_to_another_pipeline",
 ] as const;
 export type CanonicalLostReason = (typeof CANONICAL_LOST_REASONS)[number];
 
@@ -66,7 +99,17 @@ export const createLeadSchema = z.object({
   description: z.string().max(2000).nullable().optional(),
   contact_id: z.string().uuid().nullable().optional(),
   value_cents: z.coerce.number().int().nonnegative().nullable().optional(),
-  currency: z.string().length(3).default("BRL"),
+  /**
+   * Sem `default`, e isso É o conserto.
+   *
+   * Com `.default("BRL")` o campo nunca chegava ausente ao handler: quem
+   * omitia a moeda recebia real, e uma organização que declarou peso ou dólar
+   * em Configurações via cada lead novo nascer em BRL — o mesmo defeito que a
+   * migration 0208 consertou no catálogo de produtos, repetido no funil. O
+   * padrão não é do schema porque ele não sabe de que organização se trata; é
+   * do handler, que resolve pela `moedaDaOrganizacao()`.
+   */
+  currency: z.string().length(3).optional(),
   owner_user_id: z.string().uuid().nullable().optional(),
   /** Dono agente já na criação (0070) — mesma regra do update: os dois é 422. */
   owner_agent_id: z.string().uuid().nullable().optional(),
@@ -119,6 +162,13 @@ export const bulkLeadActionSchema = z.discriminatedUnion("action", [
     // e é melhor que ele suma do que ficar aceito e ignorado.
     params: z.object({
       stage_id: z.string().uuid(),
+      /**
+       * O motivo da perda, quando a etapa de destino é de perda (issue #917):
+       * o lote fecha N negócios de uma vez, então UM motivo vale para todos os
+       * cards que ainda não têm um. A decisão (e a recusa de negócio) mora em
+       * `lib/leads/motivo-da-perda.ts`.
+       */
+      lost_reason: z.string().max(500).optional(),
     }),
   }),
   z.object({

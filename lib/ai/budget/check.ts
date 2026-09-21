@@ -37,6 +37,7 @@ import {
 import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { carregarComportamentoDaInstalacao } from "@/lib/instalacao/comportamento-servidor";
 
 export interface BudgetStatus {
   organization_id: string;
@@ -74,9 +75,11 @@ export interface BudgetStatus {
    */
   gasto_incompleto: boolean;
   /**
-   * `AI_BUDGET_ENFORCEMENT` desta INSTALAÇÃO, já normalizado. A tela precisa
-   * dele para não oferecer uma proteção que o operador da VPS desligou por
-   * fora: um controle que o processo ignora é pior que controle nenhum.
+   * O valor EFETIVO da chave de orçamento desta INSTALAÇÃO, já normalizado: a
+   * linha de `platform_settings` escrita na tela de admin (`/admin/sistema`)
+   * acima, o `.env` como piso. A tela precisa dele para não oferecer uma
+   * proteção que o operador desligou: um controle que o processo ignora é pior
+   * que controle nenhum — e era o defeito da issue #1034.
    */
   enforcement_env: ChaveDeOrcamento;
   /**
@@ -143,7 +146,12 @@ async function gastoDoMes(
 /** Snapshot completo para a tela / API. Nunca lança: degrada para o default. */
 export async function getBudgetStatus(orgId: string): Promise<BudgetStatus> {
   const admin = createAdminClient();
-  const enforcementEnv = normalizarChaveDeOrcamento(env.AI_BUDGET_ENFORCEMENT);
+  // O valor EFETIVO da chave (issue #1034): lê a linha da instalação ANTES de
+  // montar o snapshot, para o card não oferecer uma proteção que a tela de
+  // admin desligou — nem esconder uma que ela ligou. Nunca lança: sem leitura
+  // boa, cai no piso do `.env`, que é exatamente o comportamento de ontem.
+  const instalacao = await carregarComportamentoDaInstalacao();
+  const enforcementEnv = instalacao.orcamento_de_ia;
 
   const [linhaRes, gasto, bloqueioRes, semPrecoRes] = await Promise.all([
     admin.from("ai_budgets").select(COLUMNS).eq("organization_id", orgId).maybeSingle(),

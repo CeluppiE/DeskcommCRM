@@ -215,12 +215,19 @@ export function formatCents(cents: number, moeda: string): string {
  * ABERTO que a doutrina de modelagem descreve. O conjunto vive só aqui, no
  * TypeScript.
  *
- * As três têm subunidade de 2 casas, então nenhuma esbarra na ressalva de
+ * As quatro têm subunidade de 2 casas, então nenhuma esbarra na ressalva de
  * unidades menores de `formatCents`. Acrescentar JPY ou CLP funciona — o
  * formatador já os cobre —, mas exige olhar `precoParaCentavos`, que ainda
  * multiplica por 100 na leitura do que a pessoa digita.
+ *
+ * `AOA` (kwanza, Angola) entrou por pedido de quem instala lá. Medido antes de
+ * entrar, porque servir é o conjunto das três coisas acima: `formatCents(24990,
+ * "AOA")` → `"249,90 Kz"` (o `formatadorDa` maximiza `und-AO` para `pt-AO`) e
+ * `maximumFractionDigits` responde 2, então a régua de centavos vale. Entrar na
+ * lista NÃO muda o padrão de ninguém — `MOEDA_PADRAO` continua `BRL`, e é isso
+ * que o `default` da coluna grava em quem não escolheu.
  */
-export const MOEDAS_SERVIDAS = ["BRL", "MXN", "USD"] as const;
+export const MOEDAS_SERVIDAS = ["AOA", "BRL", "MXN", "USD"] as const;
 export type MoedaServida = (typeof MOEDAS_SERVIDAS)[number];
 
 /** O que o `default` da coluna grava quando ninguém escolheu. */

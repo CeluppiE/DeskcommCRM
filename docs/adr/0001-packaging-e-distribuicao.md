@@ -42,11 +42,15 @@ mudança que as consertaria — o clássico problema de atualizar o atualizador.
 
 **Custo medido de uma migração futura:** o namespace vive numa constante única
 (`IMG_NS` em `hostgator-setup-kit/_common.sh`), mais o default de cada serviço em
-`docker-compose.prod.yml`, mais `.env.hostgator.example`, os testes que casam a string
-(`tests/shell/update-guard.test.sh`, `hostgator-setup-kit/test-validators.sh`,
-`tests/unit/packaging-artefato-do-cliente.test.ts`) e os docs — **mais** o `.env` de cada
-instalação viva, que é a parte que nenhum commit alcança. Régua para reconferir antes de
-citar este parágrafo: `grep -rln "ghcr.io/melgarafael" --exclude-dir=node_modules .`
+`docker-compose.prod.yml`, mais `.env.hostgator.example` e os docs — **mais** o `.env` de cada
+instalação viva, que é a parte que nenhum commit alcança. A consistência interna é vigiada por
+`tests/unit/namespace-das-imagens.test.ts`; no CI, a âncora externa em
+`tests/unit/namespace-das-imagens-runtime-owner.test.ts` compara o dono de `IMG_NS` com
+`GITHUB_REPOSITORY_OWNER`, valor do runner que não vem do checkout do PR. Desde 18/09/2026 o
+primeiro defere ao segundo: numa corrida **interna a um fork** ele não cobra o namespace
+(decisão do dono, opção (a) — um fork que publica as próprias imagens não é defeito nosso),
+e contra o upstream cobra como antes. Régua para reconferir antes de citar este parágrafo:
+`grep -rln "ghcr.io/melgarafael" --exclude-dir=node_modules .`
 
 **Reconsideraríamos se:** o projeto ganhar mantenedores com necessidade de publicar sem
 credencial pessoal, ou o repositório mudar de dono. Nesse caso a migração é **aditiva**:

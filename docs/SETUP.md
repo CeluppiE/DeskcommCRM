@@ -18,7 +18,7 @@
 6. [Anthropic + Vercel AI Gateway — IA](#4-anthropic--vercel-ai-gateway--ia)
 7. [OpenAI — embeddings do RAG](#5-openai--embeddings-do-rag)
 8. [Sentry — monitoramento de erros](#6-sentry--monitoramento-de-erros)
-9. [Resend — email transacional](#7-resend--email-transacional)
+9. [E-mail transacional — SMTP ou Resend](#7-e-mail-transacional--smtp-ou-resend)
 10. [Nuvemshop — integração e-commerce](#8-nuvemshop--integração-e-commerce)
 11. [Chaves geradas localmente](#9-chaves-geradas-localmente--encryption--secrets)
 12. [Verificação final](#verificação-final)
@@ -66,7 +66,7 @@ Se você quer rodar o app o mais rápido possível com o mínimo viável:
 
 **⚪ Pode ficar vazio em dev (degradam graciosamente):**
 - [Sentry](#6-sentry--monitoramento-de-erros) — não monitora erros, mas app sobe.
-- [Resend](#7-resend--email-transacional) — emails não saem (vão pro console.log), mas app sobe.
+- [E-mail](#7-e-mail-transacional--smtp-ou-resend) — sem SMTP e sem Resend, o convite vira link na tela e o export de LGPD fica em revisão pendente; o app sobe igual.
 - [Nuvemshop](#8-nuvemshop--integração-e-commerce) — UI mostra "Integração não configurada".
 
 ---
@@ -324,7 +324,58 @@ SENTRY_DSN=https://abc123@o456.ingest.sentry.io/789
 
 ---
 
-## 7. Resend — email transacional
+## 7. E-mail transacional — SMTP **ou** Resend
+
+**O que é:** o caminho pelo qual saem convite de equipe, export de LGPD, alarme de SLA
+e afins. Há **dois**, e eles convivem: você escolhe UM, não precisa dos dois, e nenhum
+deles é obrigatório para o app subir.
+
+| | **SMTP** (servidor próprio) | **Resend** (serviço externo) |
+|---|---|---|
+| quando escolher | você já tem servidor de e-mail, ou não quer abrir conta em outro serviço | quer subir rápido sem mexer em servidor de e-mail |
+| onde se configura | tela **Admin › E-mail**, ou as `SMTP_*` do `.env` | as duas chaves `RESEND_*` do `.env` |
+| custo | o do seu servidor | free tier de 3k e-mails/mês, 100/dia |
+
+**Como o sistema escolhe:** se houver SMTP configurado (endereço do servidor **e**
+remetente), a entrega sai por ele; se não houver, sai pela Resend. A decisão é pela
+configuração, não por falha — o sistema não tenta um e cai no outro, para o mesmo
+convite não sair duas vezes. Quem já roda com Resend **não precisa mexer em nada**:
+enquanto o SMTP estiver vazio, tudo segue como antes. A regra mora em
+`lib/email/roteador.ts`.
+
+**Sem nenhum dos dois** o app sobe normalmente: o convite mostra o link de aceite na
+própria tela (para você copiar e mandar como quiser) e o export de LGPD fica em
+revisão pendente, em vez de sumir.
+
+---
+
+### 7a. SMTP — pelo seu próprio servidor
+
+Pela tela, que é o caminho recomendado: entre em **Admin › E-mail** (você precisa ser
+o dono da instalação), preencha os campos, use **Testar conexão** e salve. A senha é
+guardada cifrada e a tela nunca a mostra de volta.
+
+Pelo `.env`, para provisionar uma VPS sem abrir a interface:
+
+```env
+SMTP_HOST=smtp.seudominio.com
+SMTP_PORT=587
+SMTP_SECURITY=starttls
+SMTP_USERNAME=nao-responda@seudominio.com
+SMTP_PASSWORD=...
+SMTP_FROM_EMAIL=nao-responda@seudominio.com
+SMTP_FROM_NAME=Minha Empresa
+```
+
+> 💡 Porta **587** com `starttls`, ou **465** com `tls`. No `SMTP_HOST` vai só o
+> endereço: sem `smtp://` na frente e sem `:porta` no fim.
+>
+> ℹ️ O que estiver gravado pela tela **vale acima** do `.env`. As variáveis ficam como
+> piso de rollback e como caminho de instalação automatizada.
+
+---
+
+### 7b. Resend — pelo serviço externo
 
 **O que é:** Serviço de envio de email. Usado pra magic links, reset de senha, exports LGPD, notificações. **Free tier:** 3k emails/mês, 100/dia. Suficiente pra dev e MVP.
 
@@ -497,7 +548,7 @@ Provável: você botou o **hash** em `WAHA_API_KEY` em vez do **plaintext**. Con
 Algum outro processo rodando. Mata com `lsof -ti:3000 | xargs kill -9` ou roda o Next em outra porta: `pnpm dev -- -p 3001` (e atualize `WAHA_WEBHOOK_BASE_URL` no ngrok pra apontar pra nova porta).
 
 ### `RESEND_API_KEY is undefined` (mas o app sobe)
-Esperado em dev se você ainda não configurou o Resend. Emails caem no `console.log`. Só configure se for testar fluxos de email (LGPD export, magic link).
+Esperado em dev se você não configurou **nenhum** dos dois caminhos de e-mail (nem SMTP, nem Resend). Emails caem no `console.log`. Só configure se for testar fluxos de email (LGPD export, magic link).
 
 ### Migrations não rodam
 Confira se você está logado: `supabase login` — vai abrir o browser pra autorizar. Depois `supabase link --project-ref <ref>` de novo.

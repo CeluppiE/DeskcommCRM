@@ -17,6 +17,8 @@ import type {
 } from "@/lib/schemas";
 import type { Conversation } from "@/lib/types/messaging";
 import { normalizarTermoDeBusca } from "@/lib/inbox/termo-de-busca";
+import { ORDEM_DA_ESPERA, ehAFila } from "@/lib/inbox/comando-da-conversa";
+import { aplicarMarcador } from "@/lib/inbox/marcador-da-conversa";
 
 /**
  * Prepara o termo digitado para viajar dentro de um `or=` do PostgREST.
@@ -83,14 +85,14 @@ function idsQueCabemNaURL(ids: string[]): string[] {
 
 const SELECT_COLS = `
   id, organization_id, contact_id, channel_session_id, channel, status,
-  status_changed_at, service_revision, service_closed_at, service_started_at, current_demanda_id, assigned_to_user_id, assigned_to_user_name, assignee_kind, assigned_at, last_inbound_at,
+  status_changed_at, service_revision, service_closed_at, service_started_at, current_demanda_id, assigned_to_user_id, assigned_to_user_name, assignee_kind, assigned_at, last_inbound_at, awaiting_since,
   last_outbound_at, last_message_at, last_message_preview,
   unread_count_for_assignee, is_group, group_chat_id, tags, metadata,
   snooze_until, created_at, updated_at,
   bot_silenced_until, last_handoff_at,
   comando_da_conversa,
   contacts:contact_id (id, display_name, name, phone_number, is_anonymized, tags, is_blocked, avatar_storage_path, force_human),
-  channel_sessions:channel_session_id (phone_number, display_name, provider)
+  channel_sessions:channel_session_id (phone_number, display_name, provider, social_platform:metadata->>social_platform)
 `;
 
 interface CursorPayload {
@@ -149,24 +151,31 @@ export async function listConversationsHandler(
   ctx: HandlerCtx,
   q: ListConversationsQuery,
 ): Promise<ListConversationsResult> {
-  // Fila (assigned_to=unassigned): ordena por TEMPO DE ESPERA — quem espera há
-  // mais tempo primeiro. `last_inbound_at` = última mensagem do cliente = "há
-  // quanto tempo aguarda resposta" (não `created_at`, que pode ser uma conversa
-  // antiga reaberta). Demais visões: por atividade recente (last_message_at desc).
+  // Fila: ordena por TEMPO DE ESPERA — quem espera há mais tempo primeiro. A
+  // régua é `awaiting_since` = a mensagem do cliente MAIS ANTIGA sem resposta
+  // (não `last_inbound_at`, que é reescrito a cada mensagem dele e fazia quem
+  // insiste descer para o fim da fila — #990; e não `created_at`, que pode ser uma
+  // conversa antiga reaberta). Demais visões: por atividade recente.
   // A Fila deixou de se identificar por `assigned_to=unassigned` — ela agora pede
   // `comando`. Sem esta linha o `isQueue` ficaria PARA SEMPRE falso na aba Fila e
   // a ordenação por tempo de espera sumiria **sem nenhum sintoma na tela**: a
   // lista continuaria populada, só que ordenada por atividade recente, e quem
   // espera desde ontem afundaria embaixo de quem escreveu agora.
-  const isQueue = q.comando?.includes("aguardando") ?? q.assigned_to === "unassigned";
-  const sortCol = isQueue ? "last_inbound_at" : "last_message_at";
+  const isQueue = ehAFila(q);
+  // A régua da Fila não se escreve aqui: vem de `ORDEM_DA_ESPERA`, a mesma que
+  // numera a posição da linha na tela e o número que o cliente ouve. Enquanto
+  // cada lugar tinha a sua cópia, trocar uma só fazia a lista ordenar por uma
+  // pergunta e a posição responder outra — sem sintoma nenhum, porque as duas
+  // telas continuam populadas e plausíveis.
+  const sortCol = isQueue ? ORDEM_DA_ESPERA.coluna : "last_message_at";
+  const ordem = isQueue ? ORDEM_DA_ESPERA.opcoes : ({ ascending: false, nullsFirst: false } as const);
   const asc = isQueue;
 
   let query = supabase
     .from("conversations")
     .select(SELECT_COLS)
     .eq("organization_id", ctx.organization_id)
-    .order(sortCol, { ascending: asc, nullsFirst: false })
+    .order(sortCol, ordem)
     .order("id", { ascending: asc })
     .limit(q.limit + 1);
 
@@ -188,7 +197,24 @@ export async function listConversationsHandler(
     query = query.not("status", "in", `(${CONVERSATION_TERMINAL_STATUSES.join(",")})`);
   }
   if (q.channel_session_id) query = query.eq("channel_session_id", q.channel_session_id);
-  if (q.tag) query = query.contains("tags", [q.tag]); // tags @> array[tag] (GIN)
+  // ⚠️ O MARCADOR FILTRADO É O DA CONVERSA **OU** O DO CONTATO.
+  //
+  // Era só `conversations.tags`, e o relato mede o buraco: *"adicionei a tag nele
+  // para testar e ele n aparece no filtro"* — o marcador fora posto no CONTATO
+  // (`ContactTagsEditor`, a mesma caixa da ficha e da campanha). Trocar a fonte
+  // pelo contato consertaria o relato e tiraria o filtro de quem marca a
+  // CONVERSA (`ConversationTagsEditor`, e a IA por `crm_manage_tags`): o marcador
+  // continuaria editável e deixaria de ser filtrável. As duas caixas, então.
+  //
+  // O lado do contato é o campo calculado `tags_do_contato` (migration 0323), e
+  // não um `contact_id.in.(…)`: a lista de ids viaja na URL e tem teto (ver
+  // `idsQueCabemNaURL`) — numa org com mais contatos marcados que isso, conversas
+  // sumiriam do filtro sem aviso. Este `or=` compõe por AND com o da busca e o do
+  // cursor: o PostgREST junta os parâmetros repetidos com E.
+  // A régua do marcador mora num lugar só (`lib/inbox/marcador-da-conversa.ts`),
+  // porque a segunda régua sempre diverge: foi assim que a contagem das abas
+  // passou a pedir uma coluna que não existe (#1223). Aqui ela é só aplicada.
+  if (q.tag) query = aplicarMarcador(query, q.tag);
 
   // No BANCO, e não em memória: filtrar depois de paginar devolveria páginas curtas —
   // e, quando a página inteira estivesse lida, uma lista vazia que a tela apresentava
@@ -491,7 +517,9 @@ export async function patchConversationHandler(
         ? "conversation.claimed"
         : input.status === "closed"
           ? "conversation.closed"
-          : "conversation.released";
+          : input.status === "archived"
+            ? "conversation.archived"
+            : "conversation.released";
     await audit({
       action,
       actorUserId: a.actorUserId,

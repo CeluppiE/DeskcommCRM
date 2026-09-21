@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { apiClient } from "@/lib/api/client";
 import type { VisibilityMode } from "@/lib/auth/types";
+import { PRAZO_MAX_MINUTOS, PRAZO_MIN_MINUTOS } from "@/lib/escalacao/devolucao-automatica";
 import { ROUTING_MODES, VISIBILITY_MODES, type RoutingMode } from "@/lib/schemas/routing";
 import { useT } from "@/hooks/i18n/useT";
 
@@ -24,6 +25,8 @@ export interface AtendimentoConfig {
   max_retries: number;
   backoff_seconds: number;
   visibility_mode: VisibilityMode;
+  /** `null` = nunca devolve sozinho (o padrão do produto). */
+  handoff_return_after_minutes: number | null;
 }
 
 const MODO_COPY: Record<RoutingMode, { titulo: string; corpo: string }> = {
@@ -119,6 +122,8 @@ export function AtendimentoForm({ initial }: { initial: AtendimentoConfig }) {
    * nada é atendido — e a tela de todo mundo fica vazia sem explicação.
    */
   const combinacaoMorta = form.visibility_mode === "own" && form.mode === "manual";
+
+  const devolveSozinho = form.handoff_return_after_minutes !== null;
 
   function salvar(e: React.FormEvent) {
     e.preventDefault();
@@ -231,6 +236,58 @@ export function AtendimentoForm({ initial }: { initial: AtendimentoConfig }) {
               "e distribuição manual, ninguém enxerga a fila para pegar — e nenhum cliente é atendido. Ligue o rodízio para que alguém receba.",
             )}
           </p>
+        ) : null}
+      </Card>
+
+      <Card className="space-y-4 p-4" data-testid="devolucao-ao-agente">
+        <div>
+          <h2 className="text-sm font-semibold">{t("Quando a pessoa some, a IA volta?")}</h2>
+          <p className="text-xs text-muted-foreground">
+            {t(
+              "Quando alguém assume uma conversa, o agente de IA para de responder nela até ser devolvido. Se ninguém devolve, o cliente que escreve de novo fica sem resposta.",
+            )}
+          </p>
+        </div>
+        <label className="flex cursor-pointer items-start gap-3">
+          <input
+            type="checkbox"
+            data-testid="devolver-sozinho"
+            checked={devolveSozinho}
+            disabled={isPending}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, handoff_return_after_minutes: e.target.checked ? 60 : null }))
+            }
+            className="mt-1 h-4 w-4 shrink-0 accent-primary"
+          />
+          <span className="space-y-1">
+            <span className="block text-sm font-medium">
+              {t("Devolver ao agente sozinho depois de um tempo sem resposta da equipe")}
+            </span>
+            <span className="block text-xs text-muted-foreground">
+              {t(
+                "O tempo conta a partir do último sinal de uma pessoa na conversa: assumir, responder pela tela ou pelo celular. Só devolve onde há agente publicado. Desligado, vale a regra de sempre: a IA só volta quando alguém clica em Devolver.",
+              )}
+            </span>
+          </span>
+        </label>
+        {devolveSozinho ? (
+          <div className="max-w-xs space-y-1 border-t pt-4">
+            <Label htmlFor="handoff_return_after_minutes">{t("Minutos sem resposta da equipe")}</Label>
+            <Input
+              id="handoff_return_after_minutes"
+              type="number"
+              min={PRAZO_MIN_MINUTOS}
+              max={PRAZO_MAX_MINUTOS}
+              value={form.handoff_return_after_minutes ?? 60}
+              disabled={isPending}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, handoff_return_after_minutes: Number(e.target.value) }))
+              }
+            />
+            <p className="text-xs text-muted-foreground">
+              {t("Entre 5 minutos e 24 horas. Sessenta minutos é a ordem de grandeza de um atendimento humano.")}
+            </p>
+          </div>
         ) : null}
       </Card>
 

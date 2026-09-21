@@ -70,6 +70,19 @@ const EMISSAO_SQL_CRU = /insert\s+into\s+event_log\b[\s\S]{0,300}?values\s*\(\s*
 const SQL_FN_LOG = /fn_log_event\s*\(\s*[^,()]+,\s*'([a-z0-9_.]+)'/g;
 /** SQL: `insert into event_log(…) values (<org>, 'tipo'` — tipo sempre na 2ª posição. */
 const SQL_INSERT = /insert\s+into\s+(?:public\.)?event_log\b[\s\S]{0,400}?values\s*\(\s*[^,()]+,\s*'([a-z0-9_.]+)'/g;
+/**
+ * SQL: `emit_event('tipo', …)` e `emit_event(p_event_type := 'tipo', …)` — a forma
+ * que as funções `plpgsql` usam, posicional ou nomeada.
+ *
+ * Faltava, e o buraco foi pago: a migration 0264 (PR #955) emitia
+ * `contact.tags_changed`, `lead.tags_changed` e `conversation.tags_changed` UMA
+ * VEZ POR LINHA alterada, nenhum dos três com consumidor, e este arquivo ficou
+ * verde — os regexes de SQL acima só conheciam `fn_log_event` e o `insert` cru.
+ * O nomeado é casado em qualquer posição dos argumentos, porque `:=` permite
+ * qualquer ordem.
+ */
+const SQL_EMIT_POSICIONAL = /emit_event\s*\(\s*'([a-z0-9_.]+)'/g;
+const SQL_EMIT_NOMEADO = /p_event_type\s*:=\s*'([a-z0-9_.]+)'/g;
 /** A definição da lista: `fn_event_log_e_registro(…) … array[ … ]`. */
 const DEF_REGISTRO = new RegExp(
   String.raw`fn_event_log_e_registro\s*\([\s\S]{0,400}?array\[([\s\S]*?)\]`,
@@ -212,6 +225,8 @@ function tiposEmitidos(): Set<string> {
     const texto = semComentarios(readFileSync(f, "utf8"));
     for (const m of texto.matchAll(SQL_FN_LOG)) achados.add(m[1]!);
     for (const m of texto.matchAll(SQL_INSERT)) achados.add(m[1]!);
+    for (const m of texto.matchAll(SQL_EMIT_POSICIONAL)) achados.add(m[1]!);
+    for (const m of texto.matchAll(SQL_EMIT_NOMEADO)) achados.add(m[1]!);
   }
 
   for (const tipo of Object.keys(EMISSOES_DINAMICAS)) achados.add(tipo);

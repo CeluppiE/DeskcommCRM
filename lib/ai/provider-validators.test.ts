@@ -1,4 +1,17 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * A base do OpenRouter é lida de `env` — este mock é quem decide se a variável
+ * existe em cada caso. Sem ele o `.env` de quem roda o teste mandaria no
+ * resultado, e o caso "sem a variável" mentiria numa máquina com
+ * `OPENROUTER_BASE_URL` definida.
+ */
+const envMock: Record<string, string | undefined> = {};
+vi.mock("@/lib/env", () => ({
+  get env() {
+    return envMock;
+  },
+}));
 
 import { validateOpenRouterKey } from "@/lib/ai/provider-validators";
 
@@ -10,10 +23,17 @@ import { validateOpenRouterKey } from "@/lib/ai/provider-validators";
  * validada, e a falha só aparecia no primeiro turno do agente — como
  * `runtime_error: User not found.`, mensagem que não fala de credencial.
  *
- * O caso decisivo é o último: ele prende o ENDEREÇO da primeira chamada. Sem
- * ele, alguém "simplifica" o validador de volta para uma requisição só, o
- * catálogo responde 200 para chave falsa, e os dois primeiros casos aqui
- * continuariam verdes — a família do teste que concorda com o próprio defeito.
+ * O caso decisivo é o último do primeiro bloco: ele prende o ENDEREÇO da
+ * primeira chamada. Sem ele, alguém "simplifica" o validador de volta para uma
+ * requisição só, o catálogo responde 200 para chave falsa, e os dois primeiros
+ * casos aqui continuariam verdes — a família do teste que concorda com o próprio
+ * defeito.
+ *
+ * O segundo bloco prende o MESMO endereço onde a instalação o configurou: a
+ * tela de Credenciais era o último caminho que ainda batia em `openrouter.ai`
+ * fixo depois de `OPENROUTER_BASE_URL` valer para o agente, para o turno do
+ * worker e para a prova de crédito. Num gateway compatível, a tela dizia
+ * "chave inválida" com a credencial que o agente estava usando.
  */
 
 const chamadas: string[] = [];
@@ -31,6 +51,11 @@ function fetchFalso(respostas: Record<string, { status: number; body?: unknown }
   });
 }
 
+beforeEach(() => {
+  // Quem define a variável é o caso; nenhum caso herda a do anterior.
+  delete envMock.OPENROUTER_BASE_URL;
+});
+
 afterEach(() => {
   chamadas.length = 0;
   vi.unstubAllGlobals();
@@ -43,7 +68,7 @@ describe("validateOpenRouterKey", () => {
       "fetch",
       fetchFalso({ "/api/v1/key": { status: 401 }, "/api/v1/models": { status: 200 } }),
     );
-    const r = await validateOpenRouterKey("sk-or-v1-nao-existe");
+    const r = await validateOpenRouterKey("sk-or-...iste");
     expect(r.ok).toBe(false);
     expect(r.ok === false && r.error).toBe("auth_failed_401");
   });
@@ -80,5 +105,83 @@ describe("validateOpenRouterKey", () => {
     );
     await validateOpenRouterKey("sk-or-v1-boa");
     expect(chamadas[0]).toContain("/api/v1/key");
+  });
+});
+
+describe("a base do OpenRouter vem de OPENROUTER_BASE_URL", () => {
+  const raiz = "https://gateway.interno.exemplo";
+  const comApiV1 = `${raiz}/api/v1`;
+
+  it("a URL chamada muda com a variável e volta ao default sem ela", async () => {
+    // O defeito do #1238: sem a variável, as duas chamadas eram idênticas às de
+    // baixo — a instalação apontada para um gateway batia na openrouter.ai.
+    vi.stubGlobal(
+      "fetch",
+      fetchFalso({ "/key": { status: 200 }, "/models": { status: 200, body: { data: [] } } }),
+    );
+
+    envMock.OPENROUTER_BASE_URL = comApiV1;
+    const comGateway = await validateOpenRouterKey("sk-or-v1-boa");
+    expect(comGateway.ok).toBe(true);
+
+    delete envMock.OPENROUTER_BASE_URL;
+    const semGateway = await validateOpenRouterKey("sk-or-v1-boa");
+    expect(semGateway.ok).toBe(true);
+
+    expect(chamadas).toEqual([
+      `${comApiV1}/key`,
+      `${comApiV1}/models`,
+      "https://openrouter.ai/api/v1/key",
+      "https://openrouter.ai/api/v1/models",
+    ]);
+  });
+
+  it("sem a variável, o endereço é o da OpenRouter", async () => {
+    vi.stubGlobal(
+      "fetch",
+      fetchFalso({ "/key": { status: 200 }, "/models": { status: 200, body: { data: [] } } }),
+    );
+    await validateOpenRouterKey("sk-or-v1-boa");
+    expect(chamadas).toEqual([
+      "https://openrouter.ai/api/v1/key",
+      "https://openrouter.ai/api/v1/models",
+    ]);
+  });
+
+  it("variável vazia (é o que o .env.example entrega) não monta endereço relativo", async () => {
+    // `OPENROUTER_BASE_URL=` sem valor no .env: `"" + "/key"` seria `/key`, uma
+    // URL relativa que o fetch resolve contra a origem do app.
+    vi.stubGlobal(
+      "fetch",
+      fetchFalso({ "/key": { status: 200 }, "/models": { status: 200, body: { data: [] } } }),
+    );
+    envMock.OPENROUTER_BASE_URL = "";
+    await validateOpenRouterKey("sk-or-v1-boa");
+    expect(chamadas).toEqual([
+      "https://openrouter.ai/api/v1/key",
+      "https://openrouter.ai/api/v1/models",
+    ]);
+  });
+
+  it("a variável pode ser a raiz: nenhum /api/v1 é acrescentado", async () => {
+    // Quem aponta para a raiz de um gateway que serve /chat/completions na raiz
+    // tem o mesmo direito aqui, como na prova de crédito da instalação.
+    vi.stubGlobal(
+      "fetch",
+      fetchFalso({ "/key": { status: 200 }, "/models": { status: 200, body: { data: [] } } }),
+    );
+    envMock.OPENROUTER_BASE_URL = raiz;
+    await validateOpenRouterKey("sk-or-v1-boa");
+    expect(chamadas).toEqual([`${raiz}/key`, `${raiz}/models`]);
+  });
+
+  it("barra final na variável não produz barra dupla na junção", async () => {
+    vi.stubGlobal(
+      "fetch",
+      fetchFalso({ "/key": { status: 200 }, "/models": { status: 200, body: { data: [] } } }),
+    );
+    envMock.OPENROUTER_BASE_URL = `${comApiV1}/`;
+    await validateOpenRouterKey("sk-or-v1-boa");
+    expect(chamadas).toEqual([`${comApiV1}/key`, `${comApiV1}/models`]);
   });
 });

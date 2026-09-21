@@ -80,19 +80,23 @@ export function MessageBubble({
   // sem nome: o dono lia a conversa como se tudo tivesse sido digitado no CRM.
   // Os rótulos passam por t() no render (ver dicionario.ts para o espanhol).
   //
-  // NÃO HÁ RAMO PARA `'automation'`. O CHECK do banco aceita o valor e o union
-  // de `Message` o declara, mas nenhuma linha de app/, lib/ ou workers/ o
-  // grava: as ações de automação chamam `sendMessageHandler` com
-  // `actor.type === "webhook_source"`, e `_handler.ts` carimba `'ai'` em tudo
-  // que não é `"user"`. Um ramo aqui seria controle decorativo — a tela
-  // prometendo uma distinção que o motor não faz. Carimbar `'automation'` na
-  // origem é decisão de produto com efeito colateral medido (o dedup de eco da
-  // ingestão de canal filtra `sent_via in ('ai','user')`, e o valor novo
-  // duplicaria a mensagem na conversa), então fica para uma issue própria.
-  // Vigiado nas duas direções por tests/unit/rotulo-de-origem-tem-emissor.
+  // `'automation'` é a categoria de quem não é pessoa nem IA: regra de
+  // automação, texto fixo do follow-up e lembrete de agenda (#652, decidida pelo
+  // mantenedor em 16/09). Enquanto ninguém gravava o valor, um ramo aqui seria
+  // controle decorativo — a tela oferecendo uma distinção que o motor não fazia.
+  // O carimbo vive em `origemDaMensagem` (`app/api/v1/messages/_handler.ts`) e o
+  // par é vigiado nas duas direções por tests/unit/rotulo-de-origem-tem-emissor.
   const senderLabel = (() => {
     if (!isOutbound) return null;
     if (message.sent_via === "ai") return "IA";
+    // A REGRA falou, e não a IA: texto fixo de automação, follow-up ou lembrete
+    // de agenda (#652). O ramo passou a existir porque o valor passou a ser
+    // gravado — antes dele, um rótulo aqui seria promessa sem dado atrás.
+    if (message.sent_via === "automation") return "Automação";
+    // A integração falou, a IA não. Sem este ramo a bolha omite a autoria e o
+    // dono lê a conversa como se tudo tivesse saído do CRM — que é o defeito do
+    // #866 visto de dentro da tela.
+    if (message.sent_via === "system") return "Sistema";
     if (message.sent_via === "external_device") return "Celular";
     if (message.sent_via === "user" || message.sent_via === "crm") {
       // "Você" exige as DUAS pontas: saber quem lê e saber quem enviou. Falta
@@ -149,6 +153,11 @@ export function MessageBubble({
         </button>
       )}
       <div
+        // Identidade, não aparência. O e2e de citação contava bolhas por
+        // `[class*='rounded-2xl']`, e qualquer componente novo com a mesma
+        // classe utilitária entrava na conta — foi assim que o painel flutuante
+        // fez a spec achar que havia mensagem onde não havia (issue #1318).
+        data-testid="message-bubble"
         className={cn(
           "max-w-[75%] text-sm",
           isBareSticker

@@ -5,7 +5,7 @@ import type { ToolSet } from '../edge/llm/run-model-call';
 import type { LeadContext, LeadContextResult } from '../edge/crm/get-lead-context';
 import type { PublishedAgentConfig } from './agent-config';
 import type { LeadCheckpointRow } from './inbound-turn';
-import { temFerramentaDeAgenda } from './inbound-turn';
+import { ferramentasDeAgendaDoAgente, temFerramentaDeAgenda } from './inbound-turn';
 import {
   evaluateBeforeSend,
   type GateContext,
@@ -123,16 +123,16 @@ export async function previewGateContext(
     // quem afina o prompt testar contra outro sistema.
     agenda: {
       active: temFerramentaDeAgenda(p.agent.toolIds),
-      podeMarcar: p.agent.toolIds.includes('crm_book_appointment'),
+      ferramentas: ferramentasDeAgendaDoAgente(p.agent.toolIds),
       toolCalledThisTurn: false,
     },
     internalVocabularyEnforced: true,
   };
 }
-const SCENARIO_READS = new Set([
+export const SCENARIO_READS = new Set([
   'crm_list_pipelines',
   'crm_list_stages',
-  'crm_list_appointment_types',
+  'crm_list_event_types',
   'crm_find_free_slots',
 ]);
 /** Unknown tools fail closed. A write proposal never calls its original execute. */

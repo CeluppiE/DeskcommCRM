@@ -15,7 +15,9 @@ import {
 } from "@/components/ui/select";
 import { updateTenant } from "@/app/actions/settings/updateTenant";
 import { useT } from "@/hooks/i18n/useT";
+import { IDIOMAS_VISIVEIS } from "@/lib/i18n/registro";
 import { MOEDAS_SERVIDAS, simboloDaMoeda, type MoedaServida } from "@/lib/money";
+import { paisesOferecidos } from "@/lib/legal/perfil-do-pais";
 import { tenantSchema, type Locale, type TenantInput } from "@/lib/schemas/settings";
 
 interface Props {
@@ -23,20 +25,19 @@ interface Props {
 }
 
 const TIMEZONES = [
+  "Africa/Luanda",
   "America/Sao_Paulo",
   "America/Manaus",
   "America/Belem",
   "America/Recife",
   "America/Fortaleza",
+  "Europe/Lisbon",
   "UTC",
 ];
 
 export function TenantForm({ initial }: Props) {
   const t = useT();
   const [form, setForm] = useState<TenantInput>(initial);
-  const [reasonsText, setReasonsText] = useState(
-    (initial.lost_reasons_extra ?? []).join(", "),
-  );
   const [isPending, startTransition] = useTransition();
 
   function set<K extends keyof TenantInput>(key: K, value: TenantInput[K]) {
@@ -45,12 +46,7 @@ export function TenantForm({ initial }: Props) {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const reasons = reasonsText
-      .split(",")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
-    const candidate = { ...form, lost_reasons_extra: reasons };
-    const parsed = tenantSchema.safeParse(candidate);
+    const parsed = tenantSchema.safeParse(form);
     if (!parsed.success) {
       toast.error(t("Dados inválidos."));
       return;
@@ -126,8 +122,11 @@ export function TenantForm({ initial }: Props) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="pt-BR">Português (BR)</SelectItem>
-                <SelectItem value="es">Español</SelectItem>
+                {IDIOMAS_VISIVEIS.map(({ codigo, nomeNativo }) => (
+                  <SelectItem key={codigo} value={codigo}>
+                    {nomeNativo}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -153,6 +152,26 @@ export function TenantForm({ initial }: Props) {
             </p>
           </div>
           <div className="space-y-2">
+            <Label htmlFor="country">{t("País")}</Label>
+            <Select value={form.country ?? "BR"} onValueChange={(v) => set("country", v)}>
+              <SelectTrigger id="country">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {paisesOferecidos().map((pais) => (
+                  <SelectItem key={pais.codigo} value={pais.codigo}>
+                    {pais.nome}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                "De onde saem o documento do contato, a lei citada no documento de acesso e o prazo em dias úteis. Só aparecem países com a lei revisada — a lista é curta de propósito.",
+              )}
+            </p>
+          </div>
+          <div className="space-y-2">
             <Label htmlFor="media_retention_days">{t("Retenção de mídia (dias)")}</Label>
             <Input
               id="media_retention_days"
@@ -172,19 +191,6 @@ export function TenantForm({ initial }: Props) {
               onChange={(e) => set("privacy_policy_url", e.target.value || null)}
             />
           </div>
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="lost_reasons">{t("Motivos de perda extras (separados por vírgula)")}</Label>
-          <Input
-            id="lost_reasons"
-            value={reasonsText}
-            onChange={(e) => setReasonsText(e.target.value)}
-            placeholder={t("ex: Sem orçamento, Concorrente")}
-          />
-          <p className="text-xs text-muted-foreground">
-            {t("Adicionados ao set padrão. Cada pipeline pode ter seus próprios motivos.")}
-          </p>
         </div>
 
         <div className="flex sm:justify-end">

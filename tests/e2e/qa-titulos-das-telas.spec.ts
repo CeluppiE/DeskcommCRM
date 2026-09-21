@@ -51,6 +51,10 @@ const TELAS: ReadonlyArray<readonly [string, string]> = [
   ["/app/analise", "Análise"],
   ["/app/products", "Produtos"],
   ["/app/connections", "Conexões"],
+  // A tela do aviso de caso (onda 8). Entra aqui porque a lista é FIXA: rota
+  // fora dela nunca é medida, e uma tela sem `metadata.title` herda o título
+  // default do layout, que é a frase de venda inteira da landing.
+  ["/app/ai/cases/avisos", "Aviso no WhatsApp"],
 ];
 
 test("as telas do app dizem o próprio nome na aba, e nenhuma cai no título da landing", async ({

@@ -104,4 +104,31 @@ describe("reconciliação compartilhada, sem importar títulos nem apagar convid
       { email: "new@example.test", responseStatus: "needsAction" },
     ]);
   });
+  it("o e-mail da ficha entra no PATCH mesmo quando o grupo guest só mudou o convidado", () => {
+    const b = structuredClone(base);
+    b.remote.guest = hash("old@example.test");
+    const patch = delta(
+      {
+        ...a,
+        guest_email: "new@example.test",
+        contact_email: "lead@clinica.test",
+        contact_nome: "Ian",
+      },
+      {
+        ...event,
+        attendees: [
+          { email: "old@example.test", responseStatus: "accepted" },
+          { email: "owner@example.test", organizer: true, responseStatus: "accepted" },
+        ],
+      },
+      b,
+      ["guest"],
+      false,
+    );
+    expect(patch.attendees).toEqual([
+      { email: "owner@example.test", organizer: true, responseStatus: "accepted" },
+      { email: "new@example.test", responseStatus: "needsAction" },
+      { email: "lead@clinica.test", responseStatus: "needsAction", displayName: "Ian" },
+    ]);
+  });
 });

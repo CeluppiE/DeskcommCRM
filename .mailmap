@@ -94,3 +94,23 @@ Rafael Melgaço <rafael@maudibrasil.com.br> <rafael@automatiklabs.com.br>
 # mergeados no mesmo dia sem nada no perfil — e escolheu creditar.
 # A regra geral do arquivo (só o provado pela API) NÃO muda por causa desta linha.
 automatikpg-ux <automatikpg@gmail.com> root <root@vpsbr-15867794.vpshostgator.com.br>
+
+# `Pessoa <alguem@fork.dev>` NÃO é uma pessoa: é a identidade de MENTIRA que os
+# testes de shell do kit usavam para montar repositórios descartáveis. Em
+# 10/09/2026, entre 07:48 e 07:51, uma dessas escritas caiu no `.git/config` do
+# checkout de desenvolvimento do dono e passou a assinar tudo que saía dele.
+#
+# PROVA (medida em 18/09/2026, na triagem que achou o vazamento, e registrada no
+# PR #1232, que tirou a causa dos testes):
+#   git log origin/main --author='alguem@fork.dev' --format=%h | wc -l        # 829
+#   git log origin/main --since=2026-09-10 --no-merges --format=%h | wc -l    # 987
+# O primeiro commit assim é de 10/09 07:51, 16 minutos depois de nascer o
+# `tests/shell/deskcomm-contribuir.test.sh` (582964015, 07:35), que gravava
+# exatamente esse par nome/e-mail. O e-mail não existe e a API do GitHub não
+# associa conta nenhuma a ele — a prova aqui é a origem do valor no repositório,
+# não o perfil.
+#
+# Reescrever o histórico para corrigir a autoria está fora de questão (seriam
+# 829 commits já publicados). O `.mailmap` mostra o autor verdadeiro na leitura,
+# que é o que `git shortlog` e `git log` usam.
+melgarafael <rafael@maudibrasil.com.br> Pessoa <alguem@fork.dev>

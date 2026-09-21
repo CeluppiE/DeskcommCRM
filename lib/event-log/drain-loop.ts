@@ -3,8 +3,9 @@
  *
  * ─── Por que ele existe ──────────────────────────────────────────────────────
  *
- * Os 12 handlers de `register-handlers.ts` (mídia, branding, follow-up…) só
- * tinham UM acionador: o cron `app/api/v1/cron/event-log-drain`, agendado
+ * Os handlers de `register-handlers.ts` (mídia, branding, follow-up, aviso ao
+ * suporte…) só tinham UM acionador: o cron `app/api/v1/cron/event-log-drain`,
+ * agendado
  * `* * * * *` em `docker/scheduler/entrypoint.sh`. Um tick por minuto.
  *
  * Isso é caro quando a cadeia tem mais de um salto. Medido nesta VPS em
@@ -43,6 +44,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import type { Logger } from '@/lib/agent-engine/obs/logger';
+import { sincronizarAvisoDoLacoDeEventLog } from '@/lib/event-log/aviso-do-laco';
 // `import type` e nunca import de valor: em runtime esta linha desaparece, e é
 // isso que mantém a cadeia que termina em `@/lib/env` fora do boot do worker.
 import type { DrainSummary } from '@/lib/event-log/drain';
@@ -58,7 +60,7 @@ export interface EventLogDrainKnobs {
 
 // Assinatura escrita à mão em vez de `typeof import(...)`: a regra
 // `consistent-type-imports` proíbe a anotação `import()`. A atribuição em
-// `carregarDeps` é o que mantém as duas honestas — divergiu, o typecheck acusa.
+// `carregarDepsDoLaco` é o que mantém as duas honestas — divergiu, o typecheck acusa.
 type DrainFn = (admin: SupabaseClient, opts?: { limit?: number }) => Promise<DrainSummary>;
 
 interface Deps {
@@ -67,22 +69,105 @@ interface Deps {
 }
 
 /**
+ * A marca que o gate de publicação procura no log do worker.
+ *
+ * Existe porque `/healthz` de pé NÃO prova laço carregado: na #648 o `import`
+ * de `@react-pdf/hyphenate` estourava só sob `tsx`, `carregarDeps()` engolia o
+ * erro num `log.warn` e o worker seguiu saudável por dez dias com o event_log
+ * parado (issue #604).
+ *
+ * O texto é CONTRATO entre três lugares: este arquivo,
+ * `scripts/sonda-do-laco-de-event-log.ts` e o job do
+ * `.github/workflows/publish-image.yml`. O teste
+ * `tests/unit/gate-de-publicacao-do-laco-de-event-log.test.ts` compara os dois
+ * últimos com este literal — mudar a marca sem mudar quem a procura deixa o
+ * CI vermelho, em vez de deixar o gate cego em silêncio.
+ */
+export const MARCA_LACO_CARREGADO = 'event-log drain: laço carregado';
+
+/** Estado do laço para quem pergunta de fora — hoje, o `/healthz` do worker. */
+export interface ProntidaoDoLacoDeEventLog {
+  /** `true` só depois de a cadeia inteira (drain + handlers + admin) montar. */
+  carregado: boolean;
+  /** Motivo curto quando `carregado: false`; `null` quando carregou. */
+  motivo: string | null;
+}
+
+const AINDA_NAO_TENTOU = 'o laço ainda não tentou carregar';
+
+let prontidao: ProntidaoDoLacoDeEventLog = {
+  carregado: false,
+  motivo: AINDA_NAO_TENTOU,
+};
+
+/**
+ * Cópia do estado. Nunca lança: o `/healthz` não pode ser o motivo de o worker
+ * cair — quem está degradado não ganha o direito de derrubar o resto.
+ */
+export function prontidaoDoLacoDeEventLog(): ProntidaoDoLacoDeEventLog {
+  return { carregado: prontidao.carregado, motivo: prontidao.motivo };
+}
+
+/** Só para teste: volta ao estado de quem ainda não tentou carregar. */
+export function _reiniciarProntidaoDoLaco(): void {
+  prontidao = { carregado: false, motivo: AINDA_NAO_TENTOU };
+}
+
+/**
  * Carrega a cadeia do drain sem deixar que ela derrube o worker.
  *
  * `null` = o laço não roda (e o porquê já foi para o log). Nunca lança.
+ *
+ * É exportada de propósito: o gate de publicação roda ESTA função, dentro da
+ * imagem, antes de publicar (`scripts/sonda-do-laco-de-event-log.ts`). Era
+ * exatamente o caminho de boot que ficou quebrado dez dias com o teste verde —
+ * um gate que exercitasse uma cópia da cadeia poderia ficar verde enquanto a
+ * produção quebrava.
  */
-async function carregarDeps(log: Logger): Promise<Deps | null> {
+export async function carregarDepsDoLaco(log: Logger): Promise<Deps | null> {
+  let adminParaAviso: SupabaseClient | null = null;
+
   try {
+    // O admin sobe PRIMEIRO de propósito: se um import posterior do drain ou dos
+    // handlers quebrar, ainda existe um canal independente para contar o
+    // incidente na Central. Se o próprio admin não subir, o /healthz + log.error
+    // continuam sendo as redes de segurança e a notificação vira best-effort.
+    const { createAdminClient } = await import('@/lib/supabase/admin');
+    adminParaAviso = createAdminClient();
     const { drainEventLog } = await import('@/lib/event-log/drain');
     const { ensureHandlersRegistered } = await import('@/lib/event-log/register-handlers');
-    const { createAdminClient } = await import('@/lib/supabase/admin');
     ensureHandlersRegistered();
-    return { drainEventLog, admin: createAdminClient() };
+
+    const deps: Deps = { drainEventLog, admin: adminParaAviso };
+    // A prontidão sai ANTES de resolver o aviso antigo: ela depende só das deps,
+    // e o round-trip até a Central não pode deixar o /healthz dizendo
+    // `carregado:false` com o laço já montado.
+    prontidao = { carregado: true, motivo: null };
+    log.info(MARCA_LACO_CARREGADO, { carregado: true });
+    await sincronizarAvisoDoLacoDeEventLog(adminParaAviso, 'saudavel', log);
+    return deps;
   } catch (err) {
-    log.warn(
-      'event-log drain OFF — não consegui montar o admin client; os handlers seguem só pelo cron event-log-drain',
-      { error: (err instanceof Error ? err.message : String(err)).slice(0, 300) },
+    const motivo = (err instanceof Error ? err.message : String(err)).slice(0, 300);
+    prontidao = { carregado: false, motivo };
+    // `error`, e não o `warn` de antes: laço que não carrega é INCIDENTE, não
+    // aviso. Com `warn` o defeito da #648 era indistinguível de ruído por dez
+    // dias; agora ele é o que o gate procura no log e o que o `/healthz`
+    // publica em `event_log_drain`.
+    //
+    // Não nomeia mais "admin client": `drain`, `register-handlers` OU o admin
+    // podem ter sido a dependência que falhou. Acusar uma só manda o operador
+    // investigar o componente errado.
+    log.error(
+      'event-log drain OFF — falha ao carregar dependências do laço; os handlers seguem só pelo cron event-log-drain',
+      { error: motivo },
     );
+
+    // Sem o admin client não há por onde avisar a Central: tentar de novo
+    // falharia pelo mesmo motivo. O /healthz e o log.error acima seguem sendo
+    // o sinal.
+    if (adminParaAviso) {
+      await sincronizarAvisoDoLacoDeEventLog(adminParaAviso, 'degradado', log);
+    }
     return null;
   }
 }
@@ -120,7 +205,7 @@ export async function runEventLogDrainLoop(
   log: Logger,
   signal: AbortSignal,
 ): Promise<void> {
-  const deps = await carregarDeps(log);
+  const deps = await carregarDepsDoLaco(log);
   if (!deps) return;
 
   while (!signal.aborted) {

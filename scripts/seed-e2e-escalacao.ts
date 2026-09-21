@@ -21,6 +21,7 @@ import pg from "pg";
 
 import { openCase } from "../lib/agent-engine/agent/human-cases";
 import { performHumanHandoff } from "../lib/agent-engine/agent/human-handoff";
+import { montarBriefingDaPassagem } from "../lib/escalacao/briefing-da-passagem";
 import { anunciarDestino, credenciaisSupabaseDeTeste } from "./lib/env-de-teste";
 
 // `process.env` VENCE o `.env.local` (ver scripts/lib/env-de-teste.ts).
@@ -202,9 +203,25 @@ async function main(): Promise<void> {
     orgId,
     contatoId,
   ]);
+  // OS DOIS `ref_kind`, e não só o novo. O aviso de passagem passou a nascer com
+  // `ref_kind='conversation'` (é o que dá o botão "Abrir conversa" na Central);
+  // um `delete` que só olhasse `'contact'` viraria NO-OP e o item sobreviveria
+  // entre corridas — e a asserção "a segunda passagem nasce" passaria POR SOBRA,
+  // que é exatamente o defeito que este bloco de reset existe para impedir.
+  // Trocar em vez de somar teria o mesmo problema ao contrário: item de clone
+  // antigo continua gravado com `'contact'`.
   await pool.query(
-    `delete from agent_inbox_items where organization_id = $1 and ref_kind = 'contact' and ref_id = $2`,
-    [orgId, contatoId],
+    `delete from agent_inbox_items
+      where organization_id = $1
+        and ((ref_kind = 'contact' and ref_id = $2) or (ref_kind = 'conversation' and ref_id = $3))`,
+    [orgId, contatoId, conversaId],
+  );
+  // A passagem em si também entra no reset: ela é o FATO, e um fato de ontem na
+  // tela de hoje faria o cartão aparecer antes de esta corrida ter produzido
+  // passagem nenhuma.
+  await pool.query(
+    `delete from passagens_de_atendimento where organization_id = $1 and conversation_id = $2`,
+    [orgId, conversaId],
   );
   // As atividades TAMBÉM entram no reset, e antes de `performHumanHandoff`.
   // Sem isto o E2E passaria com sobra da corrida anterior: a asserção "a volta
@@ -281,8 +298,11 @@ async function main(): Promise<void> {
     throw new Error("as travas da passagem não ficaram ligadas — o cenário não vale");
   }
 
+  const passagem = await semearPassagemComContexto(orgId, sessaoId);
+
   const proximo = {
     ...creds,
+    passagem,
     escalacao: {
       conversation_id: conversaId,
       contact_id: contatoId,
@@ -299,6 +319,164 @@ async function main(): Promise<void> {
     `[seed-escalacao] conversa=${conversaId} chamado=${chamado.caseId} negocio=${negocioId ?? "(nenhum)"} — travas ligadas`,
   );
   await pool.end();
+}
+
+/**
+ * O CENÁRIO DA PASSAGEM COM CONTEXTO — contato PRÓPRIO, de propósito.
+ *
+ * ## Por que não reusar o contato do bloco `escalacao`
+ *
+ * Aquele bloco é lido por `escalacao-ciclo.spec.ts` e por
+ * `encerramento-atendimento.spec.ts`, e a chamada dele a `performHumanHandoff`
+ * é a ANTIGA, sem `passagem` — ou seja, sem linha em
+ * `passagens_de_atendimento` e sem cartão no fio da conversa. Acrescentar o
+ * cartão lá mudaria o que aquelas duas specs veem dentro da mesma conversa.
+ * Um contato só para este cenário custa quatro linhas e não move nada.
+ *
+ * ## O que aqui é REAL
+ *
+ * Tudo o que decide o conteúdo do cartão: `montarBriefingDaPassagem` (a mesma
+ * função que o motor chama) e `performHumanHandoff` com o argumento
+ * `passagem` (que grava por `registrarPassagem`, com o schema e as colunas de
+ * produção). O que está encurtado é só o GATILHO — a decisão do modelo de
+ * chamar `request_human_handoff` —, e ele exigiria provedor e canal de verdade
+ * para produzir exatamente o mesmo `declaradoPeloModelo` que está escrito aqui.
+ *
+ * Idempotente: reexecutar apaga o episódio anterior deste contato e refaz.
+ */
+async function semearPassagemComContexto(
+  orgId: string,
+  sessaoId: string,
+): Promise<{
+  conversation_id: string;
+  contact_id: string;
+  contact_name: string;
+  motivo_frase: string;
+  fala_do_cliente: string;
+  tentativa: string;
+}> {
+  const TELEFONE_DA_PASSAGEM = "+5531955554444";
+  const NOME_DA_PASSAGEM = "Passagem E2E";
+  const FALA_DO_CLIENTE = "Isso não está resolvendo, quero falar com um atendente de verdade.";
+  const TENTATIVA = "Ofereci o passo a passo do autoatendimento";
+
+  const { data: contatoExistente } = await admin
+    .from("contacts")
+    .select("id")
+    .eq("organization_id", orgId)
+    .eq("phone_number", TELEFONE_DA_PASSAGEM)
+    .maybeSingle();
+  const contatoId = contatoExistente
+    ? (contatoExistente as { id: string }).id
+    : await idDe(
+        admin
+          .from("contacts")
+          .insert({
+            organization_id: orgId,
+            phone_number: TELEFONE_DA_PASSAGEM,
+            display_name: NOME_DA_PASSAGEM,
+            name: NOME_DA_PASSAGEM,
+          })
+          .select("id")
+          .single(),
+        "contacts (passagem)",
+      );
+
+  const { data: convExistente } = await admin
+    .from("conversations")
+    .select("id")
+    .eq("organization_id", orgId)
+    .eq("contact_id", contatoId)
+    .maybeSingle();
+  const conversaId = convExistente
+    ? (convExistente as { id: string }).id
+    : await idDe(
+        admin
+          .from("conversations")
+          .insert({
+            organization_id: orgId,
+            contact_id: contatoId,
+            channel_session_id: sessaoId,
+            status: "ai_handling",
+            assignee_kind: "ai",
+            last_inbound_at: new Date().toISOString(),
+          })
+          .select("id")
+          .single(),
+        "conversations (passagem)",
+      );
+
+  // Reset do episódio — só o que ESTE bloco cria.
+  await pool.query(
+    `delete from passagens_de_atendimento where organization_id = $1 and conversation_id = $2`,
+    [orgId, conversaId],
+  );
+  await pool.query(
+    `delete from agent_inbox_items
+      where organization_id = $1
+        and ((ref_kind = 'contact' and ref_id = $2) or (ref_kind = 'conversation' and ref_id = $3))`,
+    [orgId, contatoId, conversaId],
+  );
+  await pool.query(
+    `update conversations
+        set assigned_to_user_id = null, assignee_kind = 'ai', status = 'ai_handling',
+            bot_silenced_until = null
+      where id = $1`,
+    [conversaId],
+  );
+  await pool.query(`update contacts set force_human = false where id = $1`, [contatoId]);
+
+  // O briefing, pela função REAL do motor.
+  const briefing = montarBriefingDaPassagem({
+    declaradoPeloModelo: {
+      cliente_quer: "falar com uma pessoa sobre a troca do produto",
+      tentativas: [{ o_que: TENTATIVA, desfecho: "o cliente disse que já tinha tentado" }],
+    },
+    checkpoint: {
+      rolling_summary: "Cliente comprou há 8 dias e quer trocar por outro tamanho.",
+      commitments: ["enviar o código da troca"],
+      objections: ["achou o prazo longo"],
+      next_action: "confirmar o endereço de coleta",
+      declaracao: null,
+    },
+    pendentesDoCliente: [FALA_DO_CLIENTE],
+    motivo: { codigo: "requested_human", texto: "o cliente pediu atendimento humano" },
+  });
+
+  await performHumanHandoff(
+    pool,
+    { tenantId: orgId, leadId: contatoId, conversationId: conversaId },
+    {
+      reason: "o cliente pediu para falar com uma pessoa",
+      conversationSummary: briefing.body,
+      passagem: {
+        origem: "ferramenta_do_modelo",
+        motivoCodigo: "requested_human",
+        briefing,
+      },
+      log: logMudo,
+    },
+  );
+
+  const { rows } = await pool.query<{ n: string }>(
+    `select count(*)::text as n from passagens_de_atendimento
+      where organization_id = $1 and conversation_id = $2`,
+    [orgId, conversaId],
+  );
+  if (rows[0]?.n !== "1") {
+    throw new Error(
+      `a passagem não foi gravada (linhas=${rows[0]?.n ?? "?"}) — o cenário do cartão não vale`,
+    );
+  }
+
+  return {
+    conversation_id: conversaId,
+    contact_id: contatoId,
+    contact_name: NOME_DA_PASSAGEM,
+    motivo_frase: "O cliente pediu para falar com uma pessoa",
+    fala_do_cliente: FALA_DO_CLIENTE,
+    tentativa: TENTATIVA,
+  };
 }
 
 main().catch(async (err) => {

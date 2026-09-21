@@ -84,13 +84,45 @@ function publicarNoProcesso(env: Record<string, string>): Record<string, string>
   return env;
 }
 
-// Porta do dev server sob teste. Default 3001; sobrescreva com E2E_PORT quando
-// a 3001 já estiver ocupada por outro checkout/worktree.
+/**
+ * O `.env.e2e` é publicado ANTES de a porta ser decidida — e a ordem é o
+ * conserto, não estilo.
+ *
+ * ## O defeito, medido em 2026-09-18 na bancada do épico "casos vivos"
+ *
+ * `publicarNoProcesso` era chamado lá embaixo, dentro de `webServer.env`, e
+ * `PORT` era lido aqui em cima. O Playwright carrega este arquivo DUAS vezes —
+ * uma no processo que orquestra (e sobe o `webServer`) e outra em cada worker,
+ * que herda o `process.env` já publicado pela primeira. Resultado, com
+ * `E2E_PORT=3107` escrito no `.env.e2e` e ausente no shell:
+ *
+ *   processo principal → PORT 3001 → sobe `next start --port 3001`, checa 3001
+ *   worker             → PORT 3107 → `page.goto` em localhost:3107
+ *
+ * Os dois lados do mesmo arquivo resolvendo a mesma chave para valores
+ * diferentes — exatamente o modo de falha que o comentário do `webServer` já
+ * documenta para `INTERNAL_SECRET`, aqui aplicado à PORTA. O sintoma é
+ * `ERR_CONNECTION_REFUSED` no primeiro `goto` com um servidor saudável no ar,
+ * e ele não aponta para lugar nenhum perto daqui.
+ *
+ * `scripts/gerar-env-e2e.sh` não escreve `E2E_PORT` hoje, então o CI nunca
+ * pisou nisto — mas o arquivo já grava `NEXT_PUBLIC_APP_URL` COM a porta
+ * dentro, e quem põe as duas juntas (qualquer bancada em porta própria) cai na
+ * armadilha. Publicar primeiro faz o `.env.e2e` ser a fonte única também para
+ * a porta; o shell continua vencendo, porque `publicarNoProcesso` só preenche
+ * chave ausente.
+ */
+const ENV_DO_E2E = publicarNoProcesso(envDoE2E());
+
+// Porta do dev server sob teste. Default 3001; sobrescreva com E2E_PORT (no
+// shell ou no próprio `.env.e2e`) quando a 3001 já estiver ocupada por outro
+// checkout/worktree.
 const PORT = process.env.E2E_PORT ?? "3001";
 const BASE_URL = `http://localhost:${PORT}`;
 
 export default defineConfig({
   testDir: "./tests/e2e",
+  globalTeardown: "./tests/e2e/global-teardown.ts",
   timeout: 30_000,
   fullyParallel: false,
   /**
@@ -145,7 +177,7 @@ export default defineConfig({
     // `publicarNoProcesso` acima que garante que o `process.env` do runner tenha
     // o que aquele conserto precisa: sem ele, num worktree sem `.env.local`, o
     // seed não tinha NENHUMA das duas fontes.
-    env: publicarNoProcesso(envDoE2E()),
+    env: ENV_DO_E2E,
     url: BASE_URL,
     // false: reusar um server que já ocupa a porta pode ser OUTRO processo
     // (ex.: bundle do Remotion na 3000) — o teste precisa do NOSSO next start.

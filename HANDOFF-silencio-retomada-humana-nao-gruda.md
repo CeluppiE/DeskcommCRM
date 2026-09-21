@@ -125,7 +125,7 @@ processou a request como um `UPDATE ... 0 rows` (silencioso) ou algo mais.
   `.request_human_handoff`) — descrições reforçadas: citar o nome de alguém
   não substitui chamar a ferramenta no mesmo turno.
 - `typecheck` 0, `lint` 0, `tests/unit/operador-*.test.ts` +
-  `tests/unit/handoff-fernando-fiacao.test.ts` + `tests/unit/entrega-de-capacidade.test.ts`
+  `tests/unit/handoff-fantasma-fiacao.test.ts` + `tests/unit/entrega-de-capacidade.test.ts`
   → 55/55 verdes.
 - Card da lead (`crm_leads.id = <id-3>`) movido
   manualmente para o estágio `repassado-ao-atendente`, com atividade registrada em

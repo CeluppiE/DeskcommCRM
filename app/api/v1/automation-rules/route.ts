@@ -79,6 +79,10 @@ export async function POST(req: NextRequest): Promise<Response> {
       trigger_event: parsed.data.trigger_event,
       conditions: parsed.data.conditions,
       actions: safeActions,
+      // O gatilho de data do funil (#989) precisa que a regra guarde o funil, o
+      // campo e o N assinado — sem isso a varredura não sabe onde olhar. Os
+      // outros gatilhos gravam o objeto vazio do default.
+      trigger_config: parsed.data.trigger_config ?? {},
     })
     .select("*")
     .single();

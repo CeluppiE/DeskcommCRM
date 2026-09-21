@@ -569,9 +569,9 @@ describe('sendMessageHandler — os 6 desfechos do envio', () => {
  * o servidor MCP entregam ao handler para um token sem escopo de agente. Assim a
  * função e o ponto de uso ficam presos no mesmo caso.
  *
- * ⚠️ `sent_via` NÃO é asserido de propósito. Hoje o token sai como `"ai"`, o que
- * contradiz o próprio argumento do PR — é defeito conhecido, e prendê-lo aqui
- * cimentaria a atribuição errada.
+ * `sent_via` do token PASSOU a ser asserido — e é a prova fail-first do fix: o
+ * caso abaixo nasceu VERMELHO contra o código de antes (a linha gravava `"ai"`,
+ * contra o próprio argumento deste arquivo) e é ele que a #866 faz passar.
  */
 describe('sendMessageHandler — token de servidor (api_token) no ponto de uso', () => {
   const TOKEN_ID = '77777777-7777-4777-8777-777777777777';
@@ -612,5 +612,30 @@ describe('sendMessageHandler — token de servidor (api_token) no ponto de uso',
       'o token atravessou o modo de teste do canal — pular o gate é privilégio de pessoa, não de integração',
     ).toMatchObject({ status: 'failed', error_code: 'pre_go_live' });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('grava sent_via = "system": a integração não é a IA', async () => {
+    // A coluna tem CHECK de conjunto e `system` está nele desde sempre — e
+    // nenhuma linha de app/, lib/ ou workers/ o gravava: o ternário do handler
+    // dizia `ai` para tudo que não fosse pessoa. Com isso, o envio de uma
+    // integração entrava na leitura de "quanto a IA falou" (`supabase/baseline.sql`:
+    // `por_ia = count(*) filter (where m.sent_via = 'ai')`) e recebia o mesmo
+    // álibi de eco que a ingestão só concede a envio NASCIDO aqui.
+    //
+    // O valor medido é o da LINHA, não o da decisão: quem grava errado é o
+    // INSERT, e é ele que a tela do inbox lê depois.
+    wahaConfigured(false);
+    vi.stubGlobal('fetch', vi.fn());
+
+    const msg = await sendMessageHandler(
+      makeSupabase(conversationRow()),
+      { ...ctx, actor: tokenDeServidor },
+      textInput(),
+    );
+
+    expect(
+      msg.sent_via,
+      'o envio da integração nasceu carimbado como `ai`: o balão mostra "IA" para o que a integração mandou e a contagem de mensagens da IA conta envio que nenhum algoritmo escreveu',
+    ).toBe('system');
   });
 });

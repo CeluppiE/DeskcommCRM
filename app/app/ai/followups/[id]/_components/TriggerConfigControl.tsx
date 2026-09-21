@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useUpdateTriggerConfig } from "@/hooks/followup/useFollowupFlow";
-import { useEtapasDeGatilho } from "@/hooks/followup/useEtapasDeGatilho";
+import { etapasPorFunil, nomeDaEtapa, useEtapasDeGatilho } from "@/hooks/followup/useEtapasDeGatilho";
 
 /**
  * Controle de `trigger_config` do pointer (Task 8.5) — como o fluxo começa.
@@ -215,18 +215,9 @@ export function TriggerConfigControl({ flowId, triggerConfig }: Props) {
     });
   };
 
-  // Agrupa por funil preservando a ordem em que as etapas chegaram (ordem do
-  // funil) — duas etapas homônimas em funis diferentes precisam do cabeçalho
+  // Duas etapas homônimas em funis diferentes precisam do cabeçalho do grupo
   // para serem distinguíveis.
-  const funis: Array<{ id: string; nome: string; etapas: typeof etapas }> = [];
-  for (const etapa of etapas) {
-    let grupo = funis.find((f) => f.id === etapa.pipelineId);
-    if (!grupo) {
-      grupo = { id: etapa.pipelineId, nome: etapa.pipelineName, etapas: [] };
-      funis.push(grupo);
-    }
-    grupo.etapas.push(etapa);
-  }
+  const funis = etapasPorFunil(etapas);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -276,7 +267,7 @@ export function TriggerConfigControl({ flowId, triggerConfig }: Props) {
                         // isto, escolher entre duas «Em andamento» é adivinhação
                         // — e escolher errado falha calado no motor.
                         <SelectItem key={etapa.stageId} value={etapa.stageId}>
-                          {etapa.stageName} · {etapa.pipelineName}
+                          {nomeDaEtapa(etapa)}
                         </SelectItem>
                       ))}
                     </SelectGroup>

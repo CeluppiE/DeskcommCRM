@@ -34,6 +34,11 @@ let runReadError: { message: string } | null;
 /** Erro a devolver no `update()` de uma tabela específica neste caso. */
 let updateErrorByTable: Partial<Record<string, { message: string }>>;
 /**
+ * Erro a devolver SÓ na escrita das três colunas da rodada do banco (as
+ * cosméticas), para medir que o desfecho não depende delas.
+ */
+let rodadaWriteError: { message: string } | null;
+/**
  * Todo `update()` bem-sucedido, na ordem em que ocorreu — em vez de "a
  * última chamada global" (que esconde qual das DUAS escritas do run_result
  * realmente aconteceu quando a ordem entre elas importa).
@@ -51,6 +56,7 @@ beforeEach(() => {
   runRow = null;
   runReadError = null;
   updateErrorByTable = {};
+  rodadaWriteError = null;
   updates = [];
 
   vi.mocked(createAdminClient).mockReturnValue({
@@ -70,7 +76,15 @@ beforeEach(() => {
         }),
         update: (patch: Record<string, unknown>) => ({
           eq: async () => {
-            const error = updateErrorByTable[table] ?? null;
+            // A escrita da RODADA DO BANCO é reconhecível pelas próprias colunas:
+            // o caso que mede "coluna cosmética não derruba o desfecho" precisa
+            // derrubar SÓ ela, e deixar a que fecha o run passar.
+            const soARodada =
+              "disputa_de_banco" in patch ||
+              "retentativas_do_banco" in patch ||
+              "passada_do_banco" in patch;
+            const error =
+              (soARodada ? rodadaWriteError : null) ?? updateErrorByTable[table] ?? null;
             if (!error) updates.push({ table, ...patch });
             return { error };
           },
@@ -215,6 +229,64 @@ describe("POST /api/v1/system/agent", () => {
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({ action: "system.update_finished", resourceId: RUN_ID }),
     );
+  });
+
+  it("⭐ a rodada do banco que o kit manda chega nas três colunas (corpo PLANO, nomes da rota)", async () => {
+    // O `z.object` descarta chave desconhecida em SILÊNCIO: o corpo que o
+    // `agent.sh` mandava antes (um objeto aninhado em `rodada_do_banco`, com as
+    // chaves `disputa`/`retentativas`/`passada`) passava no parse, os três campos
+    // opcionais chegavam `undefined` e as colunas eram gravadas NULAS em toda
+    // rodada — a tela calada para sempre, que é o silêncio que este PR veio
+    // eliminar. Este caso alimenta o corpo LITERAL que o kit monta agora.
+    runRow = { id: RUN_ID, status: "dispatched", dispatched_at: new Date().toISOString() };
+    const { POST } = await import("./route");
+    const res = await POST(
+      req({
+        kind: "run_result",
+        run_id: RUN_ID,
+        status: "success",
+        log_tail: "ok",
+        disputa_de_banco: true,
+        retentativas_do_banco: 2,
+        passada_do_banco: 3,
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    const escritas = updates.filter((u) => u.table === "system_update_runs");
+    expect(escritas).toHaveLength(2);
+    expect(escritas[0]).toMatchObject({
+      disputa_de_banco: true,
+      retentativas_do_banco: 2,
+      passada_do_banco: 3,
+    });
+    expect(escritas[1]).toMatchObject({ status: "success" });
+  });
+
+  it("coluna da rodada que o banco recusa NÃO derruba o desfecho: o run fecha assim mesmo", async () => {
+    // `42703` (banco anterior à migration da rodada) ou a CHECK recusando o
+    // número: na mesma escrita do `status`, isso virava 500, o `post` do agente
+    // recebia vazio e o run ficava preso em `dispatched` para sempre.
+    rodadaWriteError = { message: "column system_update_runs.passada_do_banco does not exist" };
+    runRow = { id: RUN_ID, status: "dispatched", dispatched_at: new Date().toISOString() };
+    const { POST } = await import("./route");
+    const res = await POST(
+      req({
+        kind: "run_result",
+        run_id: RUN_ID,
+        status: "success",
+        log_tail: "ok",
+        disputa_de_banco: true,
+        retentativas_do_banco: 2,
+        passada_do_banco: 3,
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    const escritas = updates.filter((u) => u.table === "system_update_runs");
+    expect(escritas).toHaveLength(1);
+    expect(escritas[0]).toMatchObject({ status: "success" });
+    expect(escritas[0]?.finished_at).toBeTruthy();
   });
 
   it("quando a leitura do run falha no banco → 500, nunca 404", async () => {

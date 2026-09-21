@@ -14,6 +14,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { extractChangelogRange } from "@/lib/system/changelog";
 import {
   isRunStale,
+  rodadaDoBancoDaLinha,
+  rollbackDesmentidoPeloApp,
   rollbackFoiSuperado,
   sucessoJaInstalado,
   type RunStatus,
@@ -61,7 +63,9 @@ export async function GET(_req: NextRequest): Promise<Response> {
   // rodando.
   const { data: run, error: runError } = await db
     .from("system_update_runs")
-    .select("id, status, last_step, dispatched_at, finished_at, from_version, to_version, log_tail")
+    .select(
+      "id, status, last_step, dispatched_at, finished_at, from_version, to_version, log_tail, disputa_de_banco, retentativas_do_banco, passada_do_banco",
+    )
     .order("dispatched_at", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -96,18 +100,69 @@ export async function GET(_req: NextRequest): Promise<Response> {
     current,
     run,
   );
+  // A mesma prova vale para a TELA, não só para a versão exibida. Enquanto a
+  // falha é o run mais recente, a tela mostra o aviso dela sem o botão de
+  // atualizar — e o único jeito de trocar o run mais recente é justamente
+  // clicar nesse botão. Depois de um deploy por outro caminho, sai versão nova
+  // e o dono lê um aviso de dias atrás, sem saída pela tela (medido em
+  // produção: rollback de 13/09 bloqueando a 1.27.2 em 15/09, com a 1.23.0 no
+  // ar desde 14/09 via `update.sh` no terminal). Vale para `failed` também: o
+  // host reportar uma versão que o run não descreve é deploy posterior, e não o
+  // app preso na versão que quebrou.
+  //
+  // O segundo degrau é a VERSÃO QUE ESTE PROCESSO ESTÁ RODANDO, e ele alcança
+  // o caso que o
+  // primeiro deixa de fora por construção: reinstalar a MESMA versão que
+  // falhou. Ali o host volta a reportar `to_version` — uma das duas do run — e
+  // a prova temporal não separa nada. A imagem separa: num rollback de verdade
+  // quem responde é `from_version`; se quem responde é `to_version`, a versão
+  // nova subiu.
+  //
+  // A fonte é `APP_VERSION`, gravada DENTRO da imagem no build, e não
+  // `APP_IMAGE`: esta vem do `env_file: .env`, e no rollback do `agent.sh` o
+  // `.env` só é corrigido DEPOIS do `up -d` — o contêiner revertido responde
+  // nomeando a versão que falhou (ver o docblock de
+  // `rollbackDesmentidoPeloApp`). Medido em produção (18/09): a 1.33.0 falhou porque as imagens
+  // ainda não estavam no registry, meia hora depois o mesmo `update.sh --force`
+  // instalou a 1.33.0 com o app saudável, e a tela seguiu anunciando a falha —
+  // sem botão, bloqueando a 1.35.0 já publicada.
+  const falhaDesmentidaPeloApp = rollbackDesmentidoPeloApp(
+    run,
+    process.env.APP_VERSION,
+  );
+  const falhaSuperada =
+    (run?.status === "failed_rolled_back" || run?.status === "failed") &&
+    (rollbackSuperado || falhaDesmentidaPeloApp);
   // O outro lado do mesmo silêncio: o run deu CERTO e o host ainda não bateu.
-  // `current_version` segue nomeando a versão antiga por até 5 minutos, e sem
+  // `current_version` segue nomeando a versão antiga por alguns minutos, e sem
   // isto `update_available` continua verdadeiro — a tela volta do reinício
   // oferecendo "Atualizar agora" para a versão que acabou de ser instalada.
-  const acabouDeInstalar = sucessoJaInstalado(version?.updated_at, run?.finished_at, run);
+  //
+  // A janela NÃO promove a `to_version` a "versão no ar": quem afirma versão
+  // instalada é a última que o HOST confirmou, e mais nada. Promover era o
+  // defeito da issue 1101 — com o host calado desde a batida anterior, a tela
+  // anunciava `1.32.0` por tempo indeterminado com o container rodando
+  // `1.23.0`. Aqui a janela esconde o botão e DIZ que a confirmação não chegou;
+  // depois dela, `sucessoJaInstalado` corta a assunção sozinho.
+  const acabouDeInstalar = sucessoJaInstalado(version?.updated_at, run?.finished_at, run, now);
 
+  // Quem pode AFIRMAR versão instalada é o host, e só ele — `current`. O único
+  // run que sobrepõe isso é o rollback: ali o host reporta a versão que QUEBROU
+  // e o run é a única testemunha de qual imagem voltou ao ar.
+  //
+  // O sucesso NÃO entra na lista. Promover o `to_version` de um run
+  // bem-sucedido a "versão no ar" foi o defeito da issue 1101: o `update.sh`
+  // termina bem, o app não sobe na imagem nova, o host nunca mais bate — e a
+  // tela anuncia `1.32.0` indefinidamente com o container rodando `1.23.0`.
+  // Janela de silêncio é uma coisa (`just_updated`, logo abaixo), afirmação de
+  // versão é outra.
   const running =
-    run?.status === "failed_rolled_back" && run.from_version && !rollbackSuperado
+    run?.status === "failed_rolled_back" &&
+    run.from_version &&
+    !rollbackSuperado &&
+    !falhaDesmentidaPeloApp
       ? run.from_version
-      : acabouDeInstalar && run?.to_version
-        ? run.to_version
-        : current;
+      : current;
 
   if (!user.is_platform_admin) {
     return ok({ current_version: running, is_owner: false });
@@ -128,7 +183,16 @@ export async function GET(_req: NextRequest): Promise<Response> {
     current_version: running,
     is_owner: true,
     latest_version: latest,
-    update_available: Boolean(latest) && latest !== running,
+    update_available:
+      // `!acabouDeInstalar` é o degrau histórico: na janela logo após um
+      // sucesso, o host ainda não bateu, `current` nomeia a versão antiga e a
+      // tela reofereceria "Atualizar agora" para o que acabou de ser instalado.
+      // O que mudou na 1101 é que a janela esconde o botão SEM promover o
+      // `to_version` a versão instalada — a tela diz que o alvo foi pedido e a
+      // versão confirmada é a antiga, em vez de afirmar a nova e não voltar
+      // atrás nunca. `sucessoJaInstalado` fecha a janela sozinho passados
+      // `RUN_STALE_AFTER_MS` do fim do run.
+      Boolean(latest) && latest !== running && !acabouDeInstalar,
     off_release: version?.off_release ?? false,
     // Sem isto, a tela lê "sem versão nova anunciada" como "você está em dia" —
     // e uma instalação atrasada cujo host não conseguiu comparar é informada de
@@ -142,9 +206,13 @@ export async function GET(_req: NextRequest): Promise<Response> {
     has_known_release: version?.has_known_release ?? true,
     agent_online: !Number.isNaN(lastSeen) && now.getTime() - lastSeen < AGENT_OFFLINE_AFTER_MS,
     // A janela em que a atualização TERMINOU e o host ainda não contou. É o que
-    // deixa a tela dizer "pronto, está na versão X" em vez de cair no texto
+    // deixa a tela dizer que o pedido terminou, em vez de cair no texto
     // genérico de quem nunca atualizou nada — e ela se fecha sozinha na batida
-    // seguinte do agente.
+    // seguinte do agente, ou no fim de validade de `sucessoJaInstalado`.
+    //
+    // NÃO promove `current_version`: o que esta janela permite dizer é "o
+    // pedido terminou", nunca "você está na versão X" (issue 1101). A
+    // versão-alvo viaja no `run`, para a tela nomeá-la como pedido.
     just_updated: acabouDeInstalar,
     notes:
       faixa && faixa.secoes.length > 0
@@ -180,6 +248,11 @@ export async function GET(_req: NextRequest): Promise<Response> {
           from_version: run.from_version ?? "",
           to_version: run.to_version ?? "",
           log_tail: run.log_tail ?? "",
+          superseded: falhaSuperada,
+          // O que a rodada contou sobre o banco — disputa, retentativas e em
+          // qual passada fechou. Ausente quando o kit não mediu (rodada que não
+          // passou pelo banco): a tela fica calada em vez de afirmar zero.
+          rodada_do_banco: rodadaDoBancoDaLinha(run),
         }
       : null,
   });

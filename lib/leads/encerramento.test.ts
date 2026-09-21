@@ -30,9 +30,12 @@ type Row = Record<string, unknown>;
 function makeDb({
   leads = [],
   stages = [],
+  updateError,
 }: {
   leads?: Row[];
   stages?: Row[];
+  /** Simula o `error` que o Postgres devolveria no UPDATE de `crm_leads`. */
+  updateError?: { code?: string; message?: string };
 } = {}) {
   const tables: Record<string, Row[]> = {
     crm_leads: leads,
@@ -93,6 +96,9 @@ function makeDb({
       },
       then: async (resolve: (value: unknown) => unknown) => {
         if (operation === "update") {
+          if (table === "crm_leads" && updateError) {
+            return resolve({ data: null, error: updateError });
+          }
           const rows = tables[table] ?? [];
           for (const row of rows) {
             if (filters.every(([column, value]) => row[column] === value)) {
@@ -235,5 +241,38 @@ describe("encerraDemanda", () => {
     expect(result).toMatchObject({ jaEstava: true, lead });
     expect(db.updates).toEqual([]);
     expect(db.rpcs).toEqual([]);
+  });
+
+  // BUG REPRODUZIDO (crm.fabrasoftware.com.br): a recusa de
+  // `fn_validate_lost_reason_required` (22023 `lost_reason_invalid`) chegava
+  // como 500 `internal_error` com o texto cru do Postgres — `/lose` e `/win`
+  // eram os únicos dois caminhos que não aplicavam a "rede de segurança" (#917)
+  // que `move`, `bulk` e `clone` já usam via `recusaDeMotivoDaPerdaPeloBanco`.
+  it("traduz a recusa do banco por motivo fora do vocabulário em 422 lost_reason_invalid, não 500", async () => {
+    const db = makeDb({
+      leads: [baseLead()],
+      stages: baseStages(),
+      updateError: { code: "22023", message: "lost_reason_invalid: Lead optou em outra solução" },
+    });
+
+    await expect(
+      encerraDemanda(db.client as never, ctx, {
+        leadId: LEAD,
+        desfecho: "lost",
+        motivo: "Lead optou em outra solução",
+      }),
+    ).rejects.toMatchObject({ code: "lost_reason_invalid", status: 422 });
+  });
+
+  it("mantém 500 internal_error para um erro de banco que não é sobre o motivo da perda", async () => {
+    const db = makeDb({
+      leads: [baseLead()],
+      stages: baseStages(),
+      updateError: { code: "53300", message: "too many connections" },
+    });
+
+    await expect(
+      encerraDemanda(db.client as never, ctx, { leadId: LEAD, desfecho: "lost", motivo: "price" }),
+    ).rejects.toMatchObject({ code: "internal_error", status: 500 });
   });
 });

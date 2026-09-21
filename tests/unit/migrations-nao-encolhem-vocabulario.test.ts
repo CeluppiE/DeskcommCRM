@@ -65,6 +65,20 @@ const DIR_MIGRATIONS = path.join(process.cwd(), "supabase", "migrations");
  * dado existente faz o `update.sh` de um clone quebrar no meio.
  */
 const REMOCOES_DELIBERADAS: Record<string, { valores: string[]; porque: string }> = {
+  "20260918231000_0312_aviso_de_followup_sem_agente.sql::agent_inbox_items_kind_check": {
+    valores: ["aviso_de_caso_nao_entregue"],
+    porque:
+      "NÃO é remoção de propósito, e NÃO existe na `main`: é o ENCONTRO de duas " +
+      "branches represadas. A 0292 (casos vivos) acrescentou `aviso_de_caso_nao_entregue` " +
+      "e ficou parada; a 0312 reconstruiu a constraint a partir do estado que ENXERGAVA, " +
+      "sem o valor da outra. Nenhum dos dois lados errou — na `main` sozinha a 0312 não " +
+      "remove nada, porque a 0292 não está lá, e por isso este gate é verde lá. O buraco " +
+      "só existe na árvore em que as duas se encontram. A forward-fix é a 0326 " +
+      "(`reconciliacao_das_branches_represadas`), que reafirma a UNIÃO medida: os 28 " +
+      "valores da 0312 mais o da 0292. O estado FINAL da cadeia tem o valor de volta, " +
+      "então nenhum clone fica sem ele. Mesma forma da 0062→0065 acima, 58 dias depois — " +
+      "e a lição nova é que represar branch longa reproduz a classe sem ninguém errar.",
+  },
   "20260722160000_0062_conversation_snooze.sql::agent_inbox_items_kind_check": {
     valores: ["followup_dead"],
     porque:

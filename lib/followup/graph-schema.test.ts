@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import type { BranchableNode } from './graph-schema';
 import {
   NODE_TYPES,
   waitConfigSchema,
@@ -1167,7 +1168,7 @@ describe('graph-schema', () => {
           kind: 'match',
           condition: { type: 'class_match', value: 'no_reply' },
         },
-        { id: FALLBACK_BRANCH_ID, label: 'Sempre', check: null, kind: 'fallback', condition: { type: 'always' } },
+        { id: FALLBACK_BRANCH_ID, label: 'Outros casos', check: null, kind: 'fallback', condition: { type: 'always' } },
       ]);
     });
 
@@ -1188,7 +1189,7 @@ describe('graph-schema', () => {
           kind: 'match',
           condition: { type: 'cond_result', value: false },
         },
-        { id: FALLBACK_BRANCH_ID, label: 'Sempre', check: null, kind: 'fallback', condition: { type: 'always' } },
+        { id: FALLBACK_BRANCH_ID, label: 'Outros casos', check: null, kind: 'fallback', condition: { type: 'always' } },
       ]);
     });
 
@@ -1200,6 +1201,38 @@ describe('graph-schema', () => {
         expect(branchId, `edge ${edge.id} lost its branch`).not.toBeNull();
         expect(conditionForBranch(byId.get(edge.source)!, branchId!)).toStrictEqual(edge.condition);
       }
+    });
+
+    it('a saída de escape se chama "Outros casos" em TODO nó que tem outras saídas', () => {
+      // "Sempre" ali afirmava que o lead sai por essa aresta além das outras. O
+      // motor só a usa quando nenhuma outra serve (`selectEdge`), e nunca manda
+      // por duas. Em nó de saída única "Sempre" continua verdade — é o caso de
+      // baixo. No modo uma-saída-por-regra o nome é "Nenhuma delas".
+      const ramificados: BranchableNode[] = [
+        { type: 'condition', config: { combinator: 'and', checks: [{ field: 'tag', op: 'eq', value: 'vip' }] } },
+        { type: 'ai_classify', config: { classes: ['Interessado'], grace_timeout_ms: 900_000, target: 'last_reply' } },
+        {
+          type: 'match_reply',
+          config: { branches: [{ id: 'br_sim', label: 'Sim', op: 'eq', pattern: 'sim' }], grace_timeout_ms: 900_000 },
+        },
+        { type: 'repeat', config: { max_count: 12 } },
+      ];
+      for (const node of ramificados) {
+        const branches = nodeBranches(node);
+        expect(branches.length, `${node.type} devia ter mais de uma saída`).toBeGreaterThan(1);
+        const escape = branches.find((b) => b.kind === 'fallback')!;
+        expect(escape.label, `escape do ${node.type}`).toBe('Outros casos');
+      }
+
+      const porRegra = nodeBranches({
+        type: 'condition',
+        config: {
+          combinator: 'and',
+          branching: 'per_check',
+          checks: [{ id: 'regra-1', field: 'tag', op: 'eq', value: 'vip' }],
+        },
+      });
+      expect(porRegra.find((b) => b.kind === 'fallback')!.label).toBe('Nenhuma delas');
     });
 
     it('leaves a node with a single output with exactly one branch: the fallback', () => {

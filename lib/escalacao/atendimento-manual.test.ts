@@ -156,7 +156,7 @@ describe("pausarIaPorAtendimentoManual — cada fala humana RENOVA o prazo", () 
 /**
  * Portado de `tests/unit/silenciar-bot-retomada-humana.test.ts`, que morreu junto
  * com `silenciarBotPorRetomadaHumana` quando os dois caminhos viraram um só. A
- * lacuna que aqueles casos guardam foi medida em produção (tenant YADEA): um
+ * lacuna que aqueles casos guardam foi medida em produção: um
  * humano respondeu direto pelo WhatsApp, o bot não foi silenciado, e na mensagem
  * seguinte do lead voltou a rodar sozinho, alucinando sobre algo que só o humano
  * tinha tratado (PIX). A rede continua armada, agora em cima do helper novo.

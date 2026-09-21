@@ -14,7 +14,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-import { devolverAtendimentoAoAgente } from "@/lib/escalacao/retomada";
+import { devolverAtendimentoAoAgente, type OrigemDaRetomada } from "@/lib/escalacao/retomada";
 import type { Actor } from "@/lib/api/handlers/types";
 
 vi.mock("@/lib/audit", () => ({ audit: vi.fn().mockResolvedValue(undefined) }));
@@ -50,6 +50,8 @@ interface CenarioBanco {
   checkpointAnterior?: Record<string, unknown> | null;
   negocios?: Array<Record<string, unknown>>;
   erroDoEmitEvent?: { message: string } | null;
+  /** Falha no UPDATE de `contacts.force_human` — o passo (3) de `retomada.ts`. */
+  erroAoLimparForceHuman?: { message: string } | null;
 }
 
 /**
@@ -94,6 +96,12 @@ function fazerSupabase(cenario: CenarioBanco, cap: Captura) {
         return Promise.resolve({ data: null, error: null });
       },
       then: (res: (v: unknown) => unknown) => {
+        if (ehUpdate && tabela === "contacts" && cenario.erroAoLimparForceHuman) {
+          return Promise.resolve({
+            data: null,
+            error: cenario.erroAoLimparForceHuman,
+          }).then(res);
+        }
         const listas: Record<string, unknown[]> = {
           agent_cases: cenario.chamados ?? [],
           agent_case_events: cenario.eventosDeChamado ?? [],
@@ -169,7 +177,12 @@ function novaCaptura(): Captura {
   return { updates: [], inserts: [], rpc: [] };
 }
 
-async function retomar(cenario: CenarioBanco, cap: Captura, actor: Actor = USUARIO) {
+async function retomar(
+  cenario: CenarioBanco,
+  cap: Captura,
+  actor: Actor = USUARIO,
+  origem?: OrigemDaRetomada,
+) {
   return devolverAtendimentoAoAgente(
     {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -178,7 +191,7 @@ async function retomar(cenario: CenarioBanco, cap: Captura, actor: Actor = USUAR
       actor,
       requestId: "req-1",
     },
-    { conversationId: CONV },
+    { conversationId: CONV, origem },
   );
 }
 
@@ -320,6 +333,30 @@ describe("devolver o atendimento ao agente", () => {
     });
   });
 
+  it("devolução automática (prazo vencido): o rastro diz que foi o prazo, não uma pessoa", async () => {
+    const cap = novaCaptura();
+    const cron: Actor = { type: "webhook_source", id: "cron:handoff-devolucao" };
+    const res = await retomar(cenarioComAtendimentoHumano(), cap, cron, { automatica: { minutos: 60 } });
+    expect(res.ok).toBe(true);
+
+    // A autorização do contato entra como REGRA DE AUTOMAÇÃO, não como
+    // "retomada_manual": quem investiga por que a IA voltou a falar lê daqui.
+    expect(cap.updates.filter((u) => u.tabela === "contacts")).toContainEqual(
+      expect.objectContaining({
+        valores: expect.objectContaining({ ai_authorized_reason: "automacao:devolucao_apos_prazo" }),
+      }),
+    );
+    // As três travas saem do mesmo jeito que no clique.
+    expect(cap.updates.find((u) => u.tabela === "conversations")?.valores).toMatchObject({
+      bot_silenced_until: null,
+      assignee_kind: "ai",
+    });
+    // E a linha do tempo diz o prazo, como ato do sistema.
+    const atividade = cap.inserts.find((i) => i.tabela === "crm_lead_activities");
+    expect(atividade?.valores).toMatchObject({ type: "handoff_resolved", actor_kind: "system" });
+    expect(JSON.stringify(atividade?.valores)).toContain("automaticamente após 60 min");
+  });
+
   it("negócio ambíguo não vira atividade no card errado", async () => {
     const cap = novaCaptura();
     // Dois negócios abertos tocados no MESMO instante: adivinhar moveria o card
@@ -360,15 +397,44 @@ describe("devolver o atendimento ao agente", () => {
     expect(cap.updates).toEqual([]);
   });
 
-  it("alguém assumiu na corrida: reporta conflito em vez de estourar a constraint", async () => {
+  it("alguém assumiu na corrida: reporta conflito SEM detalhe — é esse o discriminador", async () => {
     const cap = novaCaptura();
     const res = await retomar(
       cenarioComAtendimentoHumano({ updateDaConversaCasa: false }),
       cap,
     );
     expect(res).toMatchObject({ ok: false, erro: "assignment_conflict" });
+    // A AUSÊNCIA de `detalhe` é contrato, não detalhe de implementação: é por ela
+    // que o cron `handoff-devolucao` separa a corrida benigna (a pessoa ganhou,
+    // segue o baile) dos erros de banco que também voltam como
+    // `assignment_conflict`. Encher isto aqui faz um defeito real voltar a sair
+    // calado lá — ver o caso irmão logo abaixo.
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.detalhe).toBeUndefined();
     // E não chega a mexer no contato: devolver metade seria pior que não devolver.
     expect(cap.updates.filter((u) => u.tabela === "contacts")).toEqual([]);
+  });
+
+  it("erro ao limpar force_human volta como conflito COM detalhe — não é corrida, é defeito", async () => {
+    const cap = novaCaptura();
+    const res = await retomar(
+      cenarioComAtendimentoHumano({ erroAoLimparForceHuman: { message: "deadlock detected" } }),
+      cap,
+    );
+    // Mesmo código de erro da corrida — o tipo `RetomadaFalha` não os separa —,
+    // mas este chega DEPOIS de a conversa já ter virado `assignee_kind='ai'`:
+    // ela saiu da fila humana e a trava que cala os três guards ficou de pé.
+    // Quem classifica só pelo `erro` trata os dois igual e perde este.
+    expect(res).toMatchObject({ ok: false, erro: "assignment_conflict" });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.detalhe).toBe("deadlock detected");
+    // Controle positivo do dublê: a escrita SAIU (foi o banco que a recusou).
+    // Sem isto, um dublê que simplesmente não chamasse o UPDATE daria o mesmo
+    // vermelho por outro motivo.
+    expect(cap.updates.filter((u) => u.tabela === "contacts")).toContainEqual({
+      tabela: "contacts",
+      valores: { force_human: false },
+    });
   });
 
   it("é idempotente: repetir com a conversa já no agente segue devolvendo ok", async () => {

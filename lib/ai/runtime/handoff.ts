@@ -51,6 +51,7 @@ export async function finalizeHandoff(input: FinalizeHandoffInput): Promise<void
       conversationId: input.conversationId,
       organizationId: input.organizationId,
       reason: input.reason,
+      origem: "runtime_nativo",
       leadId,
       metadata: { run_id: input.runId, source: input.source },
     });

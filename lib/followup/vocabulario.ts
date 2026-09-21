@@ -120,9 +120,34 @@ const AVISO_SO_NUMERO =
   "Comparar maior/menor só funciona com número. Do jeito que está, esta condição nunca é verdadeira.";
 const AVISO_SO_TEXTO = "“Contém” só funciona com texto. Em número, esta condição nunca é verdadeira.";
 
-const aspas = (valor: string | number): string => `“${valor}”`;
+/**
+ * Regra ainda sem valor. Aspas vazias (`“”`) se liam como "a etapa de nome
+ * vazio" — uma regra com cara de pronta. É o estado em que toda regra nova
+ * nasce, e o publish a recusa até alguém preencher.
+ */
+export const VALOR_A_PREENCHER = "(a preencher)";
+
+/**
+ * Etapa cujo id não tem nome: apagada, de outra organização, ou a leitura dos
+ * nomes falhou. O uuid não é nome de nada para quem lê — e entre aspas pareceria.
+ */
+export const ETAPA_NAO_ENCONTRADA = "(não encontrada)";
+
+const semValor = (valor: string | number): boolean => String(valor).trim() === "";
+
+/** Texto do SISTEMA no lugar do valor: vai sem aspas, para não se ler como algo que a pessoa escreveu. */
+const aspas = (valor: string | number): string =>
+  semValor(valor) ? VALOR_A_PREENCHER : valor === ETAPA_NAO_ENCONTRADA ? valor : `“${valor}”`;
+
+const FORMA_DE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** O valor tem forma de identificador interno (uuid) — nunca é algo que a pessoa digitou. */
+export function temFormaDeId(valor: string | number): boolean {
+  return FORMA_DE_ID.test(String(valor).trim());
+}
 
 function passos(valor: string | number): string {
+  if (semValor(valor)) return `${VALOR_A_PREENCHER} passos`;
   const n = Number(valor);
   return Number.isFinite(n) && Math.abs(n) === 1 ? `${valor} passo` : `${valor} passos`;
 }
@@ -268,13 +293,49 @@ export function comparadoresDoCampo(
     .map((op) => ({ op, rotulo: COMPARADORES[campo][op].rotulo }));
 }
 
+/**
+ * Como transformar um valor salvo no que a pessoa escolheu. A etapa é gravada
+ * pelo `stage_id` — é o que o motor compara —, e só quem tem a lista de etapas
+ * (a tela, a rota) sabe o nome. Este módulo é puro, então o nome chega injetado.
+ */
+export interface NomesDeValor {
+  /** «Etapa · Funil» da etapa com este id, ou `null` quando nenhuma etapa tem esse id. */
+  etapa?: (id: string) => string | null;
+}
+
 /** A checagem inteira em uma frase — para resumo do nó, `aria-label` e revisão antes de publicar. */
 export function fraseDaCondicao(
   campo: CampoDaCondicao,
   op: OperadorDaCondicao,
   valor: string | number,
+  nomes: NomesDeValor = {},
 ): string {
-  return comparador(campo, op).frase(valor);
+  return comparador(campo, op).frase(valorExibido(campo, valor, nomes));
+}
+
+function valorExibido(campo: CampoDaCondicao, valor: string | number, nomes: NomesDeValor): string | number {
+  if (campo !== "lead_stage" || semValor(valor)) return valor;
+  const texto = String(valor).trim();
+  const nome = nomes.etapa?.(texto);
+  if (nome) return nome;
+  // Sem nome resolvido, um fluxo antigo que guardou o NOME digitado ("PAGO")
+  // continua legível — o formulário e o publish avisam que ele não aponta para
+  // etapa nenhuma. Já um id sem nome não tem o que mostrar.
+  return temFormaDeId(texto) ? ETAPA_NAO_ENCONTRADA : valor;
+}
+
+/**
+ * A regra que é verdadeira para TODO contato. Não é erro de digitação: o
+ * contador de passos nasce em zero e só soma (`engine.ts`), então "pelo menos 0"
+ * (ou menos) sempre vale. No modo uma-saída-por-regra ela leva todo mundo e as
+ * saídas seguintes — inclusive "Nenhuma delas" — nunca são usadas. Era o padrão
+ * do produto até este conserto, e continua digitável: a tela avisa enquanto se
+ * escreve, que é quando dá para mudar de ideia.
+ */
+export function regraValeSempre(campo: CampoDaCondicao, op: OperadorDaCondicao, valor: string | number): boolean {
+  if (campo !== "steps_taken" || op !== "gte") return false;
+  const n = Number(String(valor).trim());
+  return String(valor).trim() !== "" && Number.isFinite(n) && n <= 0;
 }
 
 export const COMBINADORES: Record<Combinador, string> = {
@@ -310,6 +371,14 @@ export const MODOS_DE_RAMIFICACAO: Record<ModoDeRamificacao, string> = {
  * mesmo fluxo lido de dois jeitos conforme o ramo chegue como `class_match`
  * (v1) ou como `branch_id` (v2). Um dicionário, duas portas, um texto.
  */
+/**
+ * O escape de um nó que JÁ tem saídas específicas, em frase. "caminho normal"
+ * (abaixo) descreve a única saída de um nó simples; ao lado de "quando a IA
+ * classifica como “Interessado”", ele sugeriria o caminho PRINCIPAL — e é o
+ * contrário: só se sai por aqui quando nenhuma outra saída serve.
+ */
+export const FRASE_DE_OUTROS_CASOS = "nos outros casos";
+
 export const RAMOS_RESERVADOS_EM_FRASE: Record<RamoReservado, string> = {
   [FALLBACK_BRANCH_ID]: "caminho normal",
   [NO_REPLY_BRANCH_ID]: "quando ninguém responde",
@@ -363,8 +432,9 @@ export function fraseDaRegraSemNome(
   campo: CampoDaCondicao,
   op: OperadorDaCondicao,
   valor: string | number,
+  nomes: NomesDeValor = {},
 ): string {
-  return `quando ${encaixa(fraseDaCondicao(campo, op, valor))}`;
+  return `quando ${encaixa(fraseDaCondicao(campo, op, valor, nomes))}`;
 }
 
 export const RAMOS_RESERVADOS: Record<RamoReservado, string> = {
@@ -393,10 +463,17 @@ const MINIMO_MINUTOS_DE_ESPERA = 15;
  */
 export const ESPERA_PELA_RESPOSTA = {
   rotulo: "Esperar a resposta por (minutos)",
-  ajuda:
-    `Se o contato não responder dentro desse tempo, o fluxo segue sozinho pelo caminho ` +
-    `“${conditionLabel({ type: "class_match", value: "no_reply" })}”. ` +
-    `Mínimo de ${MINIMO_MINUTOS_DE_ESPERA} minutos.`,
+  /**
+   * Função, não string: o texto cita o rótulo da aresta (`conditionLabel`,
+   * também traduzível) e o mínimo em minutos, então só pode ser composto no
+   * idioma de quem olha — não pré-computado em português uma vez só. `t`
+   * default identidade preserva quem chama sem tradução (ex.: os testes deste
+   * arquivo, que conferem o texto em português).
+   */
+  ajuda: (t: (texto: string) => string = (s) => s) =>
+    `${t("Se o contato não responder dentro desse tempo, o fluxo segue sozinho pelo caminho")} ` +
+    `“${t(conditionLabel({ type: "class_match", value: "no_reply" }))}”. ` +
+    `${t("Mínimo de")} ${MINIMO_MINUTOS_DE_ESPERA} ${t("minutos.")}`,
   minimoMinutos: MINIMO_MINUTOS_DE_ESPERA,
 } as const;
 
@@ -458,6 +535,9 @@ export const RESULTADOS_DO_FIM: Record<ResultadoDoFim, string> = {
 export const SITUACOES_DO_ACOMPANHAMENTO: Record<EnrollmentStatus, string> = {
   active: "Em andamento",
   waiting_reply: "Aguardando resposta",
+  // Não é "pausado": ninguém a parou e ela tem hora para voltar. Quem lê a fila
+  // precisa saber que este acompanhamento está vivo e só não fala agora.
+  dormente: "Aguardando a data do retorno",
   paused_handoff: "Pausado — um humano assumiu",
   completed: "Concluído",
   cancelled: "Cancelado",

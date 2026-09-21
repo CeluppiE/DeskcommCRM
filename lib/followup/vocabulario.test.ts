@@ -21,6 +21,7 @@ import * as ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { enumsDoFollowup } from "@/tests/support/enums-do-grafo";
+import { traduzir } from "@/lib/i18n/dicionario";
 
 import { triggerConfigSchema } from "./api-schemas";
 import { conditionLabel } from "./edge-condition-options";
@@ -366,7 +367,7 @@ describe("a tradução não é o valor cru disfarçado", () => {
     const tudo = [
       ...rotulosPorValor.map(([, r]) => r),
       ESPERA_PELA_RESPOSTA.rotulo,
-      ESPERA_PELA_RESPOSTA.ajuda,
+      ESPERA_PELA_RESPOSTA.ajuda(),
       ...(CAMPOS_NO_SCHEMA as CampoDaCondicao[]).flatMap((campo) =>
         (OPERADORES_NO_SCHEMA as OperadorDaCondicao[]).flatMap((op) => {
           const c = comparador(campo, op);
@@ -452,6 +453,46 @@ describe("o ramo em frase — o registro do dossiê", () => {
   });
 });
 
+describe("a regra mostra o que a pessoa escolheu, nunca o identificador", () => {
+  const ID_DA_ETAPA = "0b3c6a3e-8a1f-4a51-9d0e-3f2b7c9d1e22";
+  const nomes = { etapa: (id: string) => (id === ID_DA_ETAPA ? "Pago · Vendas" : null) };
+
+  it("etapa gravada por id aparece pelo nome, com o funil junto", () => {
+    // O motor compara `stage_id`; a tela grava o id e LÊ o nome. Sem o nome, o
+    // card mostraria o uuid — o defeito que este módulo existe para impedir.
+    expect(fraseDaCondicao("lead_stage", "eq", ID_DA_ETAPA, nomes)).toBe("O lead está na etapa “Pago · Vendas”");
+    expect(fraseDaRegraSemNome("lead_stage", "neq", ID_DA_ETAPA, nomes)).toBe(
+      "quando o lead não está na etapa “Pago · Vendas”",
+    );
+  });
+
+  it("valor que não é id de etapa nenhuma aparece como foi salvo — o texto antigo não some", () => {
+    expect(fraseDaCondicao("lead_stage", "eq", "PAGO", nomes)).toBe("O lead está na etapa “PAGO”");
+  });
+
+  it("id de etapa sem nome resolvido nunca vai para a tela", () => {
+    // Etapa apagada, de outra org, ou leitura que falhou: o uuid não é nome de
+    // nada para quem lê, e aparecer entre aspas o faria parecer um.
+    const OUTRO_ID = "1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d";
+    expect(fraseDaCondicao("lead_stage", "eq", OUTRO_ID, nomes)).toBe("O lead está na etapa (não encontrada)");
+    expect(fraseDaCondicao("lead_stage", "neq", ID_DA_ETAPA)).toBe("O lead não está na etapa (não encontrada)");
+  });
+
+  it("o nome da etapa só vale para o campo etapa", () => {
+    const tudoViraNome = { etapa: () => "NÃO DEVIA APARECER" };
+    expect(fraseDaCondicao("tag", "eq", "vip", tudoViraNome)).toBe("O contato tem a etiqueta “vip”");
+    expect(fraseDaCondicao("last_outcome", "eq", "x", tudoViraNome)).toBe("O desfecho do passo anterior foi “x”");
+  });
+
+  it("regra sem valor diz que falta preencher, em vez de aspas vazias", () => {
+    // `“”` se lia como "a etapa de nome vazio" — uma regra que parecia pronta.
+    expect(fraseDaCondicao("lead_stage", "eq", "")).toBe("O lead está na etapa (a preencher)");
+    expect(fraseDaCondicao("tag", "eq", "  ")).toBe("O contato tem a etiqueta (a preencher)");
+    expect(fraseDaCondicao("steps_taken", "gte", "")).toBe("O fluxo já deu pelo menos (a preencher) passos");
+    expect(fraseDaCondicao("lead_stage", "eq", "", nomes)).toBe("O lead está na etapa (a preencher)");
+  });
+});
+
 describe("o antigo 'Grace' virou uma pergunta com consequência", () => {
   it("o mínimo declarado é exatamente o piso do schema", () => {
     const base = { classes: ["x"], target: "last_reply" as const };
@@ -462,8 +503,20 @@ describe("o antigo 'Grace' virou uma pergunta com consequência", () => {
 
   it("a ajuda nomeia o caminho que o fluxo pega, com o texto que a aresta mostra", () => {
     const rotuloDaAresta = conditionLabel({ type: "class_match", value: "no_reply" });
-    expect(ESPERA_PELA_RESPOSTA.ajuda).toContain(rotuloDaAresta);
-    expect(ESPERA_PELA_RESPOSTA.ajuda).toContain(String(ESPERA_PELA_RESPOSTA.minimoMinutos));
+    expect(ESPERA_PELA_RESPOSTA.ajuda()).toContain(rotuloDaAresta);
+    expect(ESPERA_PELA_RESPOSTA.ajuda()).toContain(String(ESPERA_PELA_RESPOSTA.minimoMinutos));
+  });
+
+  it("em espanhol, a ajuda traduz o texto fixo E o rótulo da aresta interpolado", () => {
+    // `ajuda` compõe fragmentos com `t()` em vez de ser uma string pronta —
+    // sem isto, a versão em espanhol mostraria a frase inteira em português
+    // (o padrão de degradação) mesmo com o rótulo da aresta traduzido, ou
+    // vice-versa: os dois lados precisam passar pelo MESMO `t`.
+    const t = (texto: string) => traduzir(texto, "es");
+    const emEspanhol = ESPERA_PELA_RESPOSTA.ajuda(t);
+    expect(emEspanhol).toContain("Sin respuesta");
+    expect(emEspanhol).toContain(String(ESPERA_PELA_RESPOSTA.minimoMinutos));
+    expect(emEspanhol).not.toMatch(/responder|caminho|segue/i);
   });
 });
 

@@ -13,7 +13,7 @@
  * histórico sem tocar em trava nenhuma. Resultado: a IA continuava respondendo
  * por cima de quem estava atendendo à mão.
  *
- * A lacuna foi medida em produção (tenant YADEA): um humano negociou preço e
+ * A lacuna foi medida em produção: um humano negociou preço e
  * pagamento de peça direto no WhatsApp, e a IA, sem saber disso, se meteu de
  * volta na conversa afirmando que "os dados do PIX estão sendo confirmados" —
  * algo que ela não tem nenhuma ferramenta para saber.

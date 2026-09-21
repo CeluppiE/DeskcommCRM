@@ -9,6 +9,7 @@
  */
 import { z } from "zod";
 
+import { PRAZO_MAX_MINUTOS, PRAZO_MIN_MINUTOS } from "@/lib/escalacao/devolucao-automatica";
 import { fusoValido } from "@/lib/tempo/fusos";
 
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -25,6 +26,21 @@ export const routingConfigSchema = z.object({
   mode: z.enum(ROUTING_MODES).default("manual"),
   max_retries: z.number().int().min(0).max(20).default(5),
   backoff_seconds: z.number().int().min(1).max(3600).default(60),
+  /**
+   * Prazo, em minutos, para devolver ao agente de IA uma conversa que ficou
+   * com uma pessoa e não teve mais nenhum sinal dela. `null` = nunca — a regra
+   * IA-06 de sempre (o bot não reassume até alguém clicar "Devolver"), que é o
+   * padrão para não mudar o comportamento de quem já instalou. Quem devolve é
+   * o cron `handoff-devolucao`; a regra pura está em
+   * `lib/escalacao/devolucao-automatica.ts`, e a faixa (5 min – 24 h) também.
+   */
+  handoff_return_after_minutes: z
+    .number()
+    .int()
+    .min(PRAZO_MIN_MINUTOS)
+    .max(PRAZO_MAX_MINUTOS)
+    .nullable()
+    .default(null),
 });
 export type RoutingConfig = z.infer<typeof routingConfigSchema>;
 
@@ -53,8 +69,51 @@ export type VisibilityModeInput = (typeof VISIBILITY_MODES)[number];
  */
 export const atendimentoConfigPatchSchema = routingConfigSchema.extend({
   visibility_mode: z.enum(VISIBILITY_MODES).optional(),
+  /**
+   * Opcional pela MESMA razão de `visibility_mode`: a rota preserva o prazo em
+   * vigor quando a chave não vem — um cliente antigo, que só conhece o modo de
+   * roteamento, não pode desligar a devolução automática por omissão.
+   */
+  handoff_return_after_minutes: z
+    .number()
+    .int()
+    .min(PRAZO_MIN_MINUTOS)
+    .max(PRAZO_MAX_MINUTOS)
+    .nullable()
+    .optional(),
 });
 export type AtendimentoConfigPatch = z.infer<typeof atendimentoConfigPatchSchema>;
+
+/**
+ * O `settings` da organização depois de um PATCH — a regra num lugar só, para
+ * a rota e o teste lerem a MESMA mescla (o teste era uma cópia da rota, e cópia
+ * diverge sem avisar).
+ *
+ * Merge não-destrutivo em DOIS níveis: preserva as demais chaves de `settings`
+ * (o provedor de IA mora nele) e, para o que veio OMITIDO do corpo —
+ * `visibility_mode` e `handoff_return_after_minutes` —, preserva o que já
+ * valia. Um cliente antigo, que só conhece o modo de roteamento, não pode
+ * desligar a restrição de visibilidade nem a devolução automática por omissão.
+ */
+export function mesclarSettingsDeAtendimento(
+  atual: Record<string, unknown>,
+  input: AtendimentoConfigPatch,
+): { settings: Record<string, unknown>; routing: RoutingConfig } {
+  const { visibility_mode, handoff_return_after_minutes, ...routingInput } = input;
+  const routingAtual = routingConfigSchema
+    .catch(routingConfigSchema.parse({}))
+    .parse(atual.routing ?? {});
+  const routing: RoutingConfig = {
+    ...routingInput,
+    handoff_return_after_minutes:
+      handoff_return_after_minutes !== undefined
+        ? handoff_return_after_minutes
+        : routingAtual.handoff_return_after_minutes,
+  };
+  const settings: Record<string, unknown> = { ...atual, routing };
+  if (visibility_mode !== undefined) settings.visibility_mode = visibility_mode;
+  return { settings, routing };
+}
 
 /** Uma janela de disponibilidade: dow 0=domingo … 6=sábado, "HH:MM"–"HH:MM". */
 export const scheduleWindowSchema = z

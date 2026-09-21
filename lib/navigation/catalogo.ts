@@ -103,6 +103,27 @@ export const GRUPO_NO_RODAPE: NavGroupId = "organizacao";
  * fechada e por isso não vira `minRole`.
  */
 export const NAV_CATALOG = [
+  {
+    // SEM `sidebar: true`, e a razão não tem nada a ver com a qualidade desta
+    // tela: o menu lateral está no limite medido. Com ela, seriam 20 portas, e
+    // `tests/e2e/navegacao.spec.ts` reprova ("em 900px o menu inteiro tem de
+    // caber sem scroll" · Received: true). O comentário daquela spec já
+    // antecipava o número: "Trocar '17 itens sem hierarquia' por '20 itens que
+    // não cabem' seria recriar o problema em outra forma."
+    //
+    // A porta NÃO sumiu: ela vive no hub do grupo CRM ("Ver tudo em CRM") e no
+    // ⌘K — o mesmo caminho das outras entradas do grupo.
+    // CONDIÇÃO QUE ENCERRA ESTA EXCEÇÃO: quando o menu couber mais uma porta
+    // (ver doc 47), este item volta ao sidebar — é o primeiro da fila, porque
+    // saiu por falta de espaço e não por decisão de produto.
+    href: "/app/prospecting",
+    label: "Prospecção",
+    description: "Busque empresas e conduza abordagens graduais com IA.",
+    icon: "Funnel",
+    group: "crm",
+    minRole: "admin",
+    section: "O dia a dia da venda",
+  },
   // ---- Atendimento — onde o operador passa o dia ----
   {
     href: "/app/inbox",
@@ -196,6 +217,39 @@ export const NAV_CATALOG = [
     sidebar: true,
   },
   {
+    // Módulo VoIP (migration 0347). No grupo do CRM pelo mesmo critério de
+    // Tarefas: quem atende confere ligações perdidas e transcrições no dia a
+    // dia, não como revisão deliberada.
+    //
+    // ─── SEM `sidebar`, e a razão não é gosto: a telefonia é MÓDULO OPCIONAL ───
+    //
+    // O dono decidiu (doc 27) que a telefonia por SIP entra desligada por
+    // padrão — quem não liga não tem os contêineres, não tem tronco e não tem
+    // ligação nenhuma para ver. Pôr a porta no sidebar de TODA instalação
+    // custaria a todas elas um item que quase nenhuma usa, e o preço é medido:
+    // `tests/e2e/navegacao.spec.ts` exige que, em 900px, o menu caiba inteiro
+    // sem rolagem, e o vigésimo item o faz rolar.
+    //
+    // O ideal seria mostrá-la SÓ para quem ligou o módulo, e isso hoje não é
+    // possível: "telefonia ligada" é um profile do docker compose (servidor),
+    // não um estado que o aplicativo conheça — o shell não consulta nada de
+    // telefonia, e os dois sinais de banco possíveis (linha em
+    // `voip_trunk_settings`, ou `phone_numbers` ativo) custariam uma consulta
+    // em todo render. Está desenhado na issue do `sidebarSe`.
+    //
+    // A porta NÃO sumiu: ela vive no hub do grupo CRM ("Ver tudo em CRM") e no
+    // ⌘K, que é o mesmo caminho das outras dez entradas de "organizacao".
+    // CONDIÇÃO QUE ENCERRA ESTA EXCEÇÃO: no dia em que o app souber que o
+    // módulo está ligado, o item volta ao sidebar para quem ligou.
+    href: "/app/calls",
+    label: "Chamadas",
+    description: "Histórico de ligações (voz por IA) com transcrição.",
+    icon: "Phone",
+    group: "crm",
+    section: "O dia a dia da venda",
+    minRole: "manager",
+  },
+  {
     // ⚠️ Esta tela nasceu porque a FERRAMENTA já existia sem ela. O agente de IA
     // vinha com "procurar produto na loja" ligada por padrão, lendo uma tabela
     // que ninguém nunca preencheu — e o efeito não era silêncio: era o agente
@@ -245,6 +299,52 @@ export const NAV_CATALOG = [
     // tem hub, e se chega às telas dele por "Configurações". Eu tinha posto
     // `sidebar: true` e a cerca reprovou dizendo "a tela existe e não tem porta
     // na navegação" — a porta existia, era outra.
+  },
+  {
+    // O BALCÃO. Fica em CRM, e não em Configurações, porque é uso diário de quem
+    // está com a cliente na frente — a tela irmã, em Configurações › Financeiro,
+    // é onde o negócio se descreve uma vez.
+    //
+    // `viewer` porque conferir o que foi lançado no dia não é privilégio de
+    // quem lança; o que a RLS impede é ele escrever.
+    href: "/app/comandas",
+    label: "Comandas",
+    description: "O que foi feito, por quem, e quanto o cliente paga.",
+    icon: "Receipt",
+    group: "crm",
+    section: "O dia a dia da venda",
+    // ⚠️ FORA do sidebar, e isto foi MEDIDO, não escolhido por gosto. Com
+    // `sidebar: true` o menu passou a rolar em 1280×900 e o e2e
+    // `navegacao.spec.ts` ("nenhum grupo fica fora da dobra") reprovou — grupo
+    // abaixo da dobra é indistinguível de grupo que não existe. A regra escrita
+    // no comentário de densidade do `Sidebar.tsx` é esta: grupo COM hub não
+    // ganha linha nova no menu, a tela mora dentro do hub. O CRM tem hub desde
+    // Tarefas (PR #546), e raspar 4px de densidade de novo só adiaria a mesma
+    // conversa para a próxima tela.
+    //
+    // O balcão continua a um clique: CRM › Ver tudo em CRM › "O dia a dia da
+    // venda", e pelo ⌘K digitando "comanda".
+    minRole: "viewer",
+  },
+  {
+    // O catálogo financeiro: contas, formas de pagamento e plano de contas.
+    //
+    // Fica em "Sua empresa" pelo mesmo motivo dos tipos de agendamento — é onde
+    // o negócio se DESCREVE, não onde o dia acontece. E vem ANTES de qualquer
+    // tela de venda porque a forma de pagamento é quem decide em que conta a
+    // entrada cai quando uma comanda é fechada: sem esta camada, a comanda não
+    // tem onde depositar.
+    href: "/app/settings/tenant/financeiro",
+    label: "Financeiro",
+    description: "Contas, formas de pagamento e como cada lançamento é classificado.",
+    icon: "ChartBar",
+    group: "organizacao",
+    section: "Sua empresa",
+    // Leitura para a organização, escrita para manager+ (é a RLS que decide).
+    // `viewer` aqui e não `manager`: quem só olha precisa conferir para onde o
+    // dinheiro vai, e esconder a tela não esconde o dado — só torna a
+    // conferência impossível.
+    minRole: "viewer",
   },
   {
     // Estava enterrado em Configurações e ninguém sabia que existia — o achado
@@ -310,6 +410,12 @@ export const NAV_CATALOG = [
     label: "Credenciais",
     description: "A chave do provedor de IA que os agentes usam para pensar.",
     icon: "Key",
+    // VOLTOU para "ia"/"Montar o agente" na triagem, e a razão de quem tinha
+    // movido VENCEU em vez de estar errada: quando este PR nasceu, a tela não
+    // aparecia em hub nenhum e só se chegava nela digitando a URL. Depois
+    // disso a main ganhou o hub de IA, que a lista — e `tests/unit/nav-hub`
+    // cobra a entrada ali, inclusive em espanhol. Movê-la para "Sua empresa"
+    // agora tiraria a tela do lugar onde o hub promete que ela está.
     group: "ia",
     section: "Montar o agente",
     minRole: "manager",
@@ -374,6 +480,25 @@ export const NAV_CATALOG = [
     icon: "Flag",
     group: "ia",
     section: "Acompanhar o agente",
+  },
+  {
+    // "Aviso no WhatsApp", NUNCA "Avisos": a vizinha de cima chama-se "Alertas"
+    // e É a central de avisos — todo o vocabulário interno dela é "aviso"
+    // (POLITICAS_DE_AVISO, REFERENCIAS_DE_AVISO). Duas entradas com a mesma
+    // palavra, na mesma seção, é a tela ficando ilegível para quem não
+    // programa. O rótulo nomeia o CANAL e o destinatário.
+    href: "/app/ai/cases/avisos",
+    label: "Aviso no WhatsApp",
+    description: "Receber no WhatsApp quando o assistente abrir um caso.",
+    icon: "PaperPlaneTilt",
+    group: "ia",
+    section: "Acompanhar o agente",
+    // `admin` porque escolhe um número conectado e manda dado de cliente para um
+    // celular — o mesmo gate da rota e da RLS de `config_aviso_de_caso`.
+    minRole: "admin",
+    // SEM `sidebar`: o grupo IA já tem treze telas e o e2e de navegação exige
+    // que o menu inteiro caiba em 900px de altura. Configurar isto é tarefa de
+    // poucas vezes; o caminho é o hub "Ver tudo em IA".
   },
   {
     // Órfã: nenhum lugar do app linkava para cá. O flywheel gerava propostas de
@@ -480,6 +605,22 @@ export const NAV_CATALOG = [
   // lista as cinco (`hubSections`), então as duas continuam a um clique, com a
   // frase que explica para que servem. O ⌘K também as acha por nome.
   {
+    // A terceira ponta do módulo financeiro: Configurações › Financeiro descreve
+    // para onde o dinheiro vai, CRM › Comandas é onde o dia acontece, e aqui se
+    // responde a pergunta do fim do mês.
+    //
+    // Fora do sidebar de propósito: é consulta periódica, não uso diário, e o
+    // hub de Análise é onde ela se encontra sem disputar pixel com o que se abre
+    // toda hora.
+    href: "/app/faturamento",
+    label: "Faturamento",
+    description: "Quanto entrou, de que forma, e quanto cada pessoa tem a receber.",
+    icon: "ChartBar",
+    group: "analise",
+    section: "Dinheiro",
+    minRole: "viewer",
+  },
+  {
     href: "/app/metrics",
     label: "Desempenho",
     description: "Funil e performance por atendente nos últimos 30 dias.",
@@ -585,6 +726,27 @@ export const NAV_CATALOG = [
     minRole: "manager",
   },
   {
+    // A porta que faltava para o vocabulário de etiquetas (issue #852). Até
+    // aqui a etiqueta só ENTRAva no vocabulário — cada agente escrevia a que
+    // quisesse em `add_tag` — e não havia por onde corrigir, juntar as duas
+    // grafias que a operação criou, nem tirar a que ninguém mais usa. O
+    // vocabulário dava para LER (`/api/v1/conversation-tags`) e não para
+    // AJUSTAR, então a única saída era digitar errado para sempre.
+    //
+    // `manager` e não `admin`, pelo mesmo critério da vizinha acima: quem
+    // escreve a etiqueta é quem monta a regra do agente, e a tela existe para
+    // quem monta a regra. Nada aqui apaga conversa ou muda dinheiro — o
+    // alcance da operação é ao lado do de "Distribuição de atendimento".
+    href: "/app/settings/tags",
+    label: "Tags",
+    description:
+      "O vocabulário de etiquetas da empresa: onde cada uma é usada e como renomear, juntar ou excluir.",
+    icon: "Tag",
+    group: "organizacao",
+    section: "Sua empresa",
+    minRole: "manager",
+  },
+  {
     href: "/app/settings/tenant",
     label: "Organização",
     description: "Dados da empresa, retenção de dados e encarregado de LGPD.",
@@ -602,7 +764,7 @@ export const NAV_CATALOG = [
     href: "/app/settings/conversoes",
     label: "Conversões",
     description:
-      "Devolver ao anúncio as vendas que ele trouxe, para ele aprender a procurar mais clientes parecidos.",
+      "Devolver ao anúncio as vendas que ele trouxe, e marcar a origem de quem chega pelo site.",
     icon: "ChartLineUp",
     group: "organizacao",
     section: "Sua empresa",
@@ -671,6 +833,41 @@ export const NAV_CATALOG = [
     group: "organizacao",
     section: "Dados e acesso",
     minRole: "admin",
+  },
+  {
+    href: "/app/settings/voip-trunk",
+    label: "Trunk SIP",
+    description: "Credenciais do provedor SIP para chamadas de voz por IA.",
+    icon: "Phone",
+    group: "organizacao",
+    section: "Dados e acesso",
+    minRole: "admin",
+  },
+  {
+    href: "/app/extensions",
+    label: "Extensões",
+    description:
+      "Guias instalados para orientar o trabalho no CRM, com permissões e estado visíveis.",
+    icon: "PuzzlePiece",
+    group: "organizacao",
+    section: "Sua empresa",
+  },
+  {
+    // A porta da fonte de dados externa (migration 0372). Fica em "Dados e
+    // acesso" porque é o MESMO eixo de API Tokens: por onde dado entra e sai do
+    // CRM. NÃO é `admin` como as vizinhas de propósito — a decisão do dono (D2)
+    // é que QUALQUER autenticado vê a lista e consulta os dados; só CRIAR e
+    // editar conexão é `admin`. Gatear a leitura em `manager` esconderia do
+    // atendente exatamente a fonte que responde o que o cliente pergunta.
+    href: "/app/integracao-dados",
+    label: "Dados externos",
+    description:
+      "Conecte um banco de dados de outro sistema para o agente consultar em tempo real.",
+    icon: "PlugsConnected",
+    group: "organizacao",
+    section: "Dados e acesso",
+    // SEM `sidebar`: o menu de Organização já estourou a dobra uma vez e hub é
+    // onde se agrupa por uso. Configurar fonte de dados é tarefa de uma vez.
   },
 ] as const satisfies readonly NavMetadata[];
 

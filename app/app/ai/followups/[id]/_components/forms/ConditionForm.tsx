@@ -8,7 +8,9 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -20,13 +22,18 @@ import {
   comparadoresDoCampo,
   fraseDaCondicao,
   opcoes,
+  regraValeSempre,
+  temFormaDeId,
   type CampoDaCondicao,
   type Combinador,
   type OperadorDaCondicao,
 } from "@/lib/followup/vocabulario";
 import { Plus, Trash } from "@/lib/ui/icons";
+import { etapasPorFunil, nomeDaEtapa } from "@/hooks/followup/useEtapasDeGatilho";
 import { useT } from "@/hooks/i18n/useT";
 
+import { useEtapasDoFluxo } from "../EtapasDoFluxo";
+import { regraEmBranco } from "../nodes/nodeVisuals";
 import type { ConfigOf } from "./shared";
 
 /**
@@ -75,6 +82,8 @@ export function ConditionForm({
   ramosLigados?: string[];
 }) {
   const t = useT();
+  const { etapas, carregando: etapasCarregando, falhou: etapasFalharam, nomes } = useEtapasDoFluxo();
+  const funis = etapasPorFunil(etapas);
   const [combinator, setCombinator] = useState(config.combinator);
   const [branching, setBranching] = useState<Branching>(config.branching ?? "combined");
   const [checks, setChecks] = useState(config.checks);
@@ -141,6 +150,12 @@ export function ConditionForm({
   };
 
   const porRegra = branching === "per_check";
+
+  const trocarValor = (idx: number, valor: string | number) => {
+    const next = checks.map((c, i) => (i === idx ? { ...c, value: valor } : c));
+    setChecks(next);
+    commit({ checks: next });
+  };
 
   return (
     <div className="space-y-3">
@@ -246,8 +261,11 @@ export function ConditionForm({
               value={check.field}
               onValueChange={(v) => {
                 const campo = v as CampoDaCondicao;
+                // O valor NÃO sobrevive à troca de campo: "3" de passos virava a
+                // etapa "3", e o id de uma etapa virava uma etiqueta — regra com
+                // cara de pronta que nunca decide. Recomeça "a preencher".
                 const next = checks.map((c, i) =>
-                  i === idx ? { ...c, field: campo, op: operadorValidoPara(campo, c.op) } : c,
+                  i === idx ? { ...c, field: campo, op: operadorValidoPara(campo, c.op), value: "" } : c,
                 );
                 setChecks(next);
                 commit({ checks: next });
@@ -283,21 +301,51 @@ export function ConditionForm({
                 ))}
               </SelectContent>
             </Select>
-            <Input
-              aria-label={t("Valor")}
-              placeholder={CAMPOS_DA_CONDICAO[check.field].tipoDeValor === "numero" ? t("Ex.: 3") : t("Valor")}
-              value={String(check.value)}
-              onChange={(e) => {
-                const next = checks.map((c, i) => (i === idx ? { ...c, value: e.target.value } : c));
-                setChecks(next);
-                commit({ checks: next });
-              }}
-            />
+            {CAMPOS_DA_CONDICAO[check.field].tipoDeValor === "etapa" ? (
+              // A etapa é ESCOLHIDA, nunca digitada: o motor compara o
+              // `stage_id`, e um campo de texto pedia ao dono da clínica que
+              // digitasse o nome — "PAGO" —, que nunca casa com nada.
+              <ValorDeEtapa
+                valor={String(check.value).trim()}
+                funis={funis}
+                carregando={etapasCarregando}
+                falhou={etapasFalharam}
+                onEscolher={(stageId) => trocarValor(idx, stageId)}
+              />
+            ) : CAMPOS_DA_CONDICAO[check.field].tipoDeValor === "numero" ? (
+              <Input
+                aria-label={t("Valor")}
+                type="number"
+                inputMode="numeric"
+                min={0}
+                step={1}
+                placeholder={t("Ex.: 3")}
+                value={String(check.value)}
+                // Passos é NÚMERO no motor. Gravar o texto digitado fazia
+                // `≥ "3"` nunca valer e `≠ "3"` valer sempre.
+                onChange={(e) => {
+                  const bruto = e.target.value;
+                  trocarValor(idx, /^-?\d+$/.test(bruto.trim()) ? Number(bruto) : bruto);
+                }}
+              />
+            ) : (
+              <Input
+                aria-label={t("Valor")}
+                placeholder={t("Valor")}
+                value={String(check.value)}
+                onChange={(e) => trocarValor(idx, e.target.value)}
+              />
+            )}
             {/* A frase inteira, para quem não tem certeza do que os três campos
                 acima somam — e o aviso quando o motor nunca satisfaz o par. */}
-            <p className="text-xs text-text-muted">{fraseDaCondicao(check.field, check.op, check.value)}</p>
+            <p className="text-xs text-text-muted">{fraseDaCondicao(check.field, check.op, check.value, nomes)}</p>
             {comparador(check.field, check.op).aviso && (
               <p className="text-xs text-warning-fg">{t(comparador(check.field, check.op).aviso!)}</p>
+            )}
+            {regraValeSempre(check.field, check.op, check.value) && (
+              <p className="text-xs text-warning-fg" data-testid={`regra-vale-sempre-${idx}`}>
+                {t("Esta regra vale para todo contato. A saída dela leva todo mundo, e as saídas seguintes nunca são usadas.")}
+              </p>
             )}
           </div>
         ))}
@@ -309,7 +357,7 @@ export function ConditionForm({
         size="sm"
         disabled={checks.length >= 10}
         onClick={() => {
-          const nova: Check = { field: "steps_taken", op: "gte", value: 0 };
+          const nova: Check = regraEmBranco();
           const next = porRegra
             ? comIdsEstaveis([...checks, nova])
             : [...checks, nova];
@@ -321,5 +369,72 @@ export function ConditionForm({
       </Button>
       {error && <p className="text-xs text-error-fg">{error}</p>}
     </div>
+  );
+}
+
+/**
+ * O seletor de etapa da regra, agrupado por funil. O valor gravado que não é
+ * etapa ativa aparece como AVISO, não como opção: um fluxo anterior ao seletor
+ * guardou o nome digitado ("PAGO"), e a etapa pode ter sido apagada ou arquivada
+ * depois de escolhida. Nos dois casos a regra nunca decide nada — o publish
+ * recusa, e a tela diz por quê antes.
+ */
+function ValorDeEtapa({
+  valor,
+  funis,
+  carregando,
+  falhou,
+  onEscolher,
+}: {
+  valor: string;
+  funis: ReturnType<typeof etapasPorFunil>;
+  carregando: boolean;
+  falhou: boolean;
+  onEscolher: (stageId: string) => void;
+}) {
+  const t = useT();
+  const conhecida = funis.some((f) => f.etapas.some((e) => e.stageId === valor));
+  // Lista vazia por FALHA não é lista vazia por não haver etapa: acusar a regra
+  // aqui seria culpar o fluxo por uma consulta que caiu.
+  const semEtapas = !carregando && !falhou && funis.length === 0;
+  const solta = !carregando && !falhou && valor !== "" && !conhecida;
+
+  return (
+    <>
+      <Select value={conhecida ? valor : ""} onValueChange={onEscolher} disabled={carregando || falhou || semEtapas}>
+        <SelectTrigger aria-label={t("Valor")} aria-invalid={solta}>
+          <SelectValue placeholder={carregando ? t("Carregando etapas…") : t("Escolha a etapa")} />
+        </SelectTrigger>
+        <SelectContent>
+          {funis.map((funil) => (
+            <SelectGroup key={funil.id}>
+              <SelectLabel>{funil.nome}</SelectLabel>
+              {funil.etapas.map((etapa) => (
+                <SelectItem key={etapa.stageId} value={etapa.stageId}>
+                  {nomeDaEtapa(etapa)}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          ))}
+        </SelectContent>
+      </Select>
+      {falhou && (
+        <p className="text-xs text-warning-fg" data-testid="regra-etapas-indisponiveis">
+          {t("Não consegui carregar as etapas agora. O que estava escolhido continua salvo — recarregue a página para escolher outra.")}
+        </p>
+      )}
+      {semEtapas && (
+        <p className="text-xs text-error-fg">
+          {t("Nenhuma etapa ativa encontrada — crie o funil antes de usar esta regra.")}
+        </p>
+      )}
+      {solta && (
+        <p className="text-xs text-warning-fg" data-testid="regra-etapa-solta">
+          {temFormaDeId(valor)
+            ? t("A etapa escolhida não está mais na lista de etapas ativas — foi arquivada ou apagada. Escolha outra.")
+            : `“${valor}” ${t("foi digitado à mão e não é uma etapa do funil. Escolha a etapa na lista — do jeito que está, esta regra nunca decide nada.")}`}
+        </p>
+      )}
+    </>
   );
 }

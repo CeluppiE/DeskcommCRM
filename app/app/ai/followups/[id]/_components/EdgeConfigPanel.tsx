@@ -15,6 +15,7 @@ import { branchIdForCondition, nodeBranches } from "@/lib/followup/graph-schema"
 import type { FlowEdge, FlowNode } from "@/lib/followup/graph-schema";
 import { rotuloDoRamo } from "@/lib/followup/rotulo-do-ramo";
 import { useT } from "@/hooks/i18n/useT";
+import { useEtapasDoFluxo } from "./EtapasDoFluxo";
 
 interface Props {
   sourceNode: FlowNode | undefined;
@@ -36,11 +37,12 @@ interface Props {
  */
 export function EdgeConfigPanel({ sourceNode, targetNode, condition, onChange, onDelete }: Props) {
   const t = useT();
+  const { nomes } = useEtapasDoFluxo();
   const options = nodeBranches(
     sourceNode ?? { type: "trigger", config: {} },
   ).map((branch) => ({
     key: conditionKey(branch.condition),
-    label: t(rotuloDoRamo(branch)),
+    label: t(rotuloDoRamo(branch, nomes)),
     condition: branch.condition,
   }));
   // Aresta apontando para um ramo que não existe mais (a regra foi apagada):

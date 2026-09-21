@@ -9,6 +9,32 @@ vi.mock("@/hooks/ai/useCases", async () => {
   return { ...actual, useCase: (...args: unknown[]) => useCaseMock(...args) };
 });
 
+/**
+ * O chat do caso é mocado no NÍVEL DO HOOK, e o painel é renderizado de VERDADE.
+ *
+ * Mocar o componente esconderia a peça do único teste que monta esta árvore — e
+ * é justamente aqui que mora a prova da ORDEM no DOM (abaixo). Mocar só os
+ * hooks evita o `fetch` no jsdom sem apagar o que se quer medir.
+ */
+vi.mock("@/hooks/ai/useCaseChat", () => ({
+  useCaseChat: () => ({
+    data: {
+      mensagens: [],
+      persona: { fonte: "agente_do_caso", nome: "Ana", motivo: null },
+      estado: {
+        caso_obsoleto: false,
+        contato_bloqueado: false,
+        contato_anonimizado: false,
+        status: "awaiting_human",
+        ia_configurada: true,
+      },
+    },
+    isLoading: false,
+    error: null,
+  }),
+  useAskCase: () => ({ mutate: vi.fn(), isPending: false, error: null }),
+}));
+
 import { CaseDetail } from "@/app/app/ai/cases/_components/CaseDetail";
 
 function wrap(ui: React.ReactNode) {
@@ -80,5 +106,39 @@ describe("CaseDetail", () => {
     });
     render(wrap(<CaseDetail caseId="case-1" />));
     expect(screen.getByText("Aberto automaticamente")).toBeInTheDocument();
+  });
+
+  it("monta o painel de conversar com a IA sobre o caso", () => {
+    // Sem esta asserção, o mock dos hooks acima viraria um esconderijo: o painel
+    // poderia ser removido do `CaseDetail` e todo o resto seguiria verde.
+    useCaseMock.mockReturnValue({ isLoading: false, data: BASE_CASE });
+    render(wrap(<CaseDetail caseId="case-1" />));
+
+    expect(screen.getByTestId("case-chat")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Perguntar" })).toBeInTheDocument();
+  });
+
+  it("a ORDEM no DOM é contrato: a decisão vem antes da conversa com a IA", () => {
+    /**
+     * Dois e2e obrigatórios acham o painel de decisão por localizador frouxo:
+     * `page.locator("textarea").first()` (escalacao-ciclo.spec.ts:194) e
+     * `getByRole("button", { name: "Enviar", exact: true })`
+     * (encerramento-atendimento.spec.ts:226,249).
+     *
+     * Se o chat subir no DOM, o `.first()` passa a pegar o campo do chat e a
+     * decisão do atendente é digitada no lugar errado — com os dois e2e
+     * vermelhos por um sintoma que não aponta para cá. Este caso é a mesma
+     * regra, medida sem browser: primeiro textarea = o da decisão, e existe
+     * exatamente UM botão "Enviar" na árvore.
+     */
+    useCaseMock.mockReturnValue({ isLoading: false, data: BASE_CASE });
+    const { container } = render(wrap(<CaseDetail caseId="case-1" />));
+
+    const campos = container.querySelectorAll("textarea");
+    expect(campos.length).toBeGreaterThanOrEqual(2);
+    expect(campos[0]).toHaveAttribute("placeholder", "Escreva sua resposta para a IA...");
+    expect(campos[1]).toHaveAttribute("placeholder", "Pergunte à IA sobre este caso…");
+
+    expect(screen.getAllByRole("button", { name: "Enviar" })).toHaveLength(1);
   });
 });

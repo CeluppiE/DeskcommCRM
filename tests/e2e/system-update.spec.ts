@@ -319,11 +319,17 @@ test("o dono vê a versão nova na sidebar e atualiza pela tela", async ({ page,
   // volta "Versão 1.1.0 disponível" e o botão "Atualizar agora", oferecendo a
   // versão que acabou de ser instalada. Repare que NENHUM heartbeat foi enviado
   // entre o `run_result` e esta linha: é exatamente a janela do defeito.
+  //
+  // E a tela NÃO pode preencher esse silêncio afirmando a 1.1.0: o host nunca
+  // confirmou essa versão. O que ela diz é que o pedido terminou e que a última
+  // versão confirmada pelo host é a 1.0.0 — que é a que está no ar até ele
+  // falar.
   await page.reload();
   await expect(
-    page.getByRole("heading", { name: /pronto — você está na versão 1\.1\.0/i }),
+    page.getByRole("heading", { name: /a atualização para a versão 1\.1\.0 terminou/i }),
     "a tela voltou oferecendo a versão que acabou de ser instalada",
   ).toBeVisible();
+  await expect(page.getByText(/a última versão que ele confirmou é a 1\.0\.0/i)).toBeVisible();
   await expect(page.getByRole("button", { name: /atualizar agora/i })).toHaveCount(0);
   await page.screenshot({ path: ".superpowers/evidence/task9-3a-acabou-de-atualizar.png" });
 
@@ -454,6 +460,31 @@ test("quando a atualização falha, a tela nomeia a versão certa, mostra o log 
   await page.getByText(/Detalhes técnicos/).click();
   await expect(page.getByText(/é ANTERIOR à que já está instalada/)).toBeVisible();
   await page.screenshot({ path: ".superpowers/evidence/final-4-sem-passo-reportado.png" });
+
+  // ── A falha que já foi SUPERADA por outro caminho solta a tela ────────────
+  //
+  // Sem este bloco, o conserto do #945 não tem guarda nenhuma: a spec acima
+  // reporta sempre uma versão que o run DESCREVE (from=1.1.0, to=1.2.0), e
+  // `superseded` só vira verdadeiro quando o host informa uma TERCEIRA versão.
+  // Medido antes de escrever: reverter o `falhaVigente` do UpdatePanel deixava
+  // este arquivo inteiro verde.
+  //
+  // O caso é o da instalação real que originou o PR: a falha é de dias atrás, o
+  // dono atualizou pelo terminal (`update.sh`), o servidor está numa versão que
+  // a tentativa nem menciona — e a tela precisa voltar a oferecer, senão o único
+  // jeito de sair do aviso é clicar no botão que ele mesmo escondeu.
+  //
+  // `latest_version` precisa ser MAIOR que a instalada: com as duas iguais, o
+  // botão sumiria por "Você está na versão X" (UpdatePanel.tsx:297) e o teste
+  // passaria pelo motivo errado.
+  await heartbeat(request, { current_version: "1.3.0", latest_version: "1.4.0" });
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: /não deu certo/i }),
+    "a tela repetiu uma falha que o servidor já superou",
+  ).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /atualizar agora/i })).toBeVisible();
+  await page.screenshot({ path: ".superpowers/evidence/final-5-falha-superada.png" });
 });
 
 test("quando o host não conseguiu comparar, a tela não diz que está em dia", async ({

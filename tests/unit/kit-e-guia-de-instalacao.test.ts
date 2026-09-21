@@ -41,6 +41,12 @@ const FRASES_QUE_SALVAM = [
   "SUPABASE_ACCESS_TOKEN", // o caminho que configura os links dos e-mails
   "OpenRouter", // os três provedores, não só a Anthropic
   "SENTRY_DSN=off", // telemetria com consentimento (issue #668)
+  // O `.env` do exemplo aponta para o canal móvel `stable`, e a doutrina de
+  // packaging manda a instalação de cliente ficar num NÚMERO de versão. O aviso
+  // existia nos dois textos e sumiu do roteiro do kit numa reescrita de outro
+  // assunto, sem nenhum gate ver: esta lista cobrava `SENTRY_DSN=off` e nada
+  // sobre o canal da imagem.
+  "*_PULL_POLICY",
 ];
 
 /** Afirmações que já foram verdade e o código contradiz hoje. */

@@ -31,6 +31,7 @@ import {
   type EventoDeEnrollment,
   type NoDoDossie,
 } from "@/lib/followup/eventos-legiveis";
+import { carregaEtapasCitadas, nomesDasEtapas } from "@/lib/followup/etapas-citadas";
 import { leituraDoPlano, type TimingPlan } from "@/lib/followup/plano-de-tempo";
 import { flowGraphSchema } from "@/lib/followup/graph-schema";
 import { createClient } from "@/lib/supabase/server";
@@ -187,6 +188,10 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
   const noDeOrigem = grafo?.success
     ? grafo.data.nodes.find((n) => n.id === row.current_node_id)
     : undefined;
+  // A regra de etapa guarda o id; o nome vem do banco. Falha aqui não derruba o
+  // dossiê — a frase só descreve a opção, e cai em "(não encontrada)" sem id.
+  const citadas = await carregaEtapasCitadas(supabase, org.orgId, noDeOrigem ? [noDeOrigem] : []);
+  const nomesDeEtapa = citadas.ok ? nomesDasEtapas(citadas.etapas) : {};
   const saidas = (grafo?.success ? grafo.data.edges : [])
     .filter((e) => e.source === row.current_node_id)
     .sort((a, b) => b.priority - a.priority)
@@ -194,7 +199,7 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
       edge_id: e.id,
       target_id: e.target,
       target_rotulo: porId.get(e.target)?.rotulo ?? e.target,
-      quando: rotuloDaAresta(e, noDeOrigem),
+      quando: rotuloDaAresta(e, noDeOrigem, nomesDeEtapa),
     }));
 
   const contato = embedded(

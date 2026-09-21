@@ -39,7 +39,9 @@ import { logger } from "@/lib/logger";
 
 import { resolveAlvoDoRetorno } from "./retorno-crm";
 import { flowGraphSchema, type FlowEdge, type FlowNode } from "./graph-schema";
+import { carregaEtapasCitadas, nomesDasEtapas } from "./etapas-citadas";
 import { rotuloDaAresta } from "./eventos-legiveis";
+import type { NomesDeValor } from "./vocabulario";
 
 /** Estados em que o enrollment tem relógio: são os únicos que o motor reclama. */
 export const STATUS_COM_RELOGIO = ["active", "waiting_reply"] as const;
@@ -133,12 +135,14 @@ export function escolheSaida(
   edgeIdPedido?: string | null,
   /** O nó de origem — no grafo v2 é ele que conhece o NOME de cada ramo. */
   origem?: FlowNode,
+  /** Nome das etapas que as regras do nó citam por id. */
+  nomes: NomesDeValor = {},
 ): EscolhaDeSaida {
   const candidatas = edges.filter((e) => e.source === from).slice().sort((a, b) => b.priority - a.priority);
   const opcoes: SaidaDoNo[] = candidatas.map((e) => ({
     edge_id: e.id,
     target_id: e.target,
-    quando: rotuloDaAresta(e, origem),
+    quando: rotuloDaAresta(e, origem, nomes),
   }));
 
   if (candidatas.length === 0) return { ok: false, codigo: "sem_caminho", opcoes };
@@ -586,11 +590,19 @@ export async function pulaPassoDoEnrollment(
     };
   }
 
+  const origem = grafo.data.nodes.find((n) => n.id === alvo.current_node_id);
+  // Os nomes só descrevem as opções: falhar a leitura não pode impedir o pulo —
+  // a frase cai em "(não encontrada)" em vez de mostrar o id.
+  const citadas = await carregaEtapasCitadas(deps.supabase, deps.orgId, origem ? [origem] : []);
+  if (!citadas.ok) {
+    logger.warn("[followup.intervencao] nomes das etapas indisponíveis", { enrollment_id: alvo.id, erro: citadas.mensagem });
+  }
   const escolha = escolheSaida(
     grafo.data.edges,
     alvo.current_node_id,
     edgeId,
-    grafo.data.nodes.find((n) => n.id === alvo.current_node_id),
+    origem,
+    citadas.ok ? nomesDasEtapas(citadas.etapas) : {},
   );
   if (!escolha.ok) {
     const mensagem =

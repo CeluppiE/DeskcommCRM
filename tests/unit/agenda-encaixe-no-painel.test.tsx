@@ -36,6 +36,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { PainelDeMarcacao } from "@/components/agenda/PainelDeMarcacao";
 import type { HorarioLivre, Pessoa } from "@/components/agenda/tipos";
 import { ApiError } from "@/lib/api/types";
+import { mensagemDoDiaSemJanela } from "@/lib/agenda/o-que-falta-no-dia";
 
 afterEach(cleanup);
 
@@ -113,7 +114,16 @@ describe("a opção existe só onde a prop a liga", () => {
     expect(domingo).toHaveAttribute("data-disponivel", "false");
     fireEvent.click(domingo);
     expect(screen.getByTestId("hora-do-encaixe")).toBeInTheDocument();
-    expect(screen.getByTestId("encaixe")).toHaveTextContent("Nenhum horário publicado neste dia.");
+    // A frase antiga — "Nenhum horário publicado neste dia." — fazia a folga
+    // parecer configuração faltando, e saiu da tela no #896, item (b): quem
+    // publicou jornada e caiu num dia fora dela lê que o dia está fora dela;
+    // "nenhuma jornada publicada" é outra história (e tem texto próprio).
+    // A asserção lê a FONTE (`mensagemDoDiaSemJanela(true)`), não um literal
+    // copiado: este teste mede a POSIÇÃO do campo de encaixe, e quem cobra o
+    // texto é `agenda-do-atendente-diz-por-que.test.tsx`. O literal aqui seria
+    // só um segundo lugar para envelhecer (achado da triagem do #1107, item 4).
+    expect(screen.getByTestId("encaixe")).toHaveTextContent(mensagemDoDiaSemJanela(true));
+    expect(screen.queryByText("Nenhum horário publicado neste dia.")).toBeNull();
     // Sem horários, o campo vem ANTES da lista vazia — que estica e o jogaria
     // para o pé da coluna, embaixo de um vão em branco.
     const depois = screen.getByTestId("encaixe").compareDocumentPosition(screen.getByTestId("lista-de-horarios"));
@@ -250,5 +260,19 @@ describe("a confirmação é levada até a vista", () => {
     // em paralelo) o `findBy` resolvia antes do efeito e o caso reprovava.
     await waitFor(() => expect(rolou.mock.calls.length).toBeGreaterThan(antes));
     expect(rolou.mock.contexts.at(-1)).toBe(screen.getByTestId("confirmacao"));
+  });
+});
+
+describe("o calendário não trava no mês seguinte", () => {
+  it("Próximo mês fica clicável mesmo quando a consulta só trouxe este mês, e avisa quem busca", async () => {
+    const onMesVisivel = vi.fn();
+    montar({ onMesVisivel });
+
+    expect(screen.getByTestId("mes-seguinte")).toBeEnabled();
+    fireEvent.click(screen.getByTestId("mes-seguinte"));
+
+    await waitFor(() => {
+      expect(onMesVisivel.mock.calls.some((c) => (c[0] as Date).getMonth() === 9)).toBe(true);
+    });
   });
 });

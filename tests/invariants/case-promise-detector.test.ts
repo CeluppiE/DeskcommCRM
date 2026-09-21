@@ -27,7 +27,7 @@ const PROMISES: readonly string[] = [
   // PRONOME em vez do substantivo — "Já passo o número do pedido (#48291) para eles
   // resolverem junto com a reativação da assinatura."
   "já passo o número do pedido para eles resolverem junto com a reativação",
-  // achado em produção (tenant YADEA, 2026-08-30, lead "Fredy Restrito"): ESTADO
+  // achado num tenant de produção (2026-08-30): ESTADO
   // passivo alegado, não promessa de ação futura — o agente respondeu a uma
   // reclamação de garantia de quase 1 dia dizendo isto sem NENHUM caso aberto.
   // As regras de "vai resolver"/"vou encaminhar" não cobrem uma AFIRMAÇÃO de que
@@ -78,31 +78,31 @@ describe("detectHumanPromise — calibração (spec 15 §10.2)", () => {
 /**
  * `extraHumanNames` — o alvo TARGET original só conhece cargos genéricos
  * (equipe/gerente/responsável/...), então um prompt de tenant que nomeia a
- * retaguarda por NOME PRÓPRIO ("vou confirmar com o Fernando") escapava 100% do
- * detector. Medido em produção, tenant YADEA: dezenas de promessas nomeando
- * "Fernando", 1 só detecção em 3 dias. A fonte real é
+ * retaguarda por NOME PRÓPRIO ("vou confirmar com o Fulano") escapava 100% do
+ * detector. Medido num tenant de produção: dezenas de promessas nomeando
+ * o gerente pelo nome, 1 só detecção em 3 dias. A fonte real é
  * `ai_agent_versions.handoff_keywords` (já inclui o nome, ver `inbound-turn.ts`).
  */
 describe("detectHumanPromise — extraHumanNames (nome próprio do tenant)", () => {
-  const HANDOFF_KEYWORDS = ["falar com humano", "atendente", "pessoa real", "fernando", "gerente"];
+  const HANDOFF_KEYWORDS = ["falar com humano", "atendente", "pessoa real", "fulano", "gerente"];
 
-  it("SEM extraHumanNames, 'vou confirmar com o Fernando' NÃO é detectada (o defeito medido)", () => {
-    expect(detectHumanPromise("vou confirmar com o Fernando a disponibilidade de segunda")).toBe(false);
+  it("SEM extraHumanNames, 'vou confirmar com o Fulano' NÃO é detectada (o defeito medido)", () => {
+    expect(detectHumanPromise("vou confirmar com o Fulano a disponibilidade de segunda")).toBe(false);
   });
 
   it("COM extraHumanNames (handoff_keywords do tenant), a mesma frase É detectada", () => {
     expect(
-      detectHumanPromise("vou confirmar com o Fernando a disponibilidade de segunda", HANDOFF_KEYWORDS),
+      detectHumanPromise("vou confirmar com o Fulano a disponibilidade de segunda", HANDOFF_KEYWORDS),
     ).toBe(true);
   });
 
-  it("cobre as variantes reais do incidente: 'vou verificar com o Fernando' e 'encaminhar para o Fernando'", () => {
-    expect(detectHumanPromise("vou verificar com o Fernando e te retorno", HANDOFF_KEYWORDS)).toBe(true);
-    expect(detectHumanPromise("vou encaminhar essa questão ao Fernando", HANDOFF_KEYWORDS)).toBe(true);
+  it("cobre as variantes reais do incidente: 'vou verificar com o Fulano' e 'encaminhar para o Fulano'", () => {
+    expect(detectHumanPromise("vou verificar com o Fulano e te retorno", HANDOFF_KEYWORDS)).toBe(true);
+    expect(detectHumanPromise("vou encaminhar essa questão ao Fulano", HANDOFF_KEYWORDS)).toBe(true);
   });
 
   it("é robusto a caixa e acento no nome extra também", () => {
-    expect(detectHumanPromise("vou falar com o FERNANDO", HANDOFF_KEYWORDS)).toBe(true);
+    expect(detectHumanPromise("vou falar com o FULANO", HANDOFF_KEYWORDS)).toBe(true);
   });
 
   it("palavras compostas do handoff_keywords ('falar com humano', 'pessoa real') não quebram a montagem do regex", () => {
@@ -122,6 +122,6 @@ describe("detectHumanPromise — extraHumanNames (nome próprio do tenant)", () 
   });
 
   it("nome extra não vira falso positivo em texto que só MENCIONA o nome sem prometer nada", () => {
-    expect(detectHumanPromise("o Fernando é o nosso gerente de oficina", HANDOFF_KEYWORDS)).toBe(false);
+    expect(detectHumanPromise("o Fulano é o nosso gerente de oficina", HANDOFF_KEYWORDS)).toBe(false);
   });
 });

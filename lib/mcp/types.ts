@@ -38,6 +38,26 @@ export interface McpToolDefinition<TInput extends z.ZodRawShape = z.ZodRawShape>
    * Ausência → -32002 forbidden.
    */
   requiresScope: "mcp:read" | "mcp:write";
+  /**
+   * O que a tool DECLARA quando a resposta é um vazio que NÃO é sucesso.
+   *
+   * Uma busca que não acha nada TERMINOU bem: não houve erro, houve ausência —
+   * e as duas coisas ficavam idênticas para a auditoria, que só via a chamada
+   * completar e gravava `success: true`. O painel de capacidades lia `falhas: 0`
+   * ("nenhuma falha") enquanto o agente nunca achava um produto: a mentira não
+   * estava no número, estava no número não existir (issue #484).
+   *
+   * Devolver o motivo aqui é o que separa "não achei" de "falhei": quem lê este
+   * campo é a auditoria em `lib/ai/runtime/tools.ts`, e o motivo desce para
+   * `api_audit_log.metadata.motivo`, de onde a próxima contagem de "não achei"
+   * por loja e por termo vai poder ler.
+   *
+   * AUSENTE = todo vazio continua sucesso, exatamente como antes. É por tool de
+   * propósito: agenda sem compromissos numa janela é uma RESPOSTA ("não tem nada
+   * nesse período"), não uma falha — marcar todo vazio de toda tool
+   * transformaria comportamento normal em alarme.
+   */
+  motivoDoVazio?: (resultado: unknown) => string | null;
   handler: (
     input: z.infer<z.ZodObject<TInput>>,
     ctx: McpContext,

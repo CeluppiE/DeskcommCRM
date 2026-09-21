@@ -236,6 +236,23 @@ function walk(dir: string): string[] {
   });
 }
 
+/**
+ * As linhas que nomeiam provider, para o erro dizer ONDE — sem isto, quem leva o
+ * vermelho abre um arquivo de 200 linhas sabendo só que "alguma" delas nomeia.
+ * Medido em 19/09: um maestro apontou a linha errada ao executor, DUAS vezes, e
+ * a segunda veio marcada como urgente.
+ */
+function ondeNomeia(conteudo: string): { linha: number; texto: string }[] {
+  return conteudo
+    .split("\n")
+    .map((texto, i) => ({ linha: i + 1, texto: texto.trim() }))
+    .filter(({ texto }) => nomeiaProvider(texto))
+    .map(({ linha, texto }) => ({
+      linha,
+      texto: texto.length > 96 ? `${texto.slice(0, 96)}…` : texto,
+    }));
+}
+
 const offenders = ROOTS.flatMap(walk)
   .filter((f) => !ALLOWED.some((re) => re.test(f)))
   .filter((f) => nomeiaProvider(readFileSync(f, "utf8")));
@@ -247,10 +264,21 @@ if (novos.length) {
   console.error(
     "Nome de provider fora de lib/channels/ (doutrina restricao-de-canal, invariante 1):",
   );
-  for (const f of novos.sort()) console.error(`  ${f}`);
+  for (const f of novos.sort()) {
+    console.error(`  ${f}`);
+    for (const { linha, texto } of ondeNomeia(readFileSync(f, "utf8"))) {
+      console.error(`      linha ${linha}: ${texto}`);
+    }
+  }
   console.error(
     "\nPergunte uma CAPACIDADE (`capabilitiesOf`), peça o adapter (`getAdapter`) ou o\n" +
-      "identificador da sessão (`resolveSessionRef`) — nunca nomeie o provider.",
+      "identificador da sessão (`resolveSessionRef`) — nunca nomeie o provider.\n" +
+      "\nSe a linha acusada for um COMENTÁRIO: a cerca não distingue comentário de\n" +
+      "código, e isso é deliberado — separar exigiria remover comentários antes de\n" +
+      "casar, e um removedor de comentários apaga `\"http://waha:3000\"` e as URLs do\n" +
+      "Graph que moram DENTRO de string, criando falso negativo (a mesma classe da\n" +
+      "issue #118). Reescreva a prosa sem o nome: cite a seção da doutrina pelo\n" +
+      "assunto (`a seção de anti-banimento`), não pelo provider.",
   );
 }
 

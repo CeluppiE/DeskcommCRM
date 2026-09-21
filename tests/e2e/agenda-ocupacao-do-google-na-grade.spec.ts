@@ -10,6 +10,38 @@ import { credenciaisSupabaseDeTeste } from "../../scripts/lib/env-de-teste";
 import { irParaASemanaSeguinte } from "./helpers/agenda-semana-integra";
 
 /**
+ * O bloco de ocupação do Google na grade.
+ *
+ * ⚠️ O seletor NÃO é mais `agendamento-<id do evento>`, e a razão é de
+ * contrato, não de estilo: a leitura passou a ser
+ * `fn_agenda_ocupacao_google_do_dono` — o RPC que o Atendente também pode
+ * chamar (#896, item 3) —, e a função devolve OCUPAÇÃO: início, fim,
+ * transparência, status e o status da conexão, sem identidade do compromisso.
+ * Essa lista está presa em
+ * `tests/invariants/agenda-ocupacao-google-do-dono.test.ts`, que a cobra
+ * coluna por coluna. Sem id do evento, o bloco se identifica na tela por dono +
+ * fatia visível, e o seletor estável que sobra é a ORIGEM, que o produto já
+ * carrega na célula (`data-origem="google_sync"`).
+ */
+const blocoDoGoogle = (page: Page) => page.locator('[data-origem="google_sync"]');
+
+/**
+ * O mesmo bloco na visão MÊS, que é outro elemento — o chip, não o card.
+ *
+ * O chip também se chamava pelo id do evento (`chip-mes-<id>`), e pelo mesmo
+ * motivo deixou de existir: o `id` que ele carrega é DERIVADO (dono + fatia
+ * visível), não o do compromisso. A saída pela ORIGEM precisou de um atributo
+ * no chip — ele não a carregava, só o card da semana.
+ *
+ * O que NÃO serve aqui, e é o caminho tentador: apontar o chip pelo texto
+ * "Ocupado". É exatamente o que o `toContainText(/ocupado/i)` logo abaixo
+ * AFIRMA — selecionar por ele faria a asserção provar o próprio seletor, e o
+ * rótulo poderia sumir da tela com a spec verde.
+ */
+const chipDoGoogleNoMes = (page: Page) =>
+  page.locator('[data-testid^="chip-mes-"][data-origem="google_sync"]');
+
+/**
  * A OCUPAÇÃO QUE VEM DO GOOGLE APARECE NA GRADE — e continua lá depois do
  * refetch.
  *
@@ -168,7 +200,12 @@ test.describe("a ocupação do Google na grade da agenda", () => {
       .select("id")
       .single();
     if (error) throw new Error(`calendar_external_events: ${error.message}`);
+    // O id do evento NÃO é mais o seletor do bloco na grade (ver
+    // `blocoDoGoogle`): a leitura por função devolve ocupação, sem identidade.
+    // Ele segue medido aqui porque é ele que o domínio usa como chave do
+    // compromisso — e um insert que não devolvesse id seria outra falha.
     const eventoId = (evento as { id: string }).id;
+    expect(eventoId, "o evento externo não ganhou id").toBeTruthy();
 
     // 2ª passada: RECARREGA e navega de novo. Depois disto a semente do servidor
     // não cobre mais a semana em tela — o que estiver desenhado veio da rota.
@@ -177,7 +214,7 @@ test.describe("a ocupação do Google na grade da agenda", () => {
     const diasDepois = await irParaASemanaSeguinte(page);
     expect(diasDepois, "a semana desenhada mudou entre as duas passadas").toContain(alvo);
 
-    const bloco = page.getByTestId(`agendamento-${eventoId}`);
+    const bloco = blocoDoGoogle(page);
     await expect(
       bloco,
       "a ocupação vinda do Google não foi desenhada na grade depois do refetch",
@@ -248,19 +285,20 @@ test.describe("a ocupação do Google na grade da agenda", () => {
       .single();
     if (error) throw new Error(`calendar_external_events: ${error.message}`);
     const eventoId = (evento as { id: string }).id;
+    expect(eventoId, "o evento externo não ganhou id").toBeTruthy();
 
     await page.reload();
     await expect(page.getByTestId("tela-agenda")).toBeVisible({ timeout: 25_000 });
     await irParaASemanaSeguinte(page);
-    await expect(page.getByTestId(`agendamento-${eventoId}`)).toBeVisible({ timeout: 20_000 });
+    await expect(blocoDoGoogle(page)).toBeVisible({ timeout: 20_000 });
 
     // Vai para a semana +2 e VOLTA. O `useAgendamentos` refaz a busca a cada
     // troca de recorte — é exatamente aqui que a semente do servidor morria.
     await page.getByTestId("periodo-seguinte").click();
-    await expect(page.getByTestId(`agendamento-${eventoId}`)).toHaveCount(0, { timeout: 15_000 });
+    await expect(blocoDoGoogle(page)).toHaveCount(0, { timeout: 15_000 });
     await page.getByTestId("periodo-anterior").click();
     await expect(
-      page.getByTestId(`agendamento-${eventoId}`),
+      blocoDoGoogle(page),
       "o bloco do Google sumiu ao voltar para a semana dele — o refetch o apagou",
     ).toBeVisible({ timeout: 20_000 });
 
@@ -268,10 +306,10 @@ test.describe("a ocupação do Google na grade da agenda", () => {
     // chegava, porque `naJanelaDoServidor` vira falso.
     await page.getByTestId("visao-mes").click();
     await expect(
-      page.getByTestId(`chip-mes-${eventoId}`),
+      chipDoGoogleNoMes(page),
       "a ocupação do Google não aparece na visão Mês",
     ).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByTestId(`chip-mes-${eventoId}`)).toContainText(/ocupado/i);
+    await expect(chipDoGoogleNoMes(page)).toContainText(/ocupado/i);
     expect(
       await page.content(),
       "o título do evento do Google VAZOU na visão Mês",
@@ -313,7 +351,10 @@ test.describe("a ocupação do Google na grade da agenda", () => {
       } as never)
       .select("id")
       .single();
-    const eventoId = (evento as { id: string }).id;
+    // A sanidade da fixture, como nos dois casos irmãos: sem ela um insert que
+    // falhou em silêncio chega ao fim como "elemento não encontrado", que
+    // aponta para a tela em vez de apontar para o seed.
+    expect((evento as { id: string } | null)?.id, "o evento externo não ganhou id").toBeTruthy();
 
     await db
       .from("calendar_appointments")
@@ -342,7 +383,9 @@ test.describe("a ocupação do Google na grade da agenda", () => {
     await expect(page.getByTestId("tela-agenda")).toBeVisible({ timeout: 25_000 });
     await irParaASemanaSeguinte(page);
 
-    const doGoogle = page.getByTestId(`agendamento-${eventoId}`);
+    // A ocupação do Google pela ORIGEM; o NOSSO agendamento pelo id, que ele
+    // tem de verdade — e é esse contraste que o caso mede.
+    const doGoogle = blocoDoGoogle(page);
     const meu = page.getByTestId(`agendamento-${nossoId}`);
     await expect(doGoogle).toBeVisible({ timeout: 20_000 });
     await expect(meu, "o nosso agendamento sumiu da grade").toBeVisible({ timeout: 20_000 });

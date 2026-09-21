@@ -49,6 +49,13 @@ export const TOOLS_GOVERNANCA = declararTools([
     name: "crm_request_human_handoff",
     category: "handoff",
     rotulo: "Chamar um atendente humano",
+    // A promessa "entregando um resumo do que já aconteceu" foi FALSA por meses:
+    // a tool fixava `reason: "requested_human"` e descartava todo o resto. O
+    // texto se mantém porque agora ela é verdade — quem a torna verdade é
+    // `lib/mcp/tools/handoff.ts` (os campos `o_que_tentei`/`cliente_quer`) mais
+    // o briefing que `triggerHandoff` monta do checkpoint durável. Para conferir
+    // sem acreditar neste comentário:
+    //   grep -n "declarado" lib/mcp/tools/handoff.ts lib/ai/handoff/orchestrator.ts
     explicacao:
       "Interrompe o atendimento automático e chama uma pessoa, entregando um resumo do que já aconteceu na conversa.",
     oQueToca: "Atendimento",

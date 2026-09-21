@@ -9,6 +9,11 @@
 #
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
+# Um GIT_DIR herdado (suíte rodada de dentro de um hook ou de um `rebase --exec`)
+# manda por cima de todo `cd`/`git -C` dos repositórios descartáveis abaixo, e a
+# escrita cai no repositório de quem roda. Zerar o ambiente local do git é o
+# idioma canônico do próprio git para isso.
+unset $(git rev-parse --local-env-vars)
 
 # O _common.sh vem antes porque é dele que saem `nome_do_projeto_compose`,
 # `veredito_rede_do_proxy` e `garantir_rede_do_proxy` — o install.sh e o update.sh
@@ -48,6 +53,25 @@ CRONTAB_REAL_DEPOIS="$SUITE_TMP/crontab-real-depois.txt"
 # estado de "usuário sem crontab". A distinção não importa para a comparação;
 # o que importa é ela ser feita com o MESMO comando nas duas pontas.
 crontab -l >"$CRONTAB_REAL_ANTES" 2>/dev/null || : >"$CRONTAB_REAL_ANTES"
+
+# dublar_uname_amd64 <diretório bin do sandbox>
+#
+# O `_common.sh` recusa, logo que é carregado, todo install.sh/update.sh que não
+# roda em amd64 — a imagem publicada é só linux/amd64. Os cenários que executam
+# esses scripts de verdade medem o INSTALADOR, não o processador de quem roda a
+# suíte: sem este dublê, num Mac Apple Silicon (`arm64`) todos eles paravam na
+# guarda (medido: 22 asserções vermelhas, a maioria "inconclusivo"). A recusa de
+# ARM tem prova própria em tests/shell/arquitetura-kit.test.sh. Só `uname -m` é
+# dublado; qualquer outro uso vai ao `uname` real.
+UNAME_REAL="$(command -v uname)"
+dublar_uname_amd64() {
+  cat > "$1/uname" <<STUB
+#!/usr/bin/env bash
+[ "\$*" = "-m" ] && { printf 'x86_64\n'; exit 0; }
+exec "$UNAME_REAL" "\$@"
+STUB
+  chmod +x "$1/uname"
+}
 # ok <descrição> <pass|reject> <validador> <valor> [trecho esperado na mensagem]
 #
 # O trecho esperado não é firula: sem ele o teste passa por acaso. Provado —
@@ -386,6 +410,7 @@ TMP3="$(mktemp -d)"
   cp install.sh _common.sh "$TMP3/"
   : > "$TMP3/proj/docker-compose.prod.yml"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP3/bin/docker"; chmod +x "$TMP3/bin/docker"
+  dublar_uname_amd64 "$TMP3/bin"
   cat > "$TMP3/supabase-provision.sh" <<'PROV'
 #!/usr/bin/env bash
 # O que o provisionamento emite quando SUPABASE_REGION (que vem do ambiente)
@@ -433,7 +458,8 @@ if [ ! -f "$EXEMPLO" ]; then
   # pulo silencioso é indistinguível de teste que passou.
   printf '  — pulado: %s não existe (kit fora do repositório)\n' "$EXEMPLO"
 else
-  GRAVA="$(grep -oE '^[[:space:]]*envq [A-Z_0-9]+' install.sh | awk '{print $2}' | sort -u)"
+  regua_quebrou=0
+  GRAVA="$(grep -oE '^[[:space:]]*envq [A-Z_0-9]+' install.sh | awk '{print $2}' | sort -u)" || regua_quebrou=1
   # VACUIDADE — a lista de escrita é a régua deste caso, e uma régua CURTA acusa
   # o inocente. `$GRAVA` sai de um pipeline de três estágios; quando a máquina
   # está saturada ele às vezes volta truncado, e o efeito não é um teste que
@@ -446,21 +472,38 @@ else
   # rodadas seguintes verdes. Conjuntos diferentes a cada vez é a assinatura de
   # régua truncada, não de defeito.
   #
-  # O piso não precisa acompanhar o crescimento do install.sh: ele separa
-  # "pipeline morreu no meio" de "lista completa", e qualquer valor bem abaixo do
-  # real serve. Para ver quantas há hoje:
-  #   grep -cE '^[[:space:]]*envq [A-Z_0-9]+' hostgator-setup-kit/install.sh
+  # O piso fixo de 30 não pegava isso: 30 é menos da metade da régua real, e a
+  # truncagem parcial (67 → 40, digamos) passava por baixo da guarda e saía como
+  # acusação. Piso escolhido à mão ainda encolhe de valor relativo a cada chave
+  # nova, sem avisar. O que separa "régua truncada" de "chave faltando" é contar
+  # a MESMA régua duas vezes, por caminhos independentes: a lista acima e uma
+  # contagem direta no install.sh, de um processo só — sem pipeline, logo sem
+  # leitura parcial. Batendo, a régua está inteira e as acusações abaixo têm
+  # chão; divergindo, ou voltando o pipeline acima com status ≠ 0, o desfecho é
+  # INCONCLUSIVO — nunca "chave faltando". A contagem direta é por CHAVE ÚNICA,
+  # como a lista: `envq DOMAIN` escrito em dois ramos de um `if` é uma chave só,
+  # e contar linhas acusaria régua truncada para sempre com a régua inteira.
+  #
+  # A contagem dupla fecha a truncagem, mas não era ela a causa das acusações
+  # soltas da issue #1153: as rodadas registradas acusaram uma ou duas chaves
+  # espalhadas, e uma régua truncada perde a CAUDA — para deixar de fora aquelas
+  # chaves teria de acusar de 14 a 54 ao mesmo tempo. O que produz uma acusação
+  # solta é a checagem POR CHAVE, que era um `printf | grep -qx` por chave: um
+  # processo por chave, que pode falhar sozinho sob carga, lido pelo `&&` como
+  # "ausente" para QUALQUER status ≠ 0. `na_regua` responde a pertença sem abrir
+  # processo nenhum. Qual falha do sistema devolvia o status ≠ 0 não foi medido
+  # (carga ~17: 0 em 6000); o conserto não depende de saber.
+  na_regua() { case $'\n'"$GRAVA"$'\n' in *$'\n'"$1"$'\n'*) return 0 ;; esac; return 1; }
   n_grava="$(printf '%s\n' "$GRAVA" | grep -c . || true)"
-  if [ "${n_grava:-0}" -lt 30 ]; then
-    printf '  ✗ a lista de escrita voltou com %s chave(s) — a régua está truncada, não o install.sh\n' "${n_grava:-0}"
+  n_real="$(awk 'match($0, /^[[:space:]]*envq [A-Z_0-9]+/) { k = substr($0, RSTART, RLENGTH); sub(/^[[:space:]]*envq /, "", k); u[k] = 1 } END { n = 0; for (k in u) n++; print n }' install.sh)" || regua_quebrou=1
+  if [ "${regua_quebrou:-0}" -ne 0 ] || [ "${n_grava:-0}" -ne "${n_real:-0}" ]; then
+    printf '  ✗ a lista de escrita voltou com %s chave(s) contra %s na contagem direta — a régua está truncada, não o install.sh\n' "${n_grava:-0}" "${n_real:-0}"
     printf '     (cenário INCONCLUSIVO: sem régua inteira, toda acusação abaixo seria falsa)\n'
     fail=1
-    GRAVA=""
-    novas=""
   else
   novas=""
   for k in $(grep -oE '^[A-Z_0-9]+=' "$EXEMPLO" | tr -d '=' | sort -u); do
-    printf '%s\n' "$GRAVA" | grep -qx "$k" && continue
+    na_regua "$k" && continue
     case " $DIVIDA " in *" $k "*) continue ;; esac
     novas="$novas $k"
   done
@@ -471,16 +514,18 @@ else
   else
     printf '  ✓ nenhuma chave nova fora da lista de escrita\n'
   fi
-  fi
+  # Só com a régua inteira: no ramo inconclusivo, conferir a dívida contra uma
+  # régua que não temos imprimiria um ✓ calculado sobre nada.
   estagnada=""
   for k in $DIVIDA; do
-    printf '%s\n' "$GRAVA" | grep -qx "$k" && estagnada="$estagnada $k"
+    na_regua "$k" && estagnada="$estagnada $k"
   done
   if [ -n "$estagnada" ]; then
     printf '  ✗ já é gravada pelo install.sh — tire da lista DÍVIDA deste teste:%s\n' "$estagnada"
     fail=1
   else
     printf '  ✓ dívida ainda condiz (%s chaves conhecidas, só pode encolher)\n' "$(printf '%s' "$DIVIDA" | wc -w | tr -d ' ')"
+  fi
   fi
 fi
 
@@ -855,6 +900,58 @@ else
   printf '  ✗ uma apagou a outra (drain=%s, agente=%s — esperava 1 de cada)\n' "$tem_drain" "$tem_agent"; fail=1
 fi
 
+echo "cron: o segredo não vai para a linha do crontab (nem para o syslog)"
+# O `cron` do Ubuntu registra no syslog a linha de comando de cada execução. Com
+# o Bearer escrito na linha, o segredo das rotas de cron ia para o log a cada
+# minuto — medido numa VPS de produção em 2026-09-17: 24.827 linhas no journal.
+# O cenário parte da linha LEGADA, a que toda instalação existente tem.
+TMP_CRON="$(mktemp -d)"
+(
+  . ./_common.sh
+  # Dublê em FUNÇÃO, e não no PATH: `command -v crontab` e os dois lados do cano
+  # enxergam a função, e o crontab real de quem roda a suíte nunca é tocado.
+  crontab() {
+    case "${1:-}" in
+      -l) [ -f "$TMP_CRON/crontab" ] || return 1; cat "$TMP_CRON/crontab" ;;
+      -)  cat > "$TMP_CRON/crontab.novo" && mv "$TMP_CRON/crontab.novo" "$TMP_CRON/crontab" ;;
+    esac
+  }
+  step() { :; }; psql_run() { :; }
+  PROJECT_DIR="$TMP_CRON/projeto"; mkdir -p "$PROJECT_DIR"
+  NEXT_PUBLIC_APP_URL="https://crm.exemplo.com.br"
+  URL="$NEXT_PUBLIC_APP_URL/api/v1/cron/event-log-drain"
+  printf '* * * * * curl -fsS -H "Authorization: Bearer segredo-velho-a1b2c3" "%s" >/dev/null 2>&1 # deskcomm:%s:drain\n' \
+    "$URL" "$PROJECT_DIR" > "$TMP_CRON/crontab"
+  CAB="$PROJECT_DIR/.env.cron-drain"
+  checa() { if eval "$2"; then printf '  ✓ %s\n' "$1"; else printf '  ✗ %s\n' "$1"; exit 1; fi; }
+
+  INTERNAL_CRON_SECRET="segredo-novo-9f8e7d"; INTERNAL_SECRET=""
+  setup_event_log_drain_cron >/dev/null 2>&1
+  checa "a linha do drain continua existindo (controle de vacuidade)" \
+    '[ "$(grep -cF "$URL" "$TMP_CRON/crontab")" = 1 ]'
+  checa "nenhuma linha do crontab carrega o segredo novo" \
+    '! grep -qF "segredo-novo-9f8e7d" "$TMP_CRON/crontab"'
+  checa "a linha legada, com o segredo velho, foi substituída" \
+    '! grep -qF "segredo-velho-a1b2c3" "$TMP_CRON/crontab"'
+  checa "a linha lê o cabeçalho do arquivo" \
+    'grep -F "$URL" "$TMP_CRON/crontab" | grep -qF -- "-H @\"$CAB\""'
+  checa "o arquivo tem o cabeçalho que a rota espera" \
+    '[ "$(cat "$CAB")" = "Authorization: Bearer segredo-novo-9f8e7d" ]'
+  # `stat -c` é GNU; no macOS o equivalente é `stat -f '%Lp'` (mesma forma usada mais
+  # abaixo neste arquivo). No Windows o `stat` do Git Bash não reflete o chmod; no CI, Linux, reflete.
+  checa "o arquivo nasce só para o dono (600)" \
+    '[ "$(stat -c "%a" "$CAB" 2>/dev/null || stat -f "%Lp" "$CAB" 2>/dev/null)" = 600 ]'
+
+  # Trocar o segredo no `.env` e rodar o update de novo é a rotação inteira.
+  INTERNAL_CRON_SECRET="segredo-rotacionado-4c3b2a"
+  setup_event_log_drain_cron >/dev/null 2>&1
+  checa "rodar de novo com segredo novo regrava o arquivo" \
+    '[ "$(cat "$CAB")" = "Authorization: Bearer segredo-rotacionado-4c3b2a" ]'
+  checa "e não empilha linha no crontab" \
+    '[ "$(grep -cF "$URL" "$TMP_CRON/crontab")" = 1 ]'
+) || fail=1
+rm -rf "$TMP_CRON"
+
 echo "provisionamento do Supabase: senha do banco"
 # Dois testes distintos, porque o defeito e o contrato moram em lugares
 # diferentes — e o primeiro teste que escrevi aqui era VÁCUO por não separá-los.
@@ -868,6 +965,7 @@ echo "provisionamento do Supabase: senha do banco"
 #     O passo 3 imprime o título antes de tocar a rede, então a asserção não
 #     depende de a API responder (e o token aqui é propositalmente inválido).
 saida="$(SUPABASE_ACCESS_TOKEN=token-invalido-de-teste SUPABASE_ORG_ID=org-de-teste \
+         SUPABASE_PROVISION_STATE="$SUITE_TMP/senha-do-teste.env" \
          bash ./supabase-provision.sh "Projeto de Teste" sa-east-1 2>&1 || true)"
 if printf '%s' "$saida" | grep -q 'Criando o projeto'; then
   printf '  ✓ o script passa da geração da senha e chega ao passo de criar\n'
@@ -887,6 +985,175 @@ case "$senha" in
   '')             printf '  ✗ senha vazia\n'; fail=1;;
   *)              printf '  ✓ só alfanuméricos (não parte a connection string)\n';;
 esac
+
+echo "provisionamento do Supabase: leitura das chaves e senha do banco"
+# POR QUE ESTES CENÁRIOS EXISTEM (issue #856): o GET /projects/<ref>/api-keys
+# passou a devolver `api_key` ANTES de `name`, e a leitura antiga casava
+# `"name":"anon"` e só então procurava `api_key` no que vinha DEPOIS, até o `}`.
+# No dia em que a API mudou, o passo 5 morreu com "Não consegui ler
+# anon/service_role" num projeto JÁ criado — e a senha do banco, que só existia
+# na memória do processo, foi junto (a vaga do plano grátis também).
+#
+# Por isso os cenários abaixo rodam o SCRIPT INTEIRO contra uma API de mentira
+# (dublês de curl e de docker no PATH, nada de rede): provar que a função de
+# leitura lê não prova que a instalação deixa de morrer no passo 5, e é o script
+# inteiro que quem instala roda. O CONTROLE é a resposta na ordem ANTIGA (a que
+# sempre funcionou) e o CENÁRIO OPOSTO é a resposta SEM as chaves — que tem de
+# morrer, e morrer deixando a senha no disco.
+PROV_TMP="$SUITE_TMP/provisionamento"
+KIT_DIR="$(pwd)"
+mkdir -p "$PROV_TMP/bin" "$PROV_TMP/proj"
+cat > "$PROV_TMP/bin/curl" <<'DUBLECURL'
+#!/usr/bin/env bash
+# Dublê de curl: responde o que o supabase-provision.sh pergunta, a partir da
+# fixture que o cenário apontou em DUBLE_CHAVES. A ordem dos casos importa —
+# .../api-keys também casa com */projects/*, e vem primeiro.
+url=""
+for a in "$@"; do case "$a" in https://api.supabase.com/*) url="$a" ;; esac; done
+case "$url" in
+  */api-keys)   cat "${DUBLE_CHAVES:?dublê de curl sem DUBLE_CHAVES}" ;;
+  */projects/*) printf '{"status":"ACTIVE_HEALTHY"}' ;;
+  */projects)   printf '{"ref":"%s"}' "${DUBLE_REF:-abcdefghijklmnop}" ;;
+  *)            printf '{"message":"dublê sem resposta para %s"}' "$url"; exit 22 ;;
+esac
+DUBLECURL
+cat > "$PROV_TMP/bin/docker" <<'DUBLEDOCKER'
+#!/usr/bin/env bash
+# Dublê de docker: o passo 6 PROVA cada host de pooler com uma conexão real.
+# Aqui o primeiro candidato responde — o teste não é sobre o pooler, é sobre a
+# senha chegar inteira até lá.
+printf '%s\n' "$*" >> "${DOCKER_LOG:-/dev/null}"
+exit 0
+DUBLEDOCKER
+chmod +x "$PROV_TMP/bin/curl" "$PROV_TMP/bin/docker"
+
+# Fixtures: o essencial de cada forma da resposta (valores obviamente de teste).
+cat > "$PROV_TMP/chaves-ordem-nova.json" <<'JSON'
+[{"api_key":"chave-anon-nova","id":"a1","type":"publishable","name":"anon"},{"api_key":"chave-service-nova","id":"a2","type":"secret","name":"service_role"}]
+JSON
+cat > "$PROV_TMP/chaves-ordem-antiga.json" <<'JSON'
+[{"id":"a1","name":"anon","api_key":"chave-anon-antiga"},{"id":"a2","name":"service_role","api_key":"chave-service-antiga"}]
+JSON
+cat > "$PROV_TMP/chaves-sem-as-chaves.json" <<'JSON'
+[{"api_key":"chave-de-outra-coisa","id":"a1","name":"outra"}]
+JSON
+
+# rodar_prov <chaves> <projeto> <arquivo de estado> [senha imposta]
+#   → stdout em $PROV_TMP/out, stderr em $PROV_TMP/err, código em $prov_rc.
+#     Os dois canais ficam separados porque é o stdout (as 4 linhas do .env) que
+#     carrega a senha em claro, e o stderr é o resumo visual — que não pode
+#     carregá-la.
+prov_rc=0
+rodar_prov() {
+  ( cd "$PROV_TMP/proj" && env PATH="$PROV_TMP/bin:$PATH" \
+      SUPABASE_ACCESS_TOKEN=token-de-teste SUPABASE_ORG_ID=org-de-teste \
+      SUPABASE_DB_PASS="${4:-}" SUPABASE_PROVISION_STATE="$3" \
+      DUBLE_CHAVES="$1" DUBLE_REF=abcdefghijklmnop DOCKER_LOG="$PROV_TMP/docker.log" \
+      bash "$KIT_DIR/supabase-provision.sh" "$2" sa-east-1 ) >"$PROV_TMP/out" 2>"$PROV_TMP/err"
+  prov_rc=$?
+}
+senha_do_estado() { [ -f "$1" ] && sed -n "s/^SUPABASE_DB_PASS='\(.*\)'$/\1/p" "$1" | head -1 || true; }
+url_do_estado() { grep -qF "postgres.abcdefghijklmnop:$1@aws-0-sa-east-1.pooler.supabase.com:5432/postgres" "$2"; }
+
+# (1) O CASO DA ISSUE: api_key ANTES de name. A asserção cobra o VALOR lido, não
+#     a presença da linha — presença passaria com qualquer chave.
+rodar_prov "$PROV_TMP/chaves-ordem-nova.json" "Projeto de Teste" "$PROV_TMP/estado-novo"
+if [ "$prov_rc" -eq 0 ] \
+   && grep -qF "NEXT_PUBLIC_SUPABASE_ANON_KEY='chave-anon-nova'" "$PROV_TMP/out" \
+   && grep -qF "SUPABASE_SERVICE_ROLE_KEY='chave-service-nova'" "$PROV_TMP/out"; then
+  printf '  ✓ lê as chaves com api_key ANTES de name (o defeito da #856 não volta)\n'
+else
+  printf '  ✗ não leu as chaves na ordem nova (rc=%s)\n' "$prov_rc"
+  printf '     o script disse: %s\n' "$(sed -E 's/\x1b\[[0-9;]*m//g' "$PROV_TMP/err" | grep -v '^$' | tail -2 | tr '\n' ' ')"
+  fail=1
+fi
+
+# (2) A outra metade da issue: a senha do banco. Ela tem de existir em arquivo de
+#     600, com 32 caracteres, e ser EXATAMENTE a que entrou na connection string.
+senha1="$(senha_do_estado "$PROV_TMP/estado-novo")"
+# `stat -c` é GNU; no macOS o equivalente é `stat -f '%Lp'`. Sem o segundo ramo, a
+# asserção abaixo reprova na máquina de quem tria (o `|| printf '?'` engole o erro
+# e o modo vira '?'), com um ✗ que não é do conserto. Medido em Darwin 25.4.0:
+# `stat -c '%a' /etc/hosts` → "stat: illegal option -- c".
+modo1="$(stat -c '%a' "$PROV_TMP/estado-novo" 2>/dev/null || stat -f '%Lp' "$PROV_TMP/estado-novo" 2>/dev/null || printf '?')"
+if [ "${#senha1}" -eq 32 ] && [ "$modo1" = 600 ] && url_do_estado "$senha1" "$PROV_TMP/out"; then
+  printf '  ✓ senha guardada em 600 e é a mesma que foi para a connection string\n'
+else
+  printf '  ✗ a senha não sobreviveu (caracteres=%s, modo=%s)\n' "${#senha1}" "$modo1"
+  fail=1
+fi
+
+# (3) E ela NÃO aparece no resumo visual: quem instala costuma mandar print
+#     pedindo ajuda, e a senha do banco dá acesso direto ao banco.
+if [ -n "$senha1" ] && grep -qF "$senha1" "$PROV_TMP/err"; then
+  printf '  ✗ a senha apareceu em claro no resumo (stderr)\n'; fail=1
+else
+  printf '  ✓ o resumo visual segue mascarado (senha só no arquivo e no .env)\n'
+fi
+
+# (4) CONTROLE: a ordem ANTIGA continua funcionando. Sem este cenário, um
+#     conserto que só soubesse ler a ordem nova passaria no teste da #856 e
+#     quebraria onde a API ainda responde na ordem antiga.
+rodar_prov "$PROV_TMP/chaves-ordem-antiga.json" "Projeto de Teste" "$PROV_TMP/estado-antigo"
+if [ "$prov_rc" -eq 0 ] \
+   && grep -qF "NEXT_PUBLIC_SUPABASE_ANON_KEY='chave-anon-antiga'" "$PROV_TMP/out" \
+   && grep -qF "SUPABASE_SERVICE_ROLE_KEY='chave-service-antiga'" "$PROV_TMP/out"; then
+  printf '  ✓ lê as chaves também com name antes de api_key (ordem antiga)\n'
+else
+  printf '  ✗ a ordem antiga parou de funcionar (rc=%s)\n' "$prov_rc"; fail=1
+fi
+
+# (5) CENÁRIO OPOSTO: resposta SEM anon/service_role (API mudou de novo, ou token
+#     de outra organização). O certo é MORRER — e morrer dizendo onde a senha
+#     ficou, para ninguém recriar o projeto e queimar a segunda vaga do grátis.
+rodar_prov "$PROV_TMP/chaves-sem-as-chaves.json" "Projeto de Teste" "$PROV_TMP/estado-sem-chaves"
+falou_motivo=""; grep -qF 'Não consegui ler anon/service_role' "$PROV_TMP/err" && falou_motivo=1
+falou_onde=""
+[ -f "$PROV_TMP/estado-sem-chaves" ] && grep -qF 'a senha do banco está guardada em' "$PROV_TMP/err" && falou_onde=1
+if [ "$prov_rc" -ne 0 ] && [ -n "$falou_motivo" ] && [ -n "$falou_onde" ]; then
+  printf '  ✓ resposta sem as chaves morre pelo motivo certo e diz onde a senha ficou\n'
+else
+  printf '  ✗ esperava morrer dizendo o motivo e onde a senha ficou (rc=%s, motivo=%s, caminho=%s)\n' \
+    "$prov_rc" "${falou_motivo:-não}" "${falou_onde:-não}"; fail=1
+fi
+
+# (6) RETOMADA: rodar de novo com o MESMO arquivo e o MESMO projeto reaproveita a
+#     senha. Gerar outra aqui é o que deixaria o banco com uma senha órfã.
+senha_antes="$(senha_do_estado "$PROV_TMP/estado-sem-chaves")"
+rodar_prov "$PROV_TMP/chaves-ordem-nova.json" "Projeto de Teste" "$PROV_TMP/estado-sem-chaves"
+if [ "$prov_rc" -eq 0 ] && [ -n "$senha_antes" ] && url_do_estado "$senha_antes" "$PROV_TMP/out"; then
+  printf '  ✓ a retomada reaproveita a senha guardada em vez de gerar outra\n'
+else
+  printf '  ✗ a retomada trocou a senha do banco\n'; fail=1
+fi
+
+# (7) CENÁRIO OPOSTO do reaproveitamento: OUTRO projeto no mesmo arquivo tem de
+#     ganhar senha nova — guardar por máquina repetiria a senha de banco entre
+#     dois clientes provisionados no mesmo VPS.
+rodar_prov "$PROV_TMP/chaves-ordem-nova.json" "Outro Projeto" "$PROV_TMP/estado-sem-chaves"
+senha_outro="$(senha_do_estado "$PROV_TMP/estado-sem-chaves")"
+if [ "$prov_rc" -eq 0 ] && [ -n "$senha_outro" ] && [ "$senha_outro" != "$senha_antes" ]; then
+  printf '  ✓ outro projeto no mesmo arquivo gera outra senha (não repete credencial)\n'
+else
+  printf '  ✗ outro projeto reaproveitou a senha do anterior\n'; fail=1
+fi
+
+# (8) SUPABASE_DB_PASS imposta: a válida é a que entra na connection string; a que
+#     tem caractere de URL (@, :) morre avisando POR QUE — ela entra crua, sem
+#     percent-encoding, e o erro só apareceria no psql do passo 6, com cara de
+#     problema de rede.
+rodar_prov "$PROV_TMP/chaves-ordem-nova.json" "Projeto de Teste" "$PROV_TMP/estado-imposta" "senha-imposta-1"
+if [ "$prov_rc" -eq 0 ] && url_do_estado "senha-imposta-1" "$PROV_TMP/out"; then
+  printf '  ✓ SUPABASE_DB_PASS imposta é a que vai para a connection string\n'
+else
+  printf '  ✗ SUPABASE_DB_PASS imposta não chegou à connection string\n'; fail=1
+fi
+rodar_prov "$PROV_TMP/chaves-ordem-nova.json" "Projeto de Teste" "$PROV_TMP/estado-imposta2" "senha@com@arroba"
+if [ "$prov_rc" -ne 0 ] && grep -qF 'partiria o host' "$PROV_TMP/err"; then
+  printf '  ✓ SUPABASE_DB_PASS com caractere que quebra a URL morre explicando\n'
+else
+  printf '  ✗ SUPABASE_DB_PASS inválida passou (rc=%s)\n' "$prov_rc"; fail=1
+fi
 
 echo "e-mails de acesso: marca-emails.sh"
 # POR QUE ESTE BLOCO EXISTE: o e-mail de confirmação de conta é o PRIMEIRO
@@ -1428,7 +1695,13 @@ montar_vps() {
   # ele no sandbox, aquele `bash` falhava, o `|| true` engolia, e todo cenário
   # media uma instalação em que o passo dos e-mails de acesso simplesmente não
   # aconteceu — o elo mais fácil de quebrar sem ninguém ver.
-  cp install.sh update.sh backup.sh _common.sh marca-emails.sh "$raiz/"
+  # `manutencao.sh` e a pasta `manutencao/` entram pela MESMA razao, e a lista
+  # acima nasceu curta duas vezes: o `update.sh` os carrega com `source` DURO, no
+  # topo, igual ao `_common.sh`. Sem eles aqui, o script morre na LINHA 21 — antes
+  # de qualquer mensagem — e todo cenario reporta "o update.sh nao chegou ao
+  # banco / ao fim / ao up -d", que le como defeito do produto e e cenario faltando.
+  cp install.sh update.sh backup.sh _common.sh marca-emails.sh manutencao.sh "$raiz/"
+  cp -R manutencao "$raiz/"
   : > "$VPS_PROJ/docker-compose.prod.yml"
   cat > "$raiz/bin/docker"
   # Só o v_supabase_url exige resposta online (000 reprova); os outros toleram.
@@ -1486,6 +1759,7 @@ esac
 exit 0
 STUB
   chmod +x "$raiz/bin/docker" "$raiz/bin/curl" "$raiz/bin/crontab"
+  dublar_uname_amd64 "$raiz/bin"
 }
 
 # rodar <script> <flags> [linha extra do .env] [respostas do modo interativo]
@@ -1757,8 +2031,7 @@ echo "packaging: a instalação resolve a última versão publicada"
   git clone --quiet "$repo_falso/origem.git" "$trabalho/w" 2>/dev/null
   (
     cd "$trabalho/w" || exit 1
-    git config user.email t@t; git config user.name t
-    echo x > a; git add -A; git commit --quiet -m init
+    echo x > a; git add -A; git -c user.email=t@t -c user.name=t commit --quiet -m init
     for t in v1.0.0 v1.9.0 v1.10.0 v1.2.0; do git tag "$t"; done
     git push --quiet origin HEAD --tags 2>/dev/null
   )
@@ -1799,8 +2072,7 @@ TMP_PIN="$(mktemp -d)"
     cd "$TMP_PIN" || exit 1
     git clone --quiet "$origem" w 2>/dev/null
     cd w || exit 1
-    git config user.email t@t; git config user.name t
-    echo x > a; git add -A; git commit --quiet -m init
+    echo x > a; git add -A; git -c user.email=t@t -c user.name=t commit --quiet -m init
     for t in v1.0.0 v1.9.0 v1.10.0; do git tag "$t"; done
     git push --quiet origin HEAD --tags 2>/dev/null
   )
@@ -2049,6 +2321,72 @@ STUB
   printf '  ✓ com a chave presente, o lembrete não aparece (o aviso não é ruído permanente)\n'
 ) || fail=1
 rm -rf "$TMP_SEM_IA"
+
+
+echo "integração: consentimento de telemetria no --yes (issue #668)"
+# O que a #668 mediu: o `.env.hostgator.example` trazia `SENTRY_DSN=` ATIVO, o
+# `load_env` definia a variável, e o `[ -z "${SENTRY_DSN+x}" ]` do install.sh
+# (:1423) lia isso como "a pessoa já decidiu" — a pergunta do modo interativo e o
+# `off` do modo --yes eram pulados. Toda instalação feita copiando o exemplo saía
+# enviando relatório de erro sem ninguém ter escolhido.
+#
+# O que este bloco acrescenta aos testes de presença de texto: ele RODA o
+# install.sh e lê o `.env` que sobrou, que é o arquivo com que a pessoa fica. A
+# distinção que a issue pede é entre "nunca decidiu" (chave AUSENTE) e "aceitou"
+# (chave declarada e VAZIA) — as duas viram texto igual em qualquer grep do
+# fonte, e só aparecem no comportamento.
+#
+# O caso (a) COPIA do template as linhas do Sentry em vez de reescrevê-las: é
+# assim que reativar a chave lá reprova aqui. Sem isso, o cenário mediria o
+# fixture, não o template que a pessoa copia.
+SENTRY_DO_TEMPLATE="$(grep -E '^[[:space:]]*#?[[:space:]]*SENTRY_DSN=' "$EXEMPLO" 2>/dev/null || true)"
+if [ -z "$SENTRY_DO_TEMPLATE" ]; then
+  # Voz alta: o kit também roda fora do repositório, e pular calado é
+  # indistinguível de passar.
+  printf '  — pulado: não achei linha de SENTRY_DSN em %s\n' "$EXEMPLO"
+else
+  telemetria_ok() {  # telemetria_ok <descrição> <linhas extras do .env> <linha esperada no .env final>
+    local desc="$1" extra="$2" esperado="$3" raiz
+    raiz="$(mktemp -d)"
+    (
+      # O cenário declara o próprio ambiente: um SENTRY_DSN exportado no shell
+      # de quem roda a suíte entraria no install.sh pelo `env` do `rodar` e
+      # decidiria o caso no lugar do fixture.
+      unset SENTRY_DSN
+      montar_vps "$raiz" "crmsentry" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$DOCKER_LOG"
+case "$1" in
+  compose) case "$*" in *" exec "*) printf 'healthy\n{"data":{"status":"healthy"}}\n' ;; esac; exit 0 ;;
+esac
+exit 0
+STUB
+      mkdir -p "$VPS_PROJ/supabase"; : > "$VPS_PROJ/supabase/baseline.sql"
+      saida="$(rodar install.sh --yes "$extra")"
+      # CONTROLE POSITIVO: a régua dos cenários de provedor acima. Se o `.env`
+      # saiu pela metade, a ausência da linha esperada não mede consentimento
+      # nenhum — mede um install que morreu.
+      if ! grep -qE '^OWNER_PASSWORD="' "$VPS_PROJ/.env"; then
+        printf '  ✗ %s — o .env saiu pela metade (parou antes da última linha do bloco)\n' "$desc"
+        printf '     última linha da saída: %s\n' "$(printf '%s' "$saida" | grep -v '^$' | tail -1)"
+        exit 1
+      fi
+      if ! grep -qx "SENTRY_DSN=$esperado" "$VPS_PROJ/.env"; then
+        printf '  ✗ %s — esperava SENTRY_DSN=%s, veio: %s\n' "$desc" "$esperado" \
+          "$(grep -E '^SENTRY_DSN=' "$VPS_PROJ/.env" || echo '(ausente)')"
+        exit 1
+      fi
+      printf '  ✓ %s\n' "$desc"
+    ) || fail=1
+    rm -rf "$raiz"
+  }
+  telemetria_ok "template copiado (sem escolha): o --yes grava off, não consente por ninguém" \
+    "$SENTRY_DO_TEMPLATE" '"off"'
+  telemetria_ok "quem ACEITOU (chave declarada e vazia) continua aceitando na reexecução" \
+    "SENTRY_DSN=''" '""'
+  telemetria_ok "DSN próprio sobrevive à reexecução" \
+    "SENTRY_DSN='https://abc123@o0.ingest.sentry.io/42'" '"https://abc123@o0.ingest.sentry.io/42"'
+fi
 
 
 echo "integração: instalação NOVA numa VPS com Traefik em modo host"
@@ -2478,6 +2816,101 @@ NEXT_PUBLIC_APP_URL='https://crm.exemplo.com.br'")"
   printf '  ✓ baseline (%s psql) e backup (%s pg_dump) pela conexão do dono\n' "$n_psql" "$n_dump"
 ) || fail=1
 rm -rf "$TMP_DDL_C"
+
+echo "install.sh re-executado: deadlock no baseline faz o arquivo ser aplicado de novo"
+# Sobre um banco que JÁ tem o schema, o install.sh segue o contrato do update.sh
+# (sem ON_ERROR_STOP) e tinha o mesmo buraco: um `deadlock detected` com o app no
+# ar deixava um `drop policy` sem o `create` seguinte — medido numa VPS real na
+# v1.27.3, pelo update.sh. A função é uma só (`reaplicar_baseline`, _common.sh),
+# com suíte própria em tests/shell/baseline-reaplica-apos-disputa.test.sh; este
+# caso prova que o install.sh passa por ela.
+TMP_REAPLICA="$(mktemp -d)"
+(
+  montar_vps "$TMP_REAPLICA" "crmreaplica" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$DOCKER_LOG"
+case "$1" in
+  compose) case "$*" in *" exec "*) printf 'healthy\n{"data":{"status":"healthy"}}\n' ;; esac; exit 0 ;;
+esac
+case "$*" in
+  # A sonda "o schema já existe?" responde que sim: é o ramo sob prova.
+  *"table_name='organizations'"*) printf '1\n' ;;
+  # A 1ª aplicação do baseline perde uma disputa; as seguintes saem limpas.
+  *" -f /b.sql")
+    marca="$(dirname "$DOCKER_LOG")/baseline-passadas"
+    printf x >> "$marca"
+    [ "$(wc -c < "$marca" | tr -d ' ')" = 1 ] && printf 'psql:/b.sql:16766: ERROR:  deadlock detected\n' ;;
+esac
+exit 0
+STUB
+  mkdir -p "$VPS_PROJ/supabase"; : > "$VPS_PROJ/supabase/baseline.sql"
+  export BASELINE_ESPERA_S=0
+  saida="$(rodar install.sh --yes)"
+
+  # Vacuidade: sem o ramo de schema existente, não há re-aplicação para medir.
+  if ! printf '%s' "$saida" | grep -q "schema já existe"; then
+    printf '  ✗ o install.sh não entrou no ramo de schema existente — teste inconclusivo, não verde\n'; exit 1
+  fi
+  n="$(grep -c -- '-f /b.sql' "$VPS_LOG")"
+  if [ "$n" != 2 ]; then
+    printf '  ✗ esperava o baseline aplicado 2 vezes (deadlock, depois limpo); foram %s\n' "$n"; exit 1
+  fi
+  printf '  ✓ o deadlock da 1ª passada fez o install.sh aplicar o baseline de novo\n'
+  if ! printf '%s' "$saida" | grep -q "✓ schema re-aplicado"; then
+    printf '  ✗ a 2ª passada saiu limpa e a tela não disse ✓ schema re-aplicado:\n'
+    printf '%s\n' "$saida" | grep -iE "schema|banco|deadlock" | sed 's/^/       /'; exit 1
+  fi
+  if printf '%s' "$saida" | grep -q "NÃO são os esperados"; then
+    printf '  ✗ o deadlock da 1ª passada virou aviso, embora a 2ª tenha curado\n'; exit 1
+  fi
+  printf '  ✓ e o veredito é o da última passada: ✓ schema re-aplicado, sem aviso\n'
+) || fail=1
+rm -rf "$TMP_REAPLICA"
+
+echo "install.sh re-executado: aviso de banco com lista grande não derruba o instalador"
+# O ramo de aviso ("⚠ Erros no banco que NÃO são os esperados") imprimia com
+# `| head -20`: sob pipefail, numa lista maior que o buffer do pipe (milhares de
+# "must be owner" de uma role sem dono) o head fecha cedo, o printf leva SIGPIPE e
+# o set -e mata o instalador ali. Nenhum caso chegava a este ramo.
+TMP_AVISO_GRANDE="$(mktemp -d)"
+(
+  montar_vps "$TMP_AVISO_GRANDE" "crmavisogrande" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$DOCKER_LOG"
+case "$1" in
+  compose) case "$*" in *" exec "*) printf 'healthy\n{"data":{"status":"healthy"}}\n' ;; esac; exit 0 ;;
+esac
+case "$*" in
+  *"table_name='organizations'"*) printf '1\n' ;;
+  *" -f /b.sql")
+    printf 'psql:/b.sql:16766: ERROR:  deadlock detected\n'
+    for i in $(seq 1 4000); do printf 'psql:/b.sql:%s: ERROR:  must be owner of table tabela_%s\n' "$i" "$i"; done ;;
+esac
+exit 0
+STUB
+  mkdir -p "$VPS_PROJ/supabase"; : > "$VPS_PROJ/supabase/baseline.sql"
+  export BASELINE_ESPERA_S=0
+  saida="$(rodar install.sh --yes)"
+
+  if ! printf '%s' "$saida" | grep -q "schema já existe"; then
+    printf '  ✗ o install.sh não entrou no ramo de schema existente — teste inconclusivo, não verde\n'; exit 1
+  fi
+  if ! printf '%s' "$saida" | grep -q "Erros no banco que NÃO são os esperados"; then
+    printf '  ✗ a lista grande não chegou ao aviso de banco\n'; exit 1
+  fi
+  # A linha seguinte ao bloco do schema: se ela saiu, o instalador sobreviveu ao aviso.
+  if ! printf '%s' "$saida" | grep -q "verificação:"; then
+    printf '  ✗ o instalador morreu no aviso de banco (a verificação de tabelas, logo depois, não saiu)\n'
+    printf '%s\n' "$saida" | grep -iE "schema|banco|erro" | tail -5 | sed 's/^/       /'; exit 1
+  fi
+  printf '  ✓ o instalador passa do aviso de banco com uma lista maior que o buffer do pipe\n'
+  n="$(grep -c -- '-f /b.sql' "$VPS_LOG")"
+  if [ "$n" != 3 ]; then
+    printf '  ✗ a disputa no topo da lista grande não foi reconhecida: %s passada(s), esperava 3\n' "$n"; exit 1
+  fi
+  printf '  ✓ e a disputa no topo foi reconhecida (3 passadas)\n'
+) || fail=1
+rm -rf "$TMP_AVISO_GRANDE"
 
 echo "e-mails de acesso: quem JÁ instalou também é avisado — uma vez só"
 # A população realmente quebrada hoje é quem instalou ANTES de a entrevista pedir

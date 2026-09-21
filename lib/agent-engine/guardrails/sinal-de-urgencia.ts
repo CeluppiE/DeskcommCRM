@@ -8,7 +8,7 @@
  * silenciosamente (medido em produção, 2026-08-29). Mas reagendar sozinho trata toda
  * mensagem represada como igual: um lead relatando risco de segurança (freio falhando,
  * cheiro de queimado, bateria esquentando — vocabulário que o PRÓPRIO prompt de um
- * agente como o Ricardo/YADEA já pede pra tratar com cautela) espera a mesma janela
+ * agente em produção já pede pra tratar com cautela) espera a mesma janela
  * que um "bom dia" qualquer, às vezes 20h+. Este módulo dá ao runtime um jeito de medir
  * "isto parece grave" sem custo de LLM, pra abrir um alerta CRÍTICO imediato na Central
  * (kind='handoff') em vez de deixar o lead represado sem ninguém sabendo até o cap

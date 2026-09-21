@@ -13,7 +13,7 @@ import { rotuloDoIndicador } from "@/lib/plataformas-de-anuncio/meta/tabela-de-c
 import type { LinhaDeCampanha } from "@/lib/plataformas-de-anuncio/types";
 
 /**
- * As 14 colunas.
+ * As 15 colunas.
  *
  * ─── A regra que atravessa o arquivo inteiro: ausência vira "—" ─────────────
  *
@@ -71,8 +71,28 @@ function Numero({ valor, casas = 0 }: { valor: number | null; casas?: number }) 
   );
 }
 
-function Percentual({ valor, casas = 2 }: { valor: number | null; casas?: number }) {
-  if (valor === null) return <span className="text-muted-foreground">{TRACO}</span>;
+function Percentual({
+  valor,
+  casas = 2,
+  titulo,
+}: {
+  valor: number | null;
+  casas?: number;
+  /**
+   * Por que a célula está vazia, quando ela está vazia por FALTA e não por zero.
+   *
+   * Vem da ressalva da leitura (`avisos` da resposta): "—" sozinho não separa
+   * "a plataforma não devolveu esta métrica" de "esta campanha não mediu", e é
+   * essa diferença que muda a ação de quem opera.
+   */
+  titulo?: string;
+}) {
+  if (valor === null)
+    return (
+      <span className="text-muted-foreground" title={titulo}>
+        {TRACO}
+      </span>
+    );
   return (
     <>
       {valor.toLocaleString("pt-BR", {
@@ -95,10 +115,25 @@ interface Props {
    * custo. Vem de `/me/adaccounts`, por conta.
    */
   moeda: string;
+  /**
+   * Ressalvas da leitura, como a rota as devolve (`avisos`).
+   *
+   * Hoje só a coluna do Connect rate usa isto: quando a plataforma recusa os
+   * campos da métrica, o número é AUSENTE (não zero) e a célula precisa dizer
+   * isso no hover, em vez de mostrar um "—" mudo que parece medição faltando.
+   */
+  avisos?: string[];
 }
 
-export function TabelaDeCampanhas({ linhas, moeda }: Props) {
+export function TabelaDeCampanhas({ linhas, moeda, avisos }: Props) {
   const t = useT();
+
+  /**
+   * A ressalva da leitura, quando existe: é o `title` do "—" da coluna do
+   * Connect rate. Sem ela, "não veio da plataforma" e "mediu zero" ficam
+   * idênticos na tela — e o erro invisível é pior que o visível.
+   */
+  const ressalvaDoConnectRate = avisos?.length ? avisos.join(" ") : undefined;
 
   const dinheiro = (valor: number | null, casas = 2) => {
     if (valor === null) return <span className="text-muted-foreground">{TRACO}</span>;
@@ -140,7 +175,7 @@ export function TabelaDeCampanhas({ linhas, moeda }: Props) {
   return (
     /*
       O scroll horizontal mora AQUI, num contêiner próprio — nunca no `<body>`.
-      São 14 colunas; em telas estreitas a tabela rola dentro do próprio quadro e
+      São 15 colunas; em telas estreitas a tabela rola dentro do próprio quadro e
       a página segue parada, que é o combinado do produto para conteúdo largo.
     */
     <div className="overflow-x-auto rounded-md border">
@@ -157,6 +192,25 @@ export function TabelaDeCampanhas({ linhas, moeda }: Props) {
             <TableHead className="text-right">{t("Alcance")}</TableHead>
             <TableHead className="text-right">{t("CPM")}</TableHead>
             <TableHead className="text-right">{t("CTR")}</TableHead>
+            {/*
+              Coluna nova, logo depois do CTR — e a ÚNICA das duas derivadas que
+              fica sem o numerador escrito no rótulo. Não é inconsistência: o
+              Hook Rate precisa avisar que o numerador dele diverge do de
+              mercado (3s → total de reproduções); aqui numerador e denominador
+              são exatamente os do Gerenciador de Anúncios, então a fórmula só
+              precisa estar a um hover de distância e o rótulo curto mantém a
+              coluna da largura das vizinhas.
+
+              Fica visível mesmo quando nenhuma linha tem valor (conta só com
+              campanha de mensagem): coluna que aparece e some conforme o
+              período faz a tabela pular, e "—" já diz o que precisa dizer.
+            */}
+            <TableHead
+              className="text-right"
+              title={t("Visualizações da página ÷ cliques no link")}
+            >
+              {t("Connect rate")}
+            </TableHead>
             <TableHead className="text-right">{t("Frequência")}</TableHead>
             <TableHead className="text-right">{t("CPC")}</TableHead>
             {/*
@@ -214,6 +268,9 @@ export function TabelaDeCampanhas({ linhas, moeda }: Props) {
                 <TableCell className="text-right">{dinheiro(linha.cpm)}</TableCell>
                 <TableCell className="text-right">
                   <Percentual valor={linha.ctr} />
+                </TableCell>
+                <TableCell className="text-right">
+                  <Percentual valor={linha.connectRate} titulo={ressalvaDoConnectRate} />
                 </TableCell>
                 <TableCell className="text-right">
                   <Numero valor={linha.frequencia} casas={2} />

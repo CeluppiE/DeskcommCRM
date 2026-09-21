@@ -123,6 +123,11 @@ const EVENT_LABEL: Record<CaseEvent["kind"], string> = {
   resolved: "Concluído",
   escalated: "Virou atendimento humano",
   cancelled: "Cancelado",
+  // Os dois que faltavam e o que nasce com a 0292. `Record<CaseEvent["kind"],
+  // string>` é o que os cobra: acrescentar um kind no union do cliente sem
+  // rótulo aqui para de compilar, em vez de virar enum cru na tela.
+  agent_noted: "A IA registrou o que aconteceu",
+  alert_sent: "Avisamos o suporte no WhatsApp",
 };
 
 const HUMAN_ACTION_LABEL: Record<CaseHumanAction, string> = {

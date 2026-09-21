@@ -41,6 +41,13 @@ import type pg from 'pg';
 import { expectativaDeAtendimento } from '@/lib/escalacao/disponibilidade';
 import { deriveLgpdFromContact } from '../guardrails/lgpd/legal-basis';
 import { textoDoAviso, type MotivoDoAviso } from '@/lib/escalacao/aviso-ao-lead';
+// Dois `MotivoDoAviso` no repositório, e eles respondem perguntas DIFERENTES: o
+// de cima é "que frase o cliente lê"; este é "por que o cliente NÃO leu nada".
+// O apelido existe para que ninguém os confunda numa leitura rápida.
+import type {
+  DesfechoDoAvisoAoCliente,
+  MotivoDoAviso as CodigoDeAvisoNaoEntregue,
+} from '@/lib/escalacao/passagem';
 
 import type { ChannelAdapter } from '../channel-adapter';
 import { runBeforeSend } from '../guardrails/before-send';
@@ -52,11 +59,31 @@ import type { Logger } from '../obs/logger';
  */
 export const SEQ_DO_AVISO = 0;
 
-/** O que aconteceu com o aviso — vai ao log e ao aviso da Central, nunca ao lead. */
-export type DesfechoDoAviso =
-  | { avisado: true }
-  /** A cadeia vetou (janela fechada, contato bloqueado, cap diário…) ou o canal não aceitou. */
-  | { avisado: false; porque: string };
+/**
+ * Os vetos da cadeia que TÊM par no vocabulário fechado da passagem.
+ *
+ * Parcial de propósito: o que não está aqui vira `cliente_avisado = false` com
+ * `aviso_motivo_codigo` nulo, e a tela diz "motivo desconhecido" — que é a
+ * verdade disponível. Um mapa exaustivo obrigaria este arquivo a conhecer cada
+ * gate novo só para não mentir.
+ */
+const CODIGO_DO_VETO: Readonly<Record<string, CodigoDeAvisoNaoEntregue>> = {
+  messaging_window_closed: 'fora_da_janela',
+  pre_go_live: 'pre_go_live',
+  pre_go_live_indisponivel: 'pre_go_live',
+  channel_archived: 'canal_arquivado',
+  missing_phone_number: 'sem_telefone',
+};
+
+/**
+ * O que aconteceu com o aviso — vai ao log e ao aviso da Central, nunca ao lead.
+ *
+ * É o MESMO tipo que o emissor do lado do CRM devolve (`DesfechoDoAvisoDoCrm`),
+ * e ele mora em `lib/escalacao/passagem.ts` de propósito: enquanto eram dois,
+ * um deles era um `{ avisado: boolean }` solto, e foi por essa folga que
+ * "o cliente JÁ FOI avisado" era dito sem ninguém olhar o desfecho do envio.
+ */
+export type DesfechoDoAviso = DesfechoDoAvisoAoCliente;
 
 export interface AvisoDeEscalacaoIds {
   jobClaim?:JobClaim;
@@ -141,25 +168,43 @@ export async function avisarLeadDaEscalacao(
       opts.log.info('aviso de escalação vetado pela cadeia — a passagem acontece assim mesmo', {
         code: chain.code,
       });
-      return { avisado: false, porque: chain.code };
+      const codigo = CODIGO_DO_VETO[chain.code];
+      return {
+        avisado: false,
+        porque: chain.code,
+        ...(codigo !== undefined ? { motivoCodigo: codigo } : {}),
+      };
     }
 
     const outcome = chain.outcome;
     switch (outcome.kind) {
       case 'sent':
       case 'already_sent':
-      case 'queued':
-        // 'queued' = o canal aceitou e segura (sessão fora do ar) — está sob
-        // custódia do CRM, então o cliente FOI avisado do ponto de vista de quem
-        // decide; a entrega é problema do canal, com dono e watchdog próprios.
         opts.log.info('lead avisado antes da passagem para humano', { kind: outcome.kind });
         return { avisado: true };
+      case 'queued':
+        // ⚠️ ESTE RAMO MUDOU, e a versão anterior está escrita aqui de propósito:
+        // ela devolvia `{ avisado: true }` com o argumento de que `queued` é
+        // "custódia do CRM". O argumento é bom para quem opera a fila e ERRADO
+        // para quem vai atender: `queued` é o desfecho de sessão fora do ar e de
+        // instalação sem transporte configurado, ou seja, o cliente NÃO recebeu
+        // nada e pode nunca receber. Quem abre a conversa precisa saber que a
+        // pessoa do outro lado está esperando sem ter sido avisada — é o que
+        // muda a primeira frase que ele digita. A fila continua tendo dono e
+        // watchdog; o que ela não pode é virar uma afirmação de entrega.
+        opts.log.info('aviso ao lead ficou na fila — o cliente ainda não recebeu', {
+          kind: outcome.kind,
+        });
+        return { avisado: false, porque: 'na_fila_canal_fora', motivoCodigo: 'na_fila_canal_fora' };
       case 'blocked':
+        // Sem `motivoCodigo`: o vocabulário fechado da passagem não tem um par
+        // para "o contato está bloqueado", e inventar um seria escrever na tela
+        // de quem atende uma razão que ninguém mediu.
         return { avisado: false, porque: 'contato_bloqueado' };
       case 'failed':
-        return { avisado: false, porque: 'canal_falhou' };
+        return { avisado: false, porque: 'canal_falhou', motivoCodigo: 'falhou_no_envio' };
       case 'unavailable':
-        return { avisado: false, porque: 'canal_indisponivel' };
+        return { avisado: false, porque: 'canal_indisponivel', motivoCodigo: 'falhou_no_envio' };
     }
   } catch (err) {
     opts.log.warn('aviso de escalação falhou — a passagem acontece assim mesmo', {

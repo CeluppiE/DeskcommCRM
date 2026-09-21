@@ -2,6 +2,8 @@
 description: Tria um PR de contribuidor de ponta a ponta — acolhe, mede, reproduz, corrige, responde. Para no merge, que é do mantenedor.
 ---
 
+**Antes de afirmar qualquer estado, rode a sonda. Prosa envelhece; a sonda mede na hora.**
+
 Leia o `triagem/TRIAGEM.md` **do `origin/main`** e siga-o à risca:
 
 ```bash
@@ -45,11 +47,43 @@ Seis lembretes que valem antes mesmo de abrir o arquivo:
    gente consertar bug que não existia.
 4. **Você nunca mergeia e nunca fecha PR.** Isso é a palavra do mantenedor, reportada em lote.
 
-   Uma exceção, e só ela: quando o próprio mantenedor delega o merge nesta mesma instrução. Aí a
-   fronteira do passe 12 se suspende para esta rodada — e não para as seguintes.
+   Uma exceção, e só ela: quando o próprio mantenedor delega nesta mesma instrução. A delegação vale
+   para o que ela nomeia — delegar o merge não delega fechar PR, e delegar o fechamento não delega o
+   merge. A parte delegada da fronteira do passe 12 se suspende para esta rodada, e não para as
+   seguintes.
+
+   No PR que entrou só em parte, sem delegação de fechamento, o que você reporta é o destino do que
+   sobrou: se tem destino, o PR
+   fica aberto com ele escrito no próprio PR; se foi descartado, o PR fecha dizendo o que entrou,
+   com o link, e por que o resto não (decisão do dono em 16/09/2026, passe 12-ter). E empurrar
+   para a branch do PR do contribuidor **é** permitido quando ele permite edição por mantenedores —
+   commit novo ou merge da `main`, nunca `--force` nem rebase, avisando no PR antes (passe 8).
 5. **Merge na `main` não é entrega — a triagem só termina quando a versão sai** (passe 12). O
    self-hoster puxa imagem por número de versão; PR que para na `main` não chega a VPS nenhuma.
    Na prática: PR que muda comportamento precisa de um fragmento em `.changes/` (e você o escreve
    quando falta, creditando o autor), seção `## [X.Y.Z]` escrita à mão no `CHANGELOG.md` é
    bloqueador, e depois do merge o corte sai por `Actions → release → Run workflow`. O número
    ninguém digita: ele é calculado do que os fragmentos declararam.
+6. **Registre o destino: núcleo, extensão, ambos ou infraestrutura/documentação** (passe 2-bis).
+   O núcleo segue completo sem extensões. A classificação orienta a arquitetura e não cobra do
+   contribuidor um SDK ainda inexistente, nem autoriza retirar recursos já distribuídos.
+
+## Os instrumentos — rode, não releia
+
+Executáveis em `triagem/instrumentos/` (Python 3 sem dependência, `--json` para máquina; testes em
+`triagem/instrumentos/tests/`). Em ordem:
+
+```bash
+bash    triagem/instrumentos/preflight.sh              # 0. o ambiente mente hoje?
+python3 triagem/instrumentos/sonda.py <pr> [<pr>...]   # 1. estado, e de quem é cada vermelho
+python3 triagem/instrumentos/apendice.py --arquivo supabase/baseline.sql --verificar   # 2. se houve conflito de apêndice
+python3 triagem/instrumentos/renumerar.py --proximo-livre                              # 3. se houve colisão de migration
+python3 triagem/instrumentos/promessas.py --abertos    # o que prometemos e não entregamos
+```
+
+4. **Antes de qualquer push, o `loop/hooks/pre-push` decide, não você** — para fork de
+   contribuidor ele recusa `--force`, ponta remota que não é ancestral do que sobe, e ponta que
+   mudou desde o seu fetch.
+
+Saída `NÃO MEDIDO` é resultado, não defeito do instrumento: é o que ele devolve em vez de um
+negativo que não mediu. Não a converta em "não tem".

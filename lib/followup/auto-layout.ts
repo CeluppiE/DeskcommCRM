@@ -6,6 +6,7 @@ import {
   type NodeType,
 } from "./graph-schema";
 import { rotuloDoRamo } from "./rotulo-do-ramo";
+import type { NomesDeValor } from "./vocabulario";
 
 /**
  * Empilha o grafo do construtor de follow-up em camadas de cima pra baixo.
@@ -56,6 +57,12 @@ export function estimateNodeSize(node: FlowNode): NodeSize {
 export function layoutFlowGraph(
   graph: { nodes: FlowNode[]; edges: FlowEdge[] },
   sizes?: ReadonlyMap<string, NodeSize>,
+  /**
+   * Os nomes que a TELA usa na etiqueta da aresta. Sem eles, a regra de etapa
+   * mede "(não encontrada)" e o corredor reservado fica menor que o rótulo
+   * desenhado — o layout mede uma coisa e o canvas desenha outra.
+   */
+  nomes: NomesDeValor = {},
 ): { nodes: FlowNode[]; edges: FlowEdge[] } {
   if (graph.nodes.length === 0) return graph;
 
@@ -73,7 +80,7 @@ export function layoutFlowGraph(
 
   for (const ids of connected) {
     const sub = subgraph(graph, ids);
-    const packed = packLayered(sub, sizeOf);
+    const packed = packLayered(sub, sizeOf, nomes);
     for (const [id, p] of packed.positions) {
       positions.set(id, { x: p.x + cursorX, y: p.y });
     }
@@ -161,6 +168,7 @@ type SizeOf = (id: string, node: FlowNode) => NodeSize;
 function packLayered(
   graph: { nodes: FlowNode[]; edges: FlowEdge[] },
   sizeOf: SizeOf,
+  nomes: NomesDeValor,
 ): { positions: Map<string, { x: number; y: number }>; width: number; height: number } {
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
   const forward = uniquePairs(forwardEdges(graph));
@@ -199,7 +207,7 @@ function packLayered(
         if (!parent) continue;
         const parentPos = positions.get(parent.id);
         if (!parentPos) continue;
-        const exit = rightExitGap(parent, graph.edges);
+        const exit = rightExitGap(parent, graph.edges, nomes);
         if (exit <= 0) continue;
         fromParents = Math.max(
           fromParents,
@@ -208,7 +216,7 @@ function packLayered(
       }
       const x = Math.max(cursor, fromParents);
       positions.set(id, { x, y: layerY[r]! });
-      cursor = x + size.width + Math.max(H_GAP, rightExitGap(node, graph.edges));
+      cursor = x + size.width + Math.max(H_GAP, rightExitGap(node, graph.edges, nomes));
       maxRight = Math.max(maxRight, x + size.width);
     }
   }
@@ -224,7 +232,7 @@ function estimateEdgeLabelWidth(text: string): number {
 }
 
 /** Folga à direita de um nó com bolinhas laterais: offset do SmoothStep + etiqueta. */
-function rightExitGap(node: FlowNode, edges: readonly FlowEdge[]): number {
+function rightExitGap(node: FlowNode, edges: readonly FlowEdge[], nomes: NomesDeValor): number {
   const branches = nodeBranches(node);
   if (branches.length <= 1) return 0;
   let widest = 0;
@@ -235,7 +243,9 @@ function rightExitGap(node: FlowNode, edges: readonly FlowEdge[]): number {
       bid === null
         ? branches.find((b) => b.kind === "fallback")
         : branches.find((b) => b.id === bid);
-    const text = branch ? rotuloDoRamo(branch) : "Sempre";
+    // Sem ramo resolvido, a aresta é a de escape de um nó de saída única, e é lá
+    // que "Sempre" continua sendo o texto desenhado.
+    const text = branch ? rotuloDoRamo(branch, nomes) : "Sempre";
     widest = Math.max(widest, estimateEdgeLabelWidth(text));
   }
   if (widest === 0) return 0;

@@ -20,7 +20,12 @@ import { beginServiceAtOrigin, assertServiceBoundarySupabase } from "@/lib/atend
  */
 import { z } from "zod";
 
-import { triggerHandoff } from "@/lib/ai/handoff/orchestrator";
+import {
+  triggerHandoff,
+  type HandoffReason,
+  type TriggerHandoffResult,
+} from "@/lib/ai/handoff/orchestrator";
+import { motivoCodigoDoTexto } from "@/lib/escalacao/passagem";
 import { loadEligibleAttendants } from "@/lib/routing/eligibles";
 import { selectRoundRobin } from "@/lib/routing/decide";
 import { getQueuePosition } from "@/lib/routing/queue";
@@ -31,6 +36,27 @@ const inputShape = {
   conversation_id: z.string().uuid(),
   reason: z.string().min(1).max(500).default("requested_human"),
   urgency: z.enum(["low", "normal", "high"]).default("normal"),
+  /**
+   * O contexto para quem vai assumir — o mesmo vocabulário da ferramenta nativa
+   * do agente (`request_human_handoff`). Sem eles, um agente externo passava a
+   * conversa e quem assumia recebia a palavra "requested_human" e mais nada.
+   */
+  o_que_tentei: z
+    .array(
+      z.object({
+        o_que: z.string().min(1).max(200).describe("o que você tentou"),
+        desfecho: z.string().min(1).max(200).optional().describe("no que deu"),
+      }),
+    )
+    .max(6)
+    .optional()
+    .describe("o que você já tentou, na ordem — evita que a pessoa refaça o mesmo caminho"),
+  cliente_quer: z
+    .string()
+    .min(1)
+    .max(300)
+    .optional()
+    .describe("o que a pessoa está pedindo, nas palavras dela"),
   /** Atendente alvo opcional: só atribui se elegível agora; senão cai no rodízio G5. */
   target_user_id: z.string().uuid().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
@@ -52,7 +78,7 @@ export const crmRequestHumanHandoff: McpToolDefinition<typeof inputShape> = {
     // Conversation must belong to org (defense in depth — service role bypassa RLS).
     const { data: conv, error: convErr } = await ctx.supabase
       .from("conversations")
-      .select("id, organization_id, contact_id, channel_session_id, last_inbound_at")
+      .select("id, organization_id, contact_id, channel_session_id, awaiting_since")
       .eq("organization_id", ctx.organizationId)
       .eq("id", input.conversation_id)
       .maybeSingle();
@@ -78,16 +104,32 @@ export const crmRequestHumanHandoff: McpToolDefinition<typeof inputShape> = {
       leadId = leadRow?.id ?? null;
     }
 
+    // O `reason` que o agente externo mandou é TEXTO LIVRE de fora. Ele passa a
+    // virar código quando corresponde a um do nosso vocabulário, e o texto vai
+    // para `content` na linha da passagem.
+    //
+    // ⚠️ `original_reason` SAIU do metadata, e a razão é de uma linha: o metadata
+    // vai para `api_audit_log`, tabela em que NENHUM papel tem GRANT de UPDATE
+    // ou DELETE — nem `service_role`. Texto livre de fora gravado ali é texto
+    // que a cascata de LGPD não consegue redigir. `content` é redigível.
     const result = await triggerHandoff({
       serviceBoundary: boundary,
       conversationId: input.conversation_id,
       organizationId: ctx.organizationId,
-      reason: "requested_human",
+      reason: motivoDoAgenteExterno(input.reason),
+      origem: "mcp_externo",
+      motivoTexto: input.reason,
+      // Só o que o agente DECLAROU. O contexto acumulado (checkpoint durável e
+      // as falas pendentes do cliente) quem lê é o orquestrador, para todos os
+      // seus chamadores — um lugar, uma montagem.
+      declarado: {
+        ...(input.o_que_tentei !== undefined ? { tentativas: input.o_que_tentei } : {}),
+        cliente_quer: input.cliente_quer ?? null,
+      },
       leadId,
       metadata: {
         source: "ai_agent",
         urgency: input.urgency,
-        original_reason: input.reason,
         ...(ctx.actor.type === "ai_agent" ? { run_id: ctx.actor.id } : {}),
         ...(input.metadata ?? {}),
       },
@@ -151,7 +193,7 @@ export const crmRequestHumanHandoff: McpToolDefinition<typeof inputShape> = {
         position = queued ? await getQueuePosition(
           ctx.supabase,
           ctx.organizationId,
-          conv.last_inbound_at ?? null,
+          conv.awaiting_since ?? null,
           now,
         ) : null;
       }
@@ -167,8 +209,46 @@ export const crmRequestHumanHandoff: McpToolDefinition<typeof inputShape> = {
       // Compat com o contrato anterior (callers que liam assigned_to_user_id).
       assigned_to_user_id: assignedUserId,
       idempotent: !result.triggered && result.reason === "idempotent_5s",
-      next_action:
-        "Avise o cliente em tom acolhedor que um atendente humano vai assumir em instantes.",
+      // ⚠️ MUDOU. A frase anterior mandava avisar o cliente DEPOIS de o
+      // orquestrador já ter avisado (ele manda a mensagem no passo 0), então o
+      // agente externo que obedecesse mandava a mesma coisa duas vezes. Agora a
+      // resposta declara o desfecho REAL do aviso — e quando ele não saiu, quem
+      // precisa saber disso é o time, que já foi alertado, não o agente.
+      next_action: proximoPasso(result),
     };
   },
 };
+
+/**
+ * O que o agente externo faz A SEGUIR — derivado do desfecho real, nunca fixo.
+ *
+ * O aviso ao cliente é responsabilidade do orquestrador (passo 0 de
+ * `triggerHandoff`), e ele acontece antes de esta função existir. Repetir a
+ * instrução "avise o cliente" aqui era mandar mandar de novo.
+ */
+function proximoPasso(result: TriggerHandoffResult): string {
+  if (!result.triggered) {
+    return "A conversa não saiu do atendimento automático — encerre o turno e não prometa nada ao cliente.";
+  }
+  if (result.aviso?.avisado === true) {
+    return "O cliente já foi avisado de que uma pessoa vai assumir — encerre o turno.";
+  }
+  return (
+    "Não foi possível avisar o cliente (o canal não entregou a mensagem); a equipe foi alertada disso. " +
+    "Encerre o turno."
+  );
+}
+
+/**
+ * O `reason` que o agente externo mandou, reduzido ao vocabulário DESTE motor.
+ *
+ * `motivoCodigoDoTexto` conhece os nove motivos do banco; `triggerHandoff` grava
+ * `conversations.last_handoff_reason` e aceita os sete dele. Os dois que ficam de
+ * fora (`suspected_optout` e `caso_escalado`) nascem de caminhos internos — um
+ * agente externo que os escrevesse estaria declarando um fato que ele não
+ * observou. O texto inteiro não se perde: ele vai para `content`.
+ */
+function motivoDoAgenteExterno(texto: string): HandoffReason {
+  const codigo = motivoCodigoDoTexto(texto);
+  return codigo === "suspected_optout" || codigo === "caso_escalado" ? "requested_human" : codigo;
+}

@@ -156,7 +156,35 @@ describe("eixo 3 — G3-01: eventos de atribuição", () => {
     expect(eventCount("true", GOV_AGENT_B)).toBe(total);
   });
 
-  it("append-only: UPDATE e DELETE em conversation_assignment_events são negados por RLS", () => {
+  /**
+   * A escrita foi BARRADA — pelos dois caminhos que hoje a barram, nesta ordem.
+   *
+   * Até a migration 0279 só existia um: `authenticated` tinha o GRANT (do
+   * `ALTER DEFAULT PRIVILEGES … ON TABLES` do baseline) e quem recusava era a
+   * RLS, por não haver policy de UPDATE/DELETE — daí o `writeCountAs` traduzir
+   * "barrado" em ZERO LINHAS. A 0279 tirou o grant, e o Postgres passa a parar o
+   * comando ANTES da RLS, com `permission denied for table …`: a MESMA
+   * propriedade (a tabela não recebe UPDATE nem DELETE por login de usuário),
+   * recusada mais cedo e por uma guarda mais forte.
+   *
+   * Sem esta ponte o caso ficaria VERMELHO por ter sido reforçado, que é o
+   * modo de falha em que alguém "conserta" devolvendo o grant. O nome da tabela
+   * entra na sonda de propósito: um `permission denied` em OUTRA tabela é
+   * defeito de verdade e continua estourando.
+   */
+  function escritaBarrada(dml: string): number {
+    try {
+      return writeCountAs(GOV_MANAGER, dml);
+    } catch (err) {
+      const motivo = `${err instanceof Error ? err.message : String(err)}${
+        (err as { stderr?: unknown }).stderr ?? ""
+      }`;
+      if (motivo.includes("permission denied for table conversation_assignment_events")) return 0;
+      throw err;
+    }
+  }
+
+  it("append-only: UPDATE e DELETE em conversation_assignment_events são negados (privilégio desde a 0279; RLS antes dela)", () => {
     // O escritor é o MANAGER e não o agent A, de propósito: desde a 0173 o A não
     // enxerga esta conversa, então um `0` escrito por ele não distinguiria
     // "não existe policy de UPDATE" de "a linha está fora do escopo do leitor" —
@@ -167,15 +195,13 @@ describe("eixo 3 — G3-01: eventos de atribuição", () => {
       countAs(GOV_MANAGER, `select count(*) from public.conversations where id = '${CAE_CONV}'`),
     ).toBe(1);
 
-    const updated = writeCountAs(
-      GOV_MANAGER,
+    const updated = escritaBarrada(
       `update public.conversation_assignment_events set reason = 'routing'
         where conversation_id = '${CAE_CONV}'`,
     );
     expect(updated).toBe(0);
 
-    const deleted = writeCountAs(
-      GOV_MANAGER,
+    const deleted = escritaBarrada(
       `delete from public.conversation_assignment_events
         where conversation_id = '${CAE_CONV}'`,
     );

@@ -83,7 +83,11 @@ create table if not exists conversation_assignment_events (
 create index if not exists idx_cae_conversation
   on conversation_assignment_events (conversation_id, created_at desc);
 
--- RLS: tenant org via fn_user_org_ids() (SELECT + INSERT).
+-- RLS de SELECT: escopo da conversa (cae_select, migration 0173).
+-- INSERT: NÃO existe policy nem GRANT para authenticated desde a 0279 — a linha
+--   é escrita por dentro de fn_conversation_assign, que é security definer. Um
+--   INSERT forjado pelo PostgREST fazia o histórico dizer que alguém assumiu o
+--   atendimento que ninguém assumiu.
 -- Append-only: sem policy de UPDATE/DELETE (mesma família de api_audit_log).
 ```
 
@@ -348,7 +352,11 @@ a migration `20260716120000_0030_config_rls_role_policies.sql` aplica
   menu oculto ou de uma preferência de interface.
 - **Fila com posição/espera** (G5-03): a visão Fila (`assigned_to=unassigned`)
   ordena por `last_inbound_at` ASC (quem espera há mais tempo primeiro); posição =
-  índice na lista ordenada; "aguardando há X" derivado de `last_inbound_at`. A
+  índice na lista ordenada; "aguardando há X" derivado de `last_inbound_at`. **A
+  hora no canto da linha, na Fila, é a MESMA** (`last_inbound_at`): a coluna de
+  horas tem de ler na ordem da lista, e `last_message_at` anda quando o atendente
+  responde — faria os números saírem fora de ordem numa lista que está certa (é
+  o relato da #464). Nas demais visões vale a régua delas, a atividade recente. A
   contagem da fila casa com `counts.unassigned` (mesmo predicado: sem dono +
   status `open`).
 

@@ -385,6 +385,150 @@
       "type": "service",
       "label": "lib/escalacao/atendimento-manual.ts",
       "sublabel": "pausarIaPorAtendimentoManual — pessoa respondeu por fora do CRM (pausa COM PRAZO)"
+    },
+    {
+      "id": "avisoSuporteMotor",
+      "lane": "motor",
+      "col": 4,
+      "type": "lib",
+      "label": "lib/escalacao/aviso-ao-suporte.ts",
+      "sublabel": "consome ai.case_opened/closed — nunca devolve error, nunca dorme"
+    },
+    {
+      "id": "avisoSuporteTexto",
+      "lane": "regra",
+      "col": 4,
+      "type": "lib",
+      "label": "lib/escalacao/texto-do-aviso.ts",
+      "sublabel": "O QUE A EQUIPE LÊ — puro, sem telefone e sem CPF do cliente"
+    },
+    {
+      "id": "avisoSuporteRegistro",
+      "lane": "dados",
+      "col": 5,
+      "type": "table",
+      "label": "config_aviso_de_caso + entregas_de_aviso_de_caso",
+      "sublabel": "a unique (org, caso, destino) é a idempotência; o texto nunca é guardado"
+    },
+    {
+      "id": "numeroInterno",
+      "lane": "borda",
+      "col": 5,
+      "type": "lib",
+      "label": "lib/escalacao/numero-interno-de-aviso.ts",
+      "sublabel": "o número do plantão não vira contato, conversa nem despacho"
+    },
+    {
+      "id": "avisoSuporteTela",
+      "lane": "humano",
+      "col": 5,
+      "type": "ui",
+      "label": "/app/ai/cases/avisos",
+      "sublabel": "liga o aviso, prova por envio real e diz os 11 estados em que ele não sai"
+    },
+    {
+      "id": "avisoSuporteRota",
+      "lane": "borda",
+      "col": 4,
+      "type": "route",
+      "label": "/api/v1/ai/cases/alerta (+ /teste)",
+      "sublabel": "escreve só pelo RPC; o teste manda de verdade e paga no pacing_ledger"
+    },
+    {
+      "id": "passagemMontagem",
+      "lane": "regra",
+      "col": 3,
+      "type": "lib",
+      "label": "lib/escalacao/briefing-da-passagem.ts",
+      "sublabel": "um texto, dois motores: o porquê, o que a IA tentou e a fala LITERAL do cliente (entre aspas, rotulada)"
+    },
+    {
+      "id": "passagemRegistro",
+      "lane": "dados",
+      "col": 5,
+      "type": "table",
+      "label": "passagens_de_atendimento",
+      "sublabel": "uma linha por passagem, SEM dedup — lida sob fn_can_view_conversation; o aviso da Central só REMETE a ela"
+    },
+    {
+      "id": "passagemReconhece",
+      "lane": "dados",
+      "col": 5,
+      "type": "db",
+      "label": "trg_passagem_reconhecida + fn_passagem_devolvida (0293)",
+      "sublabel": "assumir fecha a passagem e resolve o aviso; devolver ao automático fecha sem dono"
+    },
+    {
+      "id": "passagemCartao",
+      "lane": "humano",
+      "col": 6,
+      "type": "ui",
+      "label": "components/inbox/PassagemCard.tsx",
+      "sublabel": "o cartao DENTRO do fio, acima do composer: motivo em portugues, o que a IA tentou, a fala LITERAL do cliente e se ele foi avisado"
+    },
+    {
+      "id": "passagemRota",
+      "lane": "borda",
+      "col": 6,
+      "type": "route",
+      "label": "/api/v1/conversations/[id]/passagens",
+      "sublabel": "client de SESSAO, nunca admin — e o que faz visibility_mode valer para o TEXTO, e nao so para o link"
+    },
+    {
+      "id": "passagemCobranca",
+      "lane": "motor",
+      "col": 6,
+      "type": "worker",
+      "label": "cron case-stale-watcher (2o braco)",
+      "sublabel": "a passagem que ninguem assumiu reabre o aviso; teto de 3 em passagens_de_atendimento.cobrancas"
+    },
+    {
+      "id": "passagemLaco",
+      "lane": "dados",
+      "col": 6,
+      "type": "db",
+      "label": "fn_atrito_metrics: repeticao_pos_passagem (0294)",
+      "sublabel": "o cliente repetiu depois da passagem? limiar 0,7 e janela de 24h — se o briefing chegou, a repeticao cai"
+    },
+    {
+      "id": "devolucaoPrazo",
+      "lane": "motor",
+      "col": 3,
+      "type": "worker",
+      "label": "cron handoff-devolucao",
+      "sublabel": "a cada 5 min: handoff parado além do prazo da org volta ao agente — pela MESMA função"
+    },
+    {
+      "id": "prazoConfig",
+      "lane": "humano",
+      "col": 2,
+      "type": "frontend",
+      "label": "Configurações › Distribuição de atendimento",
+      "sublabel": "settings.routing.handoff_return_after_minutes — null = IA-06 (nunca)"
+    },
+    {
+      "id": "presenca_emissor",
+      "lane": "humano",
+      "col": 4,
+      "type": "frontend",
+      "label": "useSinalDePresenca (AppShell)",
+      "sublabel": "a aba aberta bate a cada 60 s — sem clique"
+    },
+    {
+      "id": "presenca_rota",
+      "lane": "borda",
+      "col": 4,
+      "type": "api",
+      "label": "POST /attendants/presence",
+      "sublabel": "carimba last_heartbeat_at; a 1ª batida audita"
+    },
+    {
+      "id": "presenca_coluna",
+      "lane": "dados",
+      "col": 4,
+      "type": "table",
+      "label": "attendant_availability.last_heartbeat_at",
+      "sublabel": "presença expira em leitura; is_available é decisão, não presença"
     }
   ],
   "edges": [
@@ -783,6 +927,230 @@
       "from": "retomada",
       "to": "atendimentoManual",
       "label": "'Devolver ao automático' desfaz esta pausa ANTES da hora (solta a TRAVA 2, a mesma) — sem clique nenhum, o prazo vence e a IA volta sozinha"
+    },
+    {
+      "id": "e67",
+      "from": "casos",
+      "to": "avisoSuporteMotor",
+      "label": "ai.case_opened / ai.case_closed pelo event_log"
+    },
+    {
+      "id": "e68",
+      "from": "avisoSuporteMotor",
+      "to": "avisoSuporteRegistro",
+      "label": "reivindica a entrega ANTES de tocar a rede"
+    },
+    {
+      "id": "e69",
+      "from": "avisoSuporteMotor",
+      "to": "avisoSuporteTexto",
+      "label": "monta o que a equipe lê no WhatsApp"
+    },
+    {
+      "id": "e70",
+      "from": "avisoSuporteMotor",
+      "to": "central",
+      "label": "falha definitiva vira aviso que leva AO CASO"
+    },
+    {
+      "id": "e71",
+      "from": "avisoSuporteMotor",
+      "to": "casos",
+      "label": "sucesso grava alert_sent na linha do tempo"
+    },
+    {
+      "id": "e72",
+      "from": "avisoSuporteTexto",
+      "to": "chamados",
+      "label": "o único link do aviso: abrir o atendimento"
+    },
+    {
+      "id": "e73",
+      "from": "avisoSuporteRegistro",
+      "to": "numeroInterno",
+      "label": "o número configurado vira INTERNO, mesmo com o aviso pausado"
+    },
+    {
+      "id": "e74",
+      "from": "numeroInterno",
+      "to": "ingestSaida",
+      "label": "corta antes do contato — inbound e eco do próprio envio"
+    },
+    {
+      "id": "e75",
+      "from": "avisoSuporteTela",
+      "to": "avisoSuporteRota",
+      "label": "a tela nunca escreve no banco: ela fala com a rota"
+    },
+    {
+      "id": "e76",
+      "from": "avisoSuporteRota",
+      "to": "avisoSuporteRegistro",
+      "label": "fn_definir_aviso_de_caso: as sete guardas na MESMA transação da escrita"
+    },
+    {
+      "id": "e77",
+      "from": "avisoSuporteRota",
+      "to": "avisoSuporteMotor",
+      "label": "o botão de teste reusa o caminho do motor a partir do canal"
+    },
+    {
+      "id": "e78",
+      "from": "avisoSuporteRegistro",
+      "to": "avisoSuporteTela",
+      "label": "as entregas são a FONTE da lista — a Central é só superfície e qualquer membro a apaga"
+    },
+    {
+      "id": "e79",
+      "from": "avisoSuporteTela",
+      "to": "casos",
+      "label": "o laço de retorno: casos avisados x não avisados, do mesmo marco"
+    },
+    {
+      "id": "e80",
+      "from": "numeroInterno",
+      "to": "avisoSuporteTela",
+      "label": "os contadores do descarte viram a frase que impede o silêncio de parecer defeito"
+    },
+    {
+      "id": "e81",
+      "from": "passagemMontagem",
+      "to": "passagemRegistro",
+      "label": "body/title/notes/content + tentativas — as quatro colunas saem da montagem única"
+    },
+    {
+      "id": "e82",
+      "from": "checkpoints",
+      "to": "passagemMontagem",
+      "label": "o resumo acumulado e a declaração do turno entram no briefing"
+    },
+    {
+      "id": "e83",
+      "from": "avisoMotor",
+      "to": "passagemMontagem",
+      "label": "o desfecho do aviso vira cliente_avisado + aviso_motivo_codigo — 'queued' deixou de contar como entrega"
+    },
+    {
+      "id": "e84",
+      "from": "orquestrador",
+      "to": "passagemRegistro",
+      "label": "Step 5.5 — o motor do CRM passou a gravar o que nunca gravou"
+    },
+    {
+      "id": "e85",
+      "from": "passagemRegistro",
+      "to": "central",
+      "label": "o corpo do aviso é CURTO e sem conversa: a Central entrega body a qualquer agent"
+    },
+    {
+      "id": "e86",
+      "from": "atribuir",
+      "to": "passagemReconhece",
+      "label": "o INSERT em conversation_assignment_events dispara o gatilho na MESMA transação"
+    },
+    {
+      "id": "e87",
+      "from": "passagemReconhece",
+      "to": "passagemRegistro",
+      "label": "reconhecido_por/reconhecido_em — só quando a conversa está MESMO com aquele dono"
+    },
+    {
+      "id": "e88",
+      "from": "passagemReconhece",
+      "to": "central",
+      "label": "resolve o aviso handoff; sem isto o dedup impede a PRÓXIMA passagem de nascer"
+    },
+    {
+      "id": "e89",
+      "from": "retomada",
+      "to": "passagemReconhece",
+      "label": "fn_passagem_devolvida: episódio fechado sem ninguém ter assumido"
+    },
+    {
+      "id": "e90",
+      "from": "passagemRegistro",
+      "to": "passagemRota",
+      "label": "a policy de tres condicoes e lida pelo client da sessao: organizacao + papel agent + fn_can_view_conversation"
+    },
+    {
+      "id": "e91",
+      "from": "passagemRota",
+      "to": "passagemCartao",
+      "label": "o hook usePassagensDaConversa; sem realtime proprio — a tabela nao esta na publicacao, e canal fora dela assina e nao recebe"
+    },
+    {
+      "id": "e92",
+      "from": "passagemCartao",
+      "to": "chatthread",
+      "label": "terceiro tipo de item do fio, irmao do NoteCard: o cabecalho nao ganha texto e o painel lateral nao ganha bloco"
+    },
+    {
+      "id": "e93",
+      "from": "passagemCartao",
+      "to": "atribuir",
+      "label": "o convite Assumir e responder chama o MESMO claim do cabecalho — uma rota, um efeito"
+    },
+    {
+      "id": "e94",
+      "from": "passagemCobranca",
+      "to": "passagemRegistro",
+      "label": "varre reconhecido_em is null com mais de 24h e sobe cobrancas; passagem aberta e demanda viva"
+    },
+    {
+      "id": "e95",
+      "from": "passagemCobranca",
+      "to": "central",
+      "label": "reabre o aviso handoff resolvido sem ninguem ter assumido — marcar como resolvido nao e assumir"
+    },
+    {
+      "id": "e96",
+      "from": "passagemRegistro",
+      "to": "passagemLaco",
+      "label": "o denominador sao as passagens em que o cliente VOLTOU a falar; sem fala nova nao ha repeticao a medir"
+    },
+    {
+      "id": "e97",
+      "from": "passagemLaco",
+      "to": "casos",
+      "label": "o laco de retorno publicado no par Automacao, encostado em Passagens para humano"
+    },
+    {
+      "id": "e98",
+      "from": "passagemReconhece",
+      "to": "passagemCartao",
+      "label": "reconhecido_por/em viram o rodape Assumida por, e o convite some"
+    },
+    {
+      "from": "prazoConfig",
+      "to": "devolucaoPrazo",
+      "label": "o prazo por organização; ausente, o cron não lê conversa nenhuma"
+    },
+    {
+      "id": "e68",
+      "from": "devolucaoPrazo",
+      "to": "conversas",
+      "label": "lê quem está com humano de forma durável e há quanto tempo sem sinal (handoff, assumir, última saída)"
+    },
+    {
+      "id": "e69",
+      "from": "presenca_emissor",
+      "to": "presenca_rota",
+      "label": "batida a cada 60 s"
+    },
+    {
+      "from": "presenca_rota",
+      "to": "presenca_coluna",
+      "label": "upsert de uma coluna só"
+    },
+    {
+      "from": "presenca_coluna",
+      "to": "atendentes",
+      "label": "quem está com a tela aberta"
+    },
+    {
+      "from": "presenca_coluna",
+      "to": "availability",
+      "label": "selo presente/ausente na Equipe"
     }
   ],
   "cards": [

@@ -41,6 +41,7 @@ import { audit } from "@/lib/audit";
 import { requireRole } from "@/lib/auth/require-role";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { listaTiposDeAtendimento } from "@/lib/agenda/consulta";
+import { TETO_DE_LEMBRETES_EXTRAS } from "@/lib/agenda/lembretes";
 import { traduzir } from "@/lib/i18n/dicionario";
 
 export const dynamic = "force-dynamic";
@@ -112,6 +113,15 @@ const camposDoTipo = {
    * o default da 0177 é 1440) segue valendo no banco e o cron a respeita: o que
    * ela perde é poder ser reenviada por esta rota sem entrar na faixa.
    */
+  /**
+   * O PREÇO PADRÃO do serviço, em centavos.
+   *
+   * Opcional e sem default: nem todo negócio tem preço fixo, e obrigar um número
+   * faria quem cobra por hora inventar um. Vazio significa "digite na hora".
+   *
+   * É semente do item da comanda, nunca o preço dele — o item congela o seu.
+   */
+  default_price_cents: z.number().int().min(0).max(100_000_000).nullish(),
   reminder_minutes_before: z
     .number()
     .int()
@@ -125,9 +135,9 @@ const camposDoTipo = {
    * ele. Vazio é o comportamento anterior, um lembrete só, e por isso o campo
    * não tem `.default()`: quem não manda não ganha aviso nenhum a mais.
    *
-   * O teto de 3 é o mesmo do CHECK da 0241, e existe para que "lembrar" não
-   * vire "insistir". A faixa de cada degrau é a do principal, pelo mesmo motivo
-   * escrito acima dele: 0 min nunca sai e 30 dias não é lembrete, é convite.
+   * O teto é o mesmo do CHECK (`fn_degraus_de_lembrete_validos`): guarda contra
+   * laço de formulário, não contra a operação. Quem decide quantos avisos o
+   * cliente recebe é quem edita o tipo.
    */
   reminder_extra_offsets_minutes: z
     .array(
@@ -137,7 +147,9 @@ const camposDoTipo = {
         .min(15, { message: "O lembrete precisa sair pelo menos 15 minutos antes do compromisso." })
         .max(10_080, { message: "O lembrete não pode sair mais de 7 dias (10080 minutos) antes." }),
     )
-    .max(3, { message: "No máximo 3 lembretes adicionais por tipo." })
+    .max(TETO_DE_LEMBRETES_EXTRAS, {
+      message: `No máximo ${TETO_DE_LEMBRETES_EXTRAS} lembretes adicionais por tipo.`,
+    })
     // Duplicata não é erro de quem preenche, é ruído: dois degraus iguais
     // produziriam o mesmo aviso duas vezes se algum dia alguém lesse a lista
     // sem deduplicar. Some aqui, uma vez, em vez de virar guarda em cada leitor.
@@ -148,7 +160,47 @@ const camposDoTipo = {
 const criarSchema = z.object(camposDoTipo);
 // `.partial()` em vez de repetir os doze campos como opcionais: repetir criaria
 // duas listas para manter em sincronia, e a segunda envelhece calada.
-const alterarSchema = criarSchema.partial().extend({ id: z.string().uuid() });
+const alterarSchema = criarSchema.partial().extend({
+  id: z.string().uuid(),
+  /**
+   * O TEXTO que o cron manda. Vazio/nulo = a frase padrão. Distinto de
+   * `reminder_template_name` (nome do template no provedor oficial).
+   *
+   * Mora só no PATCH de propósito: o tipo nasce com a frase de fábrica, e
+   * quem quer outra escreve depois. No POST, o campo nem entra — senão um
+   * `""` no nascimento gravaria nulo por cima do default, e a ausência no
+   * formulário de criação deixaria de ser ausência.
+   *
+   * Transforma string em branco em `null` para o PATCH poder VOLTAR ao padrão
+   * sem um campo-sentinela: quem apaga o textarea está pedindo o texto de
+   * fábrica, não uma mensagem vazia no WhatsApp.
+   */
+  reminder_body: z
+    .string()
+    .max(1000, { message: "A mensagem do lembrete cabe em 1000 caracteres." })
+    .nullish()
+    .transform((v) => (v == null ? v : v.trim() === "" ? null : v.trim())),
+  /**
+   * Texto de cada extra. Chave = minutos antes. String em branco some do mapa
+   * (cai na frase de fábrica). Mora só no PATCH pelo mesmo motivo de
+   * `reminder_body`: o tipo nasce sem texto próprio.
+   */
+  reminder_bodies: z
+    .record(
+      z.string().regex(/^\d+$/),
+      z.string().max(1000, { message: "A mensagem do lembrete cabe em 1000 caracteres." }),
+    )
+    .optional()
+    .transform((v) => {
+      if (!v) return v;
+      const out: Record<string, string> = {};
+      for (const [k, corpo] of Object.entries(v)) {
+        const t = corpo.trim();
+        if (t) out[k] = t;
+      }
+      return out;
+    }),
+});
 const desativarSchema = z.object({ id: z.string().uuid() });
 
 /**
@@ -210,6 +262,9 @@ export async function GET(req: NextRequest): Promise<Response> {
       reminder_enabled: t.lembreteLigado,
       reminder_minutes_before: t.lembreteAntecedenciaMin,
       reminder_extra_offsets_minutes: t.lembreteDegrausExtras,
+      reminder_body: t.lembreteMensagem,
+      reminder_bodies: t.lembreteMensagens,
+      default_price_cents: t.precoPadraoCents,
     })),
     { requestId },
   );
@@ -274,7 +329,10 @@ export async function PATCH(req: NextRequest): Promise<Response> {
     // legível a quem opera em espanhol.
     return fail("validation_failed", t(lido.error.issues[0]?.message ?? "corpo inválido"), 422, { requestId });
   }
-  const { id, ...campos } = lido.data;
+  const { id, ...bruto } = lido.data;
+  const campos = Object.fromEntries(
+    Object.entries(bruto).filter(([, v]) => v !== undefined),
+  );
   if (Object.keys(campos).length === 0) {
     // Recusa em vez de UPDATE vazio: "alterei" sobre nada é a mesma família de
     // mentira que o "Marcado ✓" sem linha no banco.

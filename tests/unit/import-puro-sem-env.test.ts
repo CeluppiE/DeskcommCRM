@@ -62,7 +62,16 @@ function respondeu(saida: string): boolean {
  * módulos que PRECISAM de env — e um teste que acusa o correto é pior que
  * teste nenhum: some por ruído.
  */
-const MODULOS_PUROS = ["@/lib/leads/timeline-query"] as const;
+const MODULOS_PUROS = [
+  "@/lib/leads/timeline-query",
+  // O texto do aviso de caso no WhatsApp (migration 0292). Ele monta uma
+  // mensagem que sai SEM DOM, e é importado por um teste puro — se um dia
+  // alguém puxar `marcaDaSaida` ou `env` para o topo dele em vez de receber a
+  // marca e a URL já resolvidas, a suíte inteira falha ao CARREGAR no CI, onde
+  // não existe `.env` no disco. É o mesmo defeito que derrubou a main no run
+  // 30182066284, num arquivo que nasceu depois dele.
+  "@/lib/escalacao/texto-do-aviso",
+] as const;
 
 /** Importa o módulo num processo filho SEM as variáveis do app. */
 function importaComAmbienteLimpo(modulo: string): { ok: boolean; respondeu: boolean; erro: string } {

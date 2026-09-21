@@ -1105,6 +1105,20 @@ Default IA-06: bot **não reassume**. `conversations.bot_silenced_until` (timest
 
 Próxima conversation no mesmo contact (status=resolved + nova abertura) começa com bot, exceto `contacts.force_human=true`.
 
+**Retomada por prazo (opcional, por organização).** A IA-06 continua sendo o padrão, mas a
+organização pode ligar um prazo em Configurações › Distribuição de atendimento
+(`organizations.settings.routing.handoff_return_after_minutes`, 5 min – 24 h; `null` = nunca).
+Com o prazo ligado, o cron `app/api/v1/cron/handoff-devolucao` (a cada 5 min) devolve ao agente
+a conversa que está com humano de forma durável — `bot_silenced_until = 'infinity'`,
+`assignee_kind = 'user'` ou `assigned_to_user_id` preenchido — e ficou o prazo inteiro sem
+**nenhum sinal humano** (o maior entre `last_handoff_at`, `assigned_at` e `last_outbound_at`).
+A devolução passa pela MESMA função do botão (`devolverAtendimentoAoAgente`) e só acontece em
+sessão com agente publicado ou roteador ativo; a pausa por resposta pelo celular
+(`lib/escalacao/atendimento-manual.ts`, silêncio finito) não entra — vence sozinha. Regra pura e
+motivos de exclusão em `lib/escalacao/devolucao-automatica.ts`. Motivação medida: 12 de 31
+conversas ativas de um dia estavam em handoff formal e nenhuma foi devolvida — o cliente que
+escreveu de novo ficou sem resposta, com humano ocupado e IA proibida.
+
 ---
 
 ## 8. Guardrails LLM

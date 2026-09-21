@@ -28,6 +28,10 @@ export const TRIGGER_LABELS: Record<TriggerEvent, string> = {
   "appointment.rescheduled": "Quando um horário for remarcado",
   "appointment.cancelled": "Quando um horário for cancelado",
   "contact.birthday": "No aniversário de um contato",
+  // A frase diz o que a regra vê ("uma data do funil"), e não o que o operador
+  // escreveu — o campo é escolhido embaixo, e o mesmo rótulo serve para "data
+  // do casamento", "vencimento" e "data da prova".
+  "lead.date_field_due": "Quando faltarem N dias para uma data do funil",
 };
 
 export const ACTION_LABELS: Record<ActionType, string> = {

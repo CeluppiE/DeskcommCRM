@@ -128,7 +128,29 @@ function valoresEmitidos(): Map<string, string[]> {
           mapa.set(v, [...(mapa.get(v) ?? []), path.relative(RAIZ, arquivo)]);
         }
       }
+      // A decisão da origem passou a viver numa FUNÇÃO nomeada (#652,
+      // `origemDaMensagem`): a cadeia com três ramos não cabe numa linha (o
+      // prettier quebra em 100 colunas) e o extrator de par só lia dois valores.
+      // Aqui a função citada na escrita é aberta e os literais que ela DEVOLVE
+      // contam como emissores — a forma que o próximo ramo vai usar.
+      for (const m of src.matchAll(/sent_via:\s*([a-zA-Z_$][\w$]*)\s*\(/g)) {
+        const nome = m[1]!;
+        const definicao = new RegExp(`function\\s+${nome}\\s*\\([\\s\\S]*?\\n\\}`).exec(src);
+        if (!definicao) continue;
+        for (const devolvido of definicao[0].matchAll(/return\s+"([a-z_]+)"/g)) {
+          const v = devolvido[1]!;
+          mapa.set(v, [...(mapa.get(v) ?? []), path.relative(RAIZ, arquivo)]);
+        }
+      }
     }
+  }
+  // A FUNÇÃO de autoria (`origemDaMensagem`, ver `valoresDoMapaDeAutoria`): é ela
+  // que decide a autoria do envio desde que o #652 e o #866 entraram juntos, e a
+  // linha do `sent_via:` não tem literais — sem esta leitura, `user`, `system` e
+  // `automation` sumiriam do conjunto de emitidos e a primeira direção acusaria o
+  // componente por um defeito do instrumento.
+  for (const [v, onde] of valoresDoMapaDeAutoria()) {
+    mapa.set(v, [...(mapa.get(v) ?? []), ...onde]);
   }
   return mapa;
 }
@@ -138,6 +160,35 @@ function defaultDaColuna(): string | null {
   const sql = readFileSync(BASELINE, "utf8");
   const m = /"sent_via"\s+"text"\s+DEFAULT\s+'([a-z_]+)'/.exec(sql);
   return m?.[1] ?? null;
+}
+
+/** Onde `Actor` vira `sent_via` — a função que decide a autoria do envio. */
+const AUTORIA_DO_ENVIO_TS = path.join(RAIZ, "app", "api", "v1", "messages", "_handler.ts");
+
+/**
+ * Os valores que a FUNÇÃO de autoria devolve.
+ *
+ * ⚠️ Era um mapa (`AUTORIA_DO_ENVIO`) enquanto o #866 andava sozinho. Com o #652
+ * entrando junto, a decisão deixou de caber num mapa por tipo de ator: a mesma
+ * variante (`webhook_source`) produz `automation` ou `ai` conforme QUEM ESCREVEU
+ * o texto, e um `Record<Actor["type"], …>` não expressa isso. Os dois viraram um
+ * mecanismo só, `origemDaMensagem`, e o extrator lê os literais que ela devolve.
+ *
+ * O que NÃO mudou é o que importa aqui: a leitura continua ancorada em algo de
+ * nome e forma fixos, e o controle positivo abaixo estoura com o motivo se
+ * alguém renomear a função ou trocar os retornos literais por uma expressão —
+ * em vez de devolver conjunto vazio, que é indistinguível de "ninguém grava".
+ */
+function valoresDoMapaDeAutoria(): Map<string, string[]> {
+  const src = readFileSync(AUTORIA_DO_ENVIO_TS, "utf8");
+  const bloco = /export function origemDaMensagem[\s\S]*?\n\}/.exec(src);
+  const mapa = new Map<string, string[]>();
+  if (bloco === null) return mapa;
+  for (const m of bloco[0].matchAll(/return\s+"([a-z_]+)"/g)) {
+    const v = m[1]!;
+    mapa.set(v, [...(mapa.get(v) ?? []), path.relative(RAIZ, AUTORIA_DO_ENVIO_TS)]);
+  }
+  return mapa;
 }
 
 /** O vocabulário que o banco ACEITA — o CHECK. */
@@ -155,7 +206,7 @@ const vocabulario = vocabularioDoBanco();
 const produzidos = new Set<string>([...emitidos.keys(), ...(padrao ? [padrao] : [])]);
 
 describe("o rótulo de origem do balão", () => {
-  it("os quatro extratores estão vivos — controle positivo antes de concluir", () => {
+  it("os extratores estão vivos — controle positivo antes de concluir", () => {
     // Sem isto, um regex que parou de casar devolve conjunto vazio e as duas
     // asserções abaixo passam por VACUIDADE. É o modo de falha 7 da triagem:
     // grep vazio é indistinguível de instrumento morto.
@@ -163,6 +214,10 @@ describe("o rótulo de origem do balão", () => {
     expect(emitidos.size, "nenhum `sent_via: \"…\"` em app/, lib/ ou workers/").toBeGreaterThan(0);
     expect(padrao, "DEFAULT de messages.sent_via não encontrado no baseline").not.toBeNull();
     expect(vocabulario.size, "CHECK messages_sent_via_check não encontrado").toBeGreaterThan(0);
+    expect(
+      valoresDoMapaDeAutoria().size,
+      "a função de autoria (origemDaMensagem) sumiu de messages/_handler.ts, ou os retornos deixaram de ser literais: nos dois casos a leitura fica cega, e cega ela concorda com tudo",
+    ).toBeGreaterThan(0);
 
     // E as âncoras concretas: se a fonte mudar de forma, isto estoura em vez de
     // devolver silêncio. O piso é bem abaixo do medido em 2026-09-08 (5 rótulos
@@ -170,6 +225,10 @@ describe("o rótulo de origem do balão", () => {
     // próximo PR que mova um arquivo de lugar.
     expect(oferecidos.has("ai"), "o rótulo da IA sumiu do componente").toBe(true);
     expect(emitidos.has("external_device"), "ninguém mais grava external_device?").toBe(true);
+    expect(
+      emitidos.has("system"),
+      "o valor que a #866 criou (token de servidor não é a IA) não foi lido em emissor nenhum",
+    ).toBe(true);
   });
 
   it("todo rótulo que a tela oferece corresponde a um valor que alguém GRAVA", () => {

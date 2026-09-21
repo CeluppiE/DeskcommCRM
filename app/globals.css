@@ -813,6 +813,16 @@
   --xy-controls-box-shadow: var(--shadow-md);
   --xy-edge-label-background-color: var(--color-surface);
   --xy-edge-label-color: var(--color-text);
+  /* A linha que liga dois passos é o desenho do fluxo, não enfeite: no cinza
+     padrão da lib (#b1b1b7) ela dava 2,03:1 sobre o fundo claro — abaixo dos
+     3:1 que a WCAG pede para elemento gráfico essencial, e no print do canvas
+     ela some. `text-muted` é o único token que passa nos DOIS temas
+     (claro 6,63:1, escuro 5,35:1); `text-subtle` cairia para 2,81:1 no escuro. */
+  --xy-edge-stroke: var(--color-text-muted);
+  --xy-edge-stroke-selected: var(--color-accent);
+  /* A linha que segue o cursor enquanto se arrasta uma ligação lia a mesma var
+     default da lib — o cinza reprovado acima. */
+  --xy-connectionline-stroke: var(--color-accent);
   --xy-handle-background-color: var(--color-accent);
   --xy-handle-border-color: var(--color-surface);
 }

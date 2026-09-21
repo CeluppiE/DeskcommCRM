@@ -217,12 +217,13 @@ describe("append-only: por onde o expurgo pode passar, e por onde não pode", ()
     // outras tabelas: `grep -nE '^GRANT [A-Z,]+ ON TABLE' supabase/baseline.sql
     // | grep -v 'GRANT ALL'`).
     //
-    // ⚠️ E ESTE CASO NÃO MEDE O SUPABASE REAL. O prelude do `test-db.sh`
-    // reproduz o default ACL do Supabase para funções, não para tabelas: aqui
-    // `api_audit_log` nasce só com o que o dump concede, e o caso fica verde
-    // com ou sem o revoke de UPDATE/DELETE da migration 0258. No Supabase o
-    // default ACL de tabelas dá UPDATE e DELETE aos três papéis; quem mede esse
-    // mundo é `audit-log-sob-o-default-acl-do-supabase.test.ts`.
+    // ⚠️ ESTE CASO SÓ MEDE O SUPABASE REAL DESDE A ISSUE #887. Até ela, o
+    // prelude do `test-db.sh` reproduzia o default ACL do Supabase só para
+    // funções: `api_audit_log` nascia só com o que o dump concede, e o caso
+    // ficava verde com ou sem o revoke de UPDATE/DELETE da migration 0258.
+    // Agora a tabela nasce com o que o Supabase dá, e o caso reprova sem esse
+    // revoke. Medido tirando `update, delete` do bloco da 0258: vermelho com o
+    // prelude novo, verde com o antigo.
     const linhas = sql(`
       select coalesce(string_agg(grantee || ':' || privilege_type, ',' order by grantee), '')
         from information_schema.role_table_grants

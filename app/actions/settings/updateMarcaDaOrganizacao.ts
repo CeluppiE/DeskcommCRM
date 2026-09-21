@@ -34,11 +34,15 @@ export type UpdateMarcaDaOrganizacaoResult =
  *
  * ── Por que RPC, e não `.update({ settings })` ───────────────────────────────
  *
- * `organizations.settings` já tem TRÊS donos com gates diferentes — a aba
- * Organização (`updateTenant.ts:56-83`, admin), o PATCH de atendimento
- * (`api/v1/settings/routing`, manager) e a régua de atrito (`api/v1/metrics/
- * atrito`, manager) — e os três leem o jsonb INTEIRO, espalham em memória e
- * regravam o objeto inteiro, em round-trips separados. A perda é medida:
+ * `organizations.settings` tem vários donos com gates diferentes, e cada um
+ * lê o jsonb INTEIRO, espalha em memória e regrava o objeto inteiro, em
+ * round-trips separados. Quem são hoje, sem acreditar nesta linha:
+ *
+ *     git grep -n "update({ settings" -- app lib workers
+ *
+ * (a aba Organização saiu dessa lista no PR #1209 — ela não escreve mais
+ * `settings`; por isso aqui vai o comando, e não uma contagem que envelhece.)
+ * A perda é medida:
  * `visibility_mode` volta de `own` para `all` sem erro em lugar nenhum, e essa
  * chave é lida DIRETO pela RLS (`fn_can_view_conversation`, `fn_can_view_lead`).
  * Um write de COR reverteria, em silêncio, uma decisão de exposição de dado de

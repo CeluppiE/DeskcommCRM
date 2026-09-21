@@ -19,6 +19,7 @@ import { useT } from "@/hooks/i18n/useT";
 export type FollowupEnrollmentStatus =
   | "active"
   | "waiting_reply"
+  | "dormente"
   | "paused_handoff"
   | "paused_manual"
   | "completed"

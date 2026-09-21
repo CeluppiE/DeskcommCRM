@@ -329,3 +329,85 @@ export type ComandoDoBanco = (typeof COMANDOS_DO_BANCO)[number];
 export function comandosDaFila(automaticoDaOrg?: boolean): ComandoDoBanco[] {
   return automaticoDaOrg === false ? ["aguardando", "automatico"] : ["aguardando"];
 }
+
+/**
+ * A ORDEM DA FILA, num lugar só — mais tempo esperando primeiro.
+ *
+ * ─── A régua é a mensagem mais ANTIGA sem resposta, não a última (issue #990) ─
+ *
+ * A ordem era por `last_inbound_at`, a ÚLTIMA mensagem do cliente — e essa coluna
+ * é reescrita a cada mensagem nova (`fn_mark_conversation_message`, migration
+ * 0267). O efeito era o oposto do pretendido: o cliente que insiste (pergunta,
+ * cobra, escreve de novo) REINICIAVA a própria espera e descia para o fim da
+ * fila, atrás de quem escreveu uma vez e ficou quieto. Não é uma lista
+ * desordenada na tela — é a pessoa que mais está tentando ser atendida sendo a
+ * última a ser atendida.
+ *
+ * A régua passa a ser `awaiting_since`: o instante da mensagem do cliente mais
+ * antiga que ninguém respondeu ainda (min(sent_at) dos inbound posteriores a
+ * `last_outbound_at`, no atendimento em curso). Ela é COLUNA, e não expressão,
+ * porque a ordem da Fila é um `order by` pedido ao PostgREST pela rota da lista e
+ * o PostgREST ordena por coluna — a expressão mora em `messages` e depende de
+ * `last_outbound_at`.
+ *
+ * `last_message_at` continua fora: ele anda quando o atendente responde (a
+ * conversa que o cliente abandonou há dois dias volta ao topo assim que ele
+ * recebe uma resposta hoje), e `created_at` pode ser de uma conversa antiga
+ * reaberta. `nullsFirst: false` põe quem nunca recebeu mensagem no fim; o `id` é
+ * o desempate, e sem ele duas conversas com o mesmo instante trocam de lugar
+ * entre duas leituras — a linha "pula" sozinha na tela.
+ *
+ * Quem consome: a rota da lista (`app/api/v1/conversations/_handler.ts`, a aba
+ * Fila), o mapa de posições e o resumo da fila (`lib/routing/queue.ts` — o "3º"
+ * que o atendente lê na linha e o número que o cliente ouve no WhatsApp) e a
+ * pílula "Aguardando há…" com a hora do canto da linha
+ * (`components/inbox/ConversationListItem.tsx`, via `esperaDaConversa`). Enquanto
+ * cada um escrevia a sua, a mesma conversa podia aparecer em 2º numa e 5ª na
+ * outra — ordenada por uma pergunta e numerada por outra, com a espera da linha
+ * dizendo um tempo que a ordem não respeitava —, sem nada ficar vermelho.
+ */
+/**
+ * "Este pedido é o da Fila?" — a mesma pergunta na rota e na lista.
+ *
+ * A ordem já mora em `ORDEM_DA_ESPERA`, mas o PREDICADO que decide se ela vale
+ * continuava escrito duas vezes: em `app/api/v1/conversations/_handler.ts` (que
+ * ordena) e em `components/inbox/ConversationList.tsx` (que numera "1º, 2º…" e
+ * mostra o tempo de espera). Ganhar uma condição num só dos dois — uma aba nova,
+ * um filtro — produz a tela ordenada por uma pergunta e numerada por outra, sem
+ * nada ficar vermelho. É a mesma classe que o #994 veio fechar para a ordem.
+ */
+export function ehAFila(f: {
+  comando?: readonly string[] | null;
+  assigned_to?: string | null;
+}): boolean {
+  return f.comando?.includes("aguardando") ?? f.assigned_to === "unassigned";
+}
+
+export const ORDEM_DA_ESPERA = {
+  coluna: "awaiting_since",
+  opcoes: { ascending: true, nullsFirst: false },
+} as const;
+
+/**
+ * O INSTANTE que a Fila trata como espera, para quem já tem a linha na mão — a
+ * contraparte de `ORDEM_DA_ESPERA`, que é a COLUNA pedida ao banco.
+ *
+ * Existe porque o mesmo instante é mostrado em dois lugares da linha (a pílula
+ * "Aguardando há…" e a hora do canto) e o valor não pode sair de duas cadeias de
+ * fallback escritas à mão: `?? created_at` num lugar e `?? last_message_at` no
+ * outro é exatamente a divergência de 40px que a #464 fechou.
+ *
+ * `awaiting_since` é a régua (migration 0267). `last_inbound_at` fica no meio da
+ * cadeia por um motivo com prazo: entre o deploy deste código e a migration
+ * aplicada, a coluna ainda não vem na linha que o realtime entrega, e sem esse
+ * degrau a Fila inteira mostraria a data de criação — uma tela plausível e
+ * errada. `created_at` é o último degrau, para a conversa que nunca recebeu
+ * mensagem do cliente.
+ */
+export function esperaDaConversa(c: {
+  awaiting_since?: string | null;
+  last_inbound_at?: string | null;
+  created_at?: string | null;
+}): string | null {
+  return c.awaiting_since ?? c.last_inbound_at ?? c.created_at ?? null;
+}

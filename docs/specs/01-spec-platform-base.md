@@ -1071,64 +1071,40 @@ create table public.idempotency_keys (
   key             text not null,
   endpoint        text not null, -- ex: 'POST /api/v1/leads'
   request_hash    bytea not null, -- sha256 do body normalizado
-  status_code     integer not null,
-  response_body   jsonb not null,
+  status_code     integer,        -- null = RESERVA (efeito em curso)
+  response_body   jsonb,          -- null junto com status_code; nunca um só
   created_at      timestamptz not null default now(),
   expires_at      timestamptz not null default now() + interval '24 hours',
-  unique (organization_id, key, endpoint)
+  unique (organization_id, key, endpoint),
+  constraint idempotency_keys_recibo_ou_reserva
+    check ((status_code is null) = (response_body is null))
 );
 ```
 
-**Algoritmo**:
+A linha tem **dois estados** (migration 0321, issue #778). **Reserva** — `status_code` e
+`response_body` nulos, gravada ANTES do efeito, `expires_at` curto (60s); é ela que faz a
+segunda requisição simultânea colidir no índice único em vez de executar de novo.
+**Recibo** — os dois preenchidos, depois do efeito, na mesma linha, com `expires_at` de 24h.
 
-```ts
-async function withIdempotency<T>(
-  req: Request,
-  orgId: string,
-  endpoint: string,
-  handler: () => Promise<{ status: number; body: T }>
-) {
-  const key = req.headers.get('idempotency-key');
-  if (!key) return handler();
+**Algoritmo** (implementado em `lib/api/idempotency.ts`, `comIdempotencia`):
 
-  const body = await req.clone().text();
-  const requestHash = sha256(body);
+1. Lê a linha da chave (`organization_id`, `key`, `endpoint`, `expires_at > now()`).
+   - hash diferente → 409 `idempotency_conflict`;
+   - mesmo hash e `status_code` nulo → 409 `idempotency_in_progress` (retentável: a primeira
+     execução ainda está em curso);
+   - mesmo hash e recibo → replay da resposta gravada, sem reexecutar.
+2. Sem linha viva: **reserva** (`insert` com `status_code`/`response_body` nulos). Quem leva
+   `23505` relê: linha viva é classificada como no passo 1; linha vencida é retomada por
+   `update` otimista (`id` + `expires_at` lido como bilhete) — quem perde a retomada recebe
+   `idempotency_in_progress`.
+3. Executa o efeito. Se ele **lança**, a reserva vence na hora e o erro propaga: a
+   retentativa com a mesma chave executa em vez de receber "em curso".
+4. Grava o **recibo** na mesma linha (filtrada por `request_hash`), `expires_at` = 24h.
+   Falha ao gravar o recibo não vira erro: o efeito já aconteceu, e erro faria o cliente
+   retentar e duplicar.
 
-  // Lookup
-  const existing = await db
-    .from('idempotency_keys')
-    .select('*')
-    .eq('organization_id', orgId)
-    .eq('key', key)
-    .eq('endpoint', endpoint)
-    .gt('expires_at', new Date().toISOString())
-    .maybeSingle();
-
-  if (existing.data) {
-    if (!constantTimeEq(existing.data.request_hash, requestHash)) {
-      throw new ApiError(409, 'idempotency_conflict', {
-        message: 'Idempotency-Key reused with different body',
-      });
-    }
-    return new Response(JSON.stringify(existing.data.response_body), {
-      status: existing.data.status_code,
-      headers: { 'X-Idempotent-Replay': 'true' },
-    });
-  }
-
-  // Execute + persist
-  const result = await handler();
-  await db.from('idempotency_keys').insert({
-    organization_id: orgId,
-    key,
-    endpoint,
-    request_hash: requestHash,
-    status_code: result.status,
-    response_body: result.body,
-  });
-  return result;
-}
-```
+`request_hash` é `bytea`: gravado como o literal `\x<hex>` e normalizado na leitura
+(`\x…` do PostgREST, `Buffer` do driver `pg`).
 
 **Cron de limpeza**: `DELETE FROM idempotency_keys WHERE expires_at < now()` diário.
 
@@ -1217,6 +1193,7 @@ export async function rateLimitMiddleware(req: Request, orgId: string) {
 | `tenant_not_found` | 404 | Org inexistente ou não acessível |
 | `resource_not_found` | 404 | UUID não encontrado |
 | `idempotency_conflict` | 409 | Mesma key, body diferente |
+| `idempotency_in_progress` | 409 | Mesma key, mesmo body, primeira execução ainda em curso — retentável |
 | `tenant_already_exists` | 409 | CNPJ duplicado |
 | `cursor_malformed` | 400 | Cursor estrutura inválida |
 | `cursor_invalid_signature` | 400 | HMAC não bate (tampering) |
@@ -1228,6 +1205,14 @@ export async function rateLimitMiddleware(req: Request, orgId: string) {
 | `pipeline_immutable_use_clone` | 422 | Tentativa de mover lead pra outro pipeline (P-01) |
 | `lost_reason_required` | 422 | Lead → status `lost` sem `lost_reason` (P-03) |
 | `lost_reason_invalid` | 422 | `lost_reason` fora da lista canônica (P-03) |
+| `lead_stage_changed_concurrent` | 409 | `expected_updated_at` não bate — a trava otimista do arrasto (P-08) |
+| `stage_pipeline_mismatch` | 422 | A etapa informada não é do funil alvo |
+| `pipeline_unchanged` | 422 | Troca de funil pedida para o funil em que o negócio já está — o caminho é `/move` |
+| `lead_not_open` | 422 | Troca de funil pedida para negócio já encerrado |
+| `stage_destino_terminal` | 422 | Etapa de destino da troca é de ganho/perda — o clone nasceria fechado |
+| `pipeline_without_initial_stage` | 422 | Funil de destino sem etapa aberta para receber o negócio |
+| `pipeline_no_lost_stage` | 422 | Funil de origem sem etapa de perda para encerrar o negócio (espelho: `pipeline_no_won_stage` no `/win`) |
+| `pipeline_not_found` | 404 | Funil de destino inexistente nesta organização |
 | `phone_must_be_e164` | 422 | Telefone fora do formato `+\d{8,15}` |
 | `merge_irreversible` | 405 | Tentativa de desfazer merge de contacts (Sub-PRD 02 §3.4) |
 | `internal_error` | 500 | Catch-all, sempre logado em Sentry |
@@ -1595,7 +1580,7 @@ export function logWithCtx(orgId: string, requestId: string) {
 
 ### 11.3 Métricas custom
 
-Emitidas via OpenTelemetry → Vercel Observability ou Grafana Cloud:
+Emitidas via OpenTelemetry → o coletor da instalação (Grafana Cloud, Sentry ou equivalente):
 
 | Métrica | Tipo | Tags |
 |---|---|---|

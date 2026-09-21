@@ -1,4 +1,5 @@
 import { googleRpc } from "./google/sync-store";
+import { lerCorposDoLembrete } from "./lembretes";
 /**
  * OS HORÁRIOS LIVRES DE UMA ORGANIZAÇÃO — a coleta, num lugar só.
  *
@@ -68,6 +69,8 @@ import { googleRpc } from "./google/sync-store";
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { nomeDoContato, type ContatoNomeavel } from "@/lib/contacts/rotulo-do-contato";
+
 import { diaLocalISO } from "./fuso";
 import { horariosLivres, type ExcecaoDeData, type Slot } from "./horarios-livres";
 import { lerJornadaDoBanco } from "./jornada";
@@ -108,6 +111,18 @@ export interface ParametrosDaConsulta {
   ate: Date;
   /** INJETADO, como em `horariosLivres`. Relógio lido aqui dentro é o defeito que `janela-do-canal.ts` documenta. */
   agora: Date;
+  /**
+   * Um agendamento que NÃO conta como ocupação — o que está sendo REMARCADO.
+   *
+   * Ele ocupa o horário de ONDE SAI, não o de DESTINO. Sem o intervalo, o próprio
+   * compromisso já não atrapalhava a si mesmo por acaso: a janela dele não cruza a
+   * janela pedida. Com intervalo, a coleta alarga para trás/para frente e o
+   * horário de saída passa a cruzar a janela do destino — a IA remarcando para
+   * logo depois do próprio fim levava 422 `agenda_horario_indisponivel` por causa
+   * de si mesma (#1084). Quem remarca diz quem remarcar; quem só OFERECE horário
+   * (rota, ferramenta MCP) não passa nada, e a grade segue contando tudo.
+   */
+  ignorarAgendamentoId?: string;
 }
 
 export type ResultadoDaConsulta =
@@ -150,6 +165,16 @@ export type ResultadoDaConsulta =
  * de um lado devolve dia que a grade pergunta e o mapa não tem.
  */
 const DIA = 86_400_000;
+
+/**
+ * O intervalo antes/depois do atendimento é regra de OFERTA — quem o aplica é o
+ * motor, inflando cada candidato (`horarios-livres.ts`). A COLETA, porém, precisa
+ * enxergar o que esse intervalo alcança: um compromisso que termina dentro dele
+ * não cruza a janela pedida e ficava invisível. Sem ele, a ESCRITA aceitava o
+ * horário que a LEITURA escondia (issue #876). Alargar só a coleta põe as duas
+ * pontas na mesma régua sem duplicar regra: quem decide continua sendo o motor.
+ */
+const MINUTO = 60_000;
 
 const NAO_OFERECA =
   "Não ofereça horários e não diga que está sem vaga — avise que alguém da equipe confirma o horário.";
@@ -271,7 +296,14 @@ export async function horariosLivresDaOrg(
       .eq("user_id", donoId)
       .gte("exception_date", primeiroDiaDaRegra)
       .lte("exception_date", ultimoDiaDaRegra),
-    coletaOQueOcupa(supabase, organizationId, { donoId, de: params.de, ate: params.ate }),
+    coletaOQueOcupa(supabase, organizationId, {
+      donoId,
+      de: new Date(params.de.getTime() - Number(tipo.buffer_before_minutes ?? 0) * MINUTO),
+      ate: new Date(params.ate.getTime() + Number(tipo.buffer_after_minutes ?? 0) * MINUTO),
+      // Remarcar: o compromisso de saída não é ocupação do destino (#1084). A
+      // janela alargada acima é justamente o que o fazia parecer um vizinho.
+      ignorarAgendamentoId: params.ignorarAgendamentoId,
+    }),
   ]);
 
   if (erroExc) {
@@ -514,12 +546,17 @@ export type ResultadoDaLista =
       motivoParaCliente: string;
     };
 
-/** O embed do PostgREST vem objeto ou array conforme o gerador de tipos; aceite os dois. */
-function nomeDoContato(
-  c: { name: string | null; display_name: string | null } | { name: string | null; display_name: string | null }[] | null | undefined,
+/**
+ * O embed do PostgREST vem objeto ou array conforme o gerador de tipos; aceite
+ * os dois. A DECISÃO de como a pessoa se chama não mora aqui: era uma segunda
+ * função com o nome `nomeDoContato`, cadeia remontada à mão e sem a guarda de
+ * identificador técnico — ela devolvia `Contato 543134@lid` onde a central
+ * devolve `null`, e esse valor ia para a fala do agente sobre o compromisso.
+ */
+function contatoDoEmbed(
+  c: ContatoNomeavel | ContatoNomeavel[] | null | undefined,
 ): string | null {
-  const alvo = Array.isArray(c) ? c[0] : c;
-  return alvo?.name ?? alvo?.display_name ?? null;
+  return nomeDoContato(Array.isArray(c) ? (c[0] ?? null) : c);
 }
 
 export async function listaAgendamentos(
@@ -670,8 +707,9 @@ export async function listaAgendamentos(
       // O ID sozinho não serve a nenhum dos dois consumidores: a grade precisa do
       // nome para dizer "com quem", e o AGENTE recebia um uuid cru onde devia
       // dizer "você já tem consulta marcada, Maria". Mesma coluna que a tela do
-      // produto lê, mesmo precedente de `name` antes de `display_name`.
-      contatoNome: nomeDoContato(l.contacts),
+      // produto lê, e a MESMA decisão de nome — `lib/contacts/rotulo-do-contato.ts`,
+      // não um precedente copiado de outro arquivo.
+      contatoNome: contatoDoEmbed(l.contacts),
     })),
   };
 }
@@ -759,6 +797,12 @@ export interface TipoDeAtendimento {
   lembreteAntecedenciaMin: number;
   /** Degraus ADICIONAIS, somados ao principal. Vazio = um lembrete só. */
   lembreteDegrausExtras: number[];
+  /** Texto próprio do lembrete principal. null = a frase padrão do cron. */
+  lembreteMensagem: string | null;
+  /** Texto de cada extra, chave = minutos antes. Vazio = nenhum extra tem texto próprio. */
+  lembreteMensagens: Record<string, string>;
+  /** Preço padrão em centavos, ou null quando o negócio digita na hora. */
+  precoPadraoCents: number | null;
 }
 
 export type ResultadoDosTipos =
@@ -788,7 +832,7 @@ export async function listaTiposDeAtendimento(
   let q = supabase
     .from("calendar_event_types")
     .select(
-      "id, name, slug, description, category, duration_minutes, location_kind, location_details, requires_confirmation, is_active, default_owner_user_id, buffer_before_minutes, buffer_after_minutes, minimum_notice_minutes, booking_window_days, reminder_enabled, reminder_minutes_before, reminder_extra_offsets_minutes",
+      "id, name, slug, description, category, duration_minutes, location_kind, location_details, requires_confirmation, is_active, default_owner_user_id, buffer_before_minutes, buffer_after_minutes, minimum_notice_minutes, booking_window_days, reminder_enabled, reminder_minutes_before, reminder_extra_offsets_minutes, reminder_body, reminder_bodies, default_price_cents",
     )
     // Service role bypassa a RLS: este filtro é a única proteção no caminho da
     // ferramenta MCP (ver o cabeçalho do arquivo).
@@ -829,6 +873,14 @@ export async function listaTiposDeAtendimento(
       lembreteDegrausExtras: Array.isArray(t.reminder_extra_offsets_minutes)
         ? t.reminder_extra_offsets_minutes.map(Number)
         : [],
+      lembreteMensagem: t.reminder_body === null || t.reminder_body === undefined
+        ? null
+        : String(t.reminder_body),
+      lembreteMensagens: lerCorposDoLembrete(t.reminder_bodies),
+      precoPadraoCents:
+        t.default_price_cents === null || t.default_price_cents === undefined
+          ? null
+          : Number(t.default_price_cents),
     })),
   };
 }

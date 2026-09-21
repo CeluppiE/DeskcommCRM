@@ -76,6 +76,16 @@ export interface UserOrgMembership {
    * para responder algo que a primeira já tinha em mãos.
    */
   locale?: string | null;
+  /**
+   * Fuso IANA da organização (`organizations.timezone`).
+   *
+   * Pela mesma razão do `locale` acima: quem escolhe a organização ativa é
+   * quem precisa saber em que fuso a tela desenha o calendário, e buscá-lo
+   * depois seria uma segunda ida ao banco para responder o que a primeira já
+   * trouxe. Pode vir nulo ou inutilizável — nenhum escritor valida a coluna —,
+   * então quem usa passa por `fusoValido` e cai em `FUSO_PADRAO`.
+   */
+  timezone?: string | null;
 }
 
 export interface AuthUser {
@@ -139,6 +149,8 @@ export interface AuthUser {
 export interface ActiveOrg {
   interface_settings?: InterfaceSettings;
   orgId: string;
+  /** Fuso IANA da organização — ver `UserOrgMembership.timezone`. */
+  timezone?: string | null;
   name: string;
   role: Role;
   /**
@@ -147,6 +159,17 @@ export interface ActiveOrg {
    * de autorização — a RLS (fn_can_view_conversation) é quem garante o escopo.
    */
   visibility_mode?: VisibilityMode;
+  /**
+   * A regra "cliente pela agenda" está ligada nesta organização
+   * (`organizations.settings.crm.cliente_pela_agenda`, migration 0262)?
+   *
+   * Opcional pelo mesmo motivo de `visibility_mode`: só o layout de `/app`
+   * preenche, e ausente é desligado. NÃO é autorização nem é quem aplica a
+   * regra — quem decide é o banco (o trigger lê a chave). Serve para a tela não
+   * mostrar selo, data e funil de clientes de uma regra desligada, em que
+   * `first_service_at` está congelada.
+   */
+  cliente_pela_agenda?: boolean;
   /**
    * O que ESTA organização definiu para si — CAMPO A CAMPO, e só o que ela
    * mesma definiu.

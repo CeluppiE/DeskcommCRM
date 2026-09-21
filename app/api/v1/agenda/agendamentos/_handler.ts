@@ -41,6 +41,7 @@ import {
 import { ApiError } from "@/lib/api/types";
 import type { Actor, HandlerCtx } from "@/lib/api/handlers/types";
 import { audit } from "@/lib/audit";
+import { roleAtLeast } from "@/lib/auth/types";
 import { resolveActiveLeadForContact, type LeadCandidate } from "@/lib/leads/active-lead";
 import { emitLeadActivity } from "@/lib/leads/activity-emitter";
 import { registraFalhaDeAtividade } from "@/lib/leads/activity-write-failure";
@@ -68,11 +69,25 @@ export interface MarcarInput {
   title?: string;
   notes?: string;
   /**
+   * Observação do compromisso — o campo `description` do calendário externo.
+   *
+   * Distinto de `notes`: `notes` é anotação INTERNA (numa clínica, queixa) e
+   * não entra na revisão publicável (`fn_google_projection_stamp`). Sem este
+   * campo a observação gravava em `notes` e o calendário nascia mudo.
+   */
+  description?: string;
+  /**
+   * Endereço/local DESTE compromisso. Ausente herda o do tipo; `""` grava
+   * vazio — quem apagou o que o tipo sugeria quis apagar, não herdar de novo.
+   */
+  location_details?: string;
+  /**
    * Convidado externo, digitado na tela. `""` limpa; ausente não mexe.
    *
-   * NÃO é `contact_id`, e a distinção é o motivo de a coluna existir: o contato
-   * é quem recebe o atendimento, e quem precisa entrar na sala pode ser outra
-   * pessoa. Quem transforma isto em convite do Google é o worker de push.
+   * NÃO é o e-mail da ficha do contato. O contato (quem é atendido) entra no
+   * convite do Google pelo e-mail da ficha, quando existe. Este campo é a outra
+   * pessoa — acompanhante, responsável. Quem transforma os dois em `attendees`
+   * é o worker de push.
    */
   guest_email?: string;
 }
@@ -93,6 +108,129 @@ export interface CancelarInput {
   id: string;
   revision?: number;
   reason: string;
+}
+
+/**
+ * A AGENDA DO COLEGA SÓ É DO COLEGA QUANDO A ORGANIZAÇÃO DESLIGA A OPÇÃO.
+ *
+ * ─── O que era, e por que virou opção ─────────────────────────────────────
+ *
+ * Qualquer Atendente cancelava e remarcava o compromisso de qualquer colega: a
+ * rota nunca perguntou de quem era o compromisso. É o pedido original da issue
+ * #978 ("minha agenda seja só minha"), e a decisão do mantenedor no fio
+ * (16/09) NÃO foi uma guarda fixa — é uma OPÇÃO POR ORGANIZAÇÃO, LIGADA POR
+ * PADRÃO, com rótulo em Configurações › Tipos de agendamento.
+ *
+ *   LIGADA    (o padrão, e o que já existia): este bloco não faz nada.
+ *   DESLIGADA: o Atendente só mexe no compromisso de que é DONO. Gerente e
+ *              Administrador seguem mexendo em tudo.
+ *
+ * ─── A MESMA REGRA ESTÁ NO BANCO, E DE PROPÓSITO ──────────────────────────
+ *
+ * `fn_appointment_change_core` recusa com `appointment_do_colega` (42501) a
+ * mudança de compromisso alheio (migration 0343). Aqui a recusa vem ANTES, com
+ * a frase em português e o código de wire próprio, porque a rota é o que uma
+ * pessoa vê — e porque o handler também atende MCP e webhook. Duas cópias da
+ * mesma regra só valem se a régua for UMA: quem lê a opção é
+ * `fn_colegas_podem_mexer_na_agenda`, a mesma função que o núcleo consulta.
+ *
+ * ─── PARA QUEM VALE, E ISSO É DECLARADO ───────────────────────────────────
+ *
+ *   * `"user"` — sessão de gente — com papel abaixo de `manager`: recortado por
+ *     dono quando a opção está desligada. É o caso que a decisão descreve.
+ *   * `ai_agent`, `api_token`, `webhook_source`: NÃO são "um atendente" e não
+ *     têm agenda própria. O que os governa continua sendo o papel do token, que
+ *     a rota já cobra em `requireRole`, e as permissões de cada ferramenta.
+ *     Esta opção não acrescenta recorte por dono para eles — mudar isso seria
+ *     inventar escopo que o mantenedor não decidiu.
+ *   * Compromisso SEM dono (`owner_user_id` nulo): com a opção desligada o
+ *     Atendente não mexe, porque não é a agenda dele. É o lado conservador da
+ *     mesma frase, e é o que o banco também faz (`is distinct from auth.uid()`).
+ *
+ * ─── O QUE ESTA OPÇÃO NÃO MUDA ────────────────────────────────────────────
+ *
+ * A LEITURA. Quem é Atendente continua recebendo a grade da organização inteira
+ * — `useAgendamentos()` não manda `owner_user_id` e o recorte da grade só tem
+ * `{de, ate}` (`hooks/agenda/useAgendamentos.ts` e `lib/agenda/consulta.ts`).
+ * Isso é decisão do mantenedor, em aberto, e está declarado no PR da issue —
+ * não é efeito colateral desta migration.
+ */
+async function colegasPodemMexerNaAgenda(supabase: SB, ctx: HandlerCtx): Promise<boolean> {
+  const { data, error } = await supabase.rpc("fn_colegas_podem_mexer_na_agenda", {
+    p_org: ctx.organization_id,
+  });
+  if (error) throw new ApiError(500, "internal_error", undefined, ctx.requestId, error.message);
+  // Ausente ou corpo estranho é LIGADO — o padrão, a mesma régua do banco e de
+  // `colegasPodemMexerNaAgendaLigado` (lib/schemas/settings.ts).
+  return data !== false;
+}
+
+/** A recusa de mexer na agenda alheia com a opção desligada — uma frase só. */
+const RECUSA_DO_COLEGA =
+  "Esta empresa está com “Atendentes podem mexer na agenda dos colegas” desligado: " +
+  "você mexe só nos compromissos de que é responsável. Peça a um gerente ou administrador.";
+
+/**
+ * A PERGUNTA QUE VEM ANTES DA LEITURA — e ela é o que evita ler a opção à toa.
+ *
+ * As duas peças juntas são a régua, exportadas porque o teste as fixa
+ * (`tests/unit/agenda-dos-colegas-e-opcao-da-org.test.ts` prova a matriz
+ * inteira: as duas posições da opção, os quatro papéis humanos e o compromisso
+ * sem dono) e porque as duas chamadas do handler — a mudança e a criação —
+ * precisam responder IGUAL. Duas cópias da mesma pergunta divergem no primeiro
+ * ajuste.
+ *
+ * Duas das respostas são conhecidas sem banco nenhum: IA, token de servidor e
+ * webhook não são "um atendente" (o que os governa é o papel do token, cobrado
+ * na rota), e Gerente ou Administrador mexe em tudo. Só o Atendente de gente,
+ * mexendo no compromisso de OUTRA pessoa, depende do que está gravado na
+ * organização.
+ *
+ * Ler a opção quando a resposta já é conhecida custaria uma ida ao banco em TODO
+ * cancelamento, remarcação e marcação — inclusive nas da própria agenda — e
+ * faria a rota depender de uma função que pode não existir numa instalação
+ * antiga para deixar alguém escrever na agenda DELE. A régua continua UMA:
+ * `recusaMudancaNaAgendaAlheia` é esta função E a opção.
+ */
+export function aOpcaoPodeRecortar(actor: Actor, ehDono: boolean): boolean {
+  // IA e integração não são "um atendente" e não têm agenda própria: o que as
+  // governa é o papel do token, cobrado na rota.
+  if (actor.type !== "user") return false;
+  // Gerente e Administrador seguem mexendo em tudo — a decisão diz os dois.
+  if (roleAtLeast(actor.role, "manager")) return false;
+  // O dono mexe no que é dele em QUALQUER posição da opção. Compromisso SEM dono
+  // (`ehDono` falso para todo mundo) fica com Gerente e Administrador, acima.
+  return !ehDono;
+}
+
+export function recusaMudancaNaAgendaAlheia(
+  actor: Actor,
+  opcaoLigada: boolean,
+  ehDono: boolean,
+): boolean {
+  // LIGADA é o padrão e o comportamento de sempre: nada muda. É a última
+  // pergunta, e é por isso que a leitura da opção só acontece quando
+  // `aOpcaoPodeRecortar` já disse que ela pode mudar alguma coisa.
+  return aOpcaoPodeRecortar(actor, ehDono) && !opcaoLigada;
+}
+
+/**
+ * A opção está desligada e o compromisso NÃO é de quem está pedindo?
+ *
+ * Chamada por `alterarAgendamentoHandler` e `cancelarAgendamentoHandler` logo
+ * depois de `exigeAgendamento` — antes de qualquer escrita, e é o mesmo ponto
+ * em que o banco recusa (`appointment_do_colega`, migration 0343).
+ */
+async function exigeDonoDoCompromisso(
+  supabase: SB,
+  ctx: HandlerCtx,
+  atual: Record<string, unknown>,
+): Promise<void> {
+  const ehDono = ctx.actor.type === "user" && atual.owner_user_id === ctx.actor.id;
+  if (!aOpcaoPodeRecortar(ctx.actor, ehDono)) return;
+  const ligada = await colegasPodemMexerNaAgenda(supabase, ctx);
+  if (!recusaMudancaNaAgendaAlheia(ctx.actor, ligada, ehDono)) return;
+  throw new ApiError(403, "appointment_do_colega", undefined, ctx.requestId, RECUSA_DO_COLEGA);
 }
 
 export async function marcarAgendamentoHandler(
@@ -127,6 +265,32 @@ export async function marcarAgendamentoHandler(
       ctx.requestId,
       `"${tipo.name}" não tem responsável definido, e sem responsável não há agenda.`,
     );
+  }
+
+  // ─── A CRIAÇÃO: O RESPONSÁVEL RESOLVIDO, E O ACHADO DO MANTENEDOR ─────────
+  //
+  // A recusa existe só quando as TRÊS coisas valem juntas: (a) quem pede é
+  // pessoa e está abaixo de `manager` — a régua é `aOpcaoPodeRecortar` —, (b) o
+  // responsável resolvido NÃO é quem pede, e (c) a opção está DESLIGADA.
+  //
+  // ⚠️ A régua aqui é o `donoId` JÁ RESOLVIDO, e não só o que veio no corpo — é
+  // pedido textual do mantenedor no fio da issue #978 (16/09): "escolher o tipo
+  // de outra pessoa não pode virar atalho". `donoId` sai de `input.owner_user_id`
+  // quando o campo vem e do responsável PADRÃO DO TIPO
+  // (`calendar_event_types.default_owner_user_id`) quando não vem; com a opção
+  // desligada os DOIS caminhos escrevem na agenda de um colega, então os dois
+  // recusam. Sem esta simetria, bastaria escolher o tipo cujo responsável padrão
+  // é a outra pessoa para contornar a opção.
+  //
+  // ⚠️ Só a ROTA cobra isto na criação: o INSERT abaixo é direto na tabela (com
+  // service role), então não passa por `fn_appointment_change_core`, que é onde
+  // o banco cobra a mesma regra na alteração e no cancelamento.
+  const ehDonoDoQueVaiNascer = ctx.actor.type === "user" && donoId === ctx.actor.id;
+  if (aOpcaoPodeRecortar(ctx.actor, ehDonoDoQueVaiNascer)) {
+    const agendaDosColegasLigada = await colegasPodemMexerNaAgenda(supabase, ctx);
+    if (recusaMudancaNaAgendaAlheia(ctx.actor, agendaDosColegasLigada, ehDonoDoQueVaiNascer)) {
+      throw new ApiError(403, "appointment_do_colega", undefined, ctx.requestId, RECUSA_DO_COLEGA);
+    }
   }
 
   // O `contact_id` É INPUT EXTERNO E PRECISA SER RESOLVIDO, não repassado.
@@ -193,7 +357,11 @@ export async function marcarAgendamentoHandler(
       conversation_id: booking?.boundary.conversation_id ?? input.conversation_id ?? null,
       meeting_delivery: delivery as unknown as Json,
       location_kind: tipo.location_kind,
-      location_details: tipo.location_details,
+      location_details:
+        input.location_details !== undefined
+          ? input.location_details.trim() || null
+          : tipo.location_details,
+      description: input.description !== undefined ? input.description.trim() || null : null,
       notes: input.notes ?? null,
       // `|| null` e não `?? null`: a rota deixa passar `""` (o campo limpo na
       // tela), e string vazia gravada seria um convidado sem e-mail — que faz o
@@ -263,6 +431,8 @@ export async function alterarAgendamentoHandler(
     "status",
     "time_zone",
   ]);
+
+  await exigeDonoDoCompromisso(supabase, ctx, atual);
 
   if (input.revision !== undefined && input.revision !== Number(atual.revision)) throw new ApiError(409,"conflict",undefined,ctx.requestId,"O compromisso mudou. Recarregue antes de confirmar.");
   if (atual.status === "cancelled") {
@@ -410,11 +580,18 @@ export async function cancelarAgendamentoHandler(
   const atual = await exigeAgendamento(supabase, ctx, input.id, [
     "id",
     "revision",
+    // `owner_user_id` entrou com a opção "agenda dos colegas" (migration 0343,
+    // issue #978): é a coluna que a recusa lê. Sem ela, o cancelamento era a
+    // ÚNICA das duas mudanças que não sabia de quem era o compromisso — e o
+    // caminho mais fácil de apagar a agenda de um colega.
+    "owner_user_id",
     "contact_id",
     "event_type_id",
     "status",
     "time_zone",
   ]);
+
+  await exigeDonoDoCompromisso(supabase, ctx, atual);
 
   // Idempotente: cancelar o que já está cancelado devolve o estado, não erro —
   // quem chamou queria o compromisso desmarcado, e ele está.
@@ -545,18 +722,26 @@ export function podeMarcarForaDaGrade(actor: Actor): boolean {
  *   não para o dia. Essa conta segura o alinhamento ao expediente, o aviso
  *   mínimo, a janela de reserva e a ocupação que CRUZA o pedido.
  *
- *   ⚠️ Ela NÃO segura tudo o que o GET do dia esconde, porque a coleta de
- *   OCUPAÇÃO acompanha a janela estreita. Dois furos, anteriores ao encaixe,
- *   foram medidos em 2026-09-15 chamando este handler com a coleta de verdade
- *   sobre o banco em memória de `tests/unit/pessoa-marca-fora-da-grade.test.ts`
- *   (sonda não versionada). Um segue aberto:
- *   · **buffer contra vizinho** (issue #876) — `coletaOQueOcupa` só traz o que
- *     cruza `[inicio, fim]`. Com `buffer_before_minutes = 30` e um compromisso
- *     que termina 12:45Z, o pedido de 13:00Z não vê o vizinho e é ACEITO — e o
- *     GET do dia não oferece 13:00Z (medição do revisor do lote 8). Para valer,
- *     a janela de coleta teria de ser alargada por `buffer_before`/`buffer_after`.
+ *   Alguns furos em que esta conta deixava passar o que o GET do dia esconde,
+ *   anteriores ao encaixe, foram medidos em 2026-09-15 chamando este handler
+ *   com a coleta de verdade sobre o banco em memória de
+ *   `tests/unit/pessoa-marca-fora-da-grade.test.ts`. Os três estão fechados:
+ *   · **buffer contra vizinho** (issue #876, PR #1027) — `coletaOQueOcupa` só
+ *     trazia o que cruza `[inicio, fim]`, e com `buffer_before_minutes = 30` o
+ *     pedido de 13:00Z não via o vizinho que termina 12:45Z. `horariosLivresDaOrg`
+ *     agora alarga a coleta por `buffer_before`/`buffer_after`. Vigiado pelos
+ *     casos de intervalo antes do atendimento no mesmo arquivo de teste.
  *
- *   O outro, a EXCEÇÃO DE DATA à noite, foi fechado (issue #878, PR #882): era colhida
+ *   · **remarcar contando a si mesmo** (issue #1084) — o efeito colateral do
+ *     alargamento acima: a coleta passou a ver também o PRÓPRIO compromisso de
+ *     saída. Com 30 min de intervalo antes, a IA remarcando 13:00Z → 14:00Z
+ *     levava 422 `agenda_horario_indisponivel`; sem intervalo, o mesmo movimento
+ *     era aceito. A grade agora repassa `ignorarAgendamentoId` a
+ *     `horariosLivresDaOrg`. Vigiado pelos casos de remarcação com intervalo no
+ *     mesmo arquivo de teste — inclusive um CONTROLE de que o intervalo segue
+ *     valendo contra OUTRO compromisso.
+ *
+ *   · **exceção de data à noite** foi fechada (issue #878, PR #882): era colhida
  *   pela data UTC de `inicio`/`fim`, e em São Paulo 21:00 do dia 07 é 00:00Z do
  *   dia 08 — o pedido era ACEITO num dia inteiro bloqueado. `horariosLivresDaOrg`
  *   agora a busca no dia LOCAL do fuso da jornada, com um dia de margem de cada
@@ -583,9 +768,15 @@ async function exigeHorarioLivre(
     inicio: Date;
     fim: Date;
     /**
-     * O compromisso sendo remarcado, que não conta como ocupação de si mesmo.
-     * Só o encaixe o usa. A grade não o repassa a `horariosLivresDaOrg`, então
-     * ali o compromisso segue ocupando o horário de onde sai.
+     * O compromisso sendo remarcado: ocupa o horário de ONDE SAI, não o de DESTINO.
+     *
+     * Vale para os DOIS ramos. A pergunta é a mesma nos dois — "o que já está
+     * tomado?" — e a resposta tem de excluir este compromisso. No encaixe quem
+     * exclui é `exigeSemSobreposicao`; na grade o id vai a `horariosLivresDaOrg`,
+     * que o repassa à coleta. Sem isso, com intervalo configurado, o próprio
+     * compromisso cruzava a janela alargada e a IA remarcando para logo depois do
+     * próprio fim levava 422 `agenda_horario_indisponivel` por causa de si mesma
+     * (issue #1084).
      */
     ignorarAgendamentoId?: string;
   },
@@ -596,6 +787,7 @@ async function exigeHorarioLivre(
     de: args.inicio,
     ate: args.fim,
     agora: new Date(),
+    ignorarAgendamentoId: args.ignorarAgendamentoId,
   });
 
   if (!consulta.ok) {
@@ -680,9 +872,29 @@ async function exigeSemSobreposicao(
   }
 }
 
-/** `Actor` → o vocabulário de `calendar_appointments.created_by_kind`. */
+/**
+ * `Actor` → o vocabulário de `calendar_appointments.created_by_kind`.
+ *
+ * ⚠️ O TOKEN DE SERVIDOR NÃO É A IA. Este ternário dizia `ai` para TUDO que não
+ * fosse pessoa, e a MESMA ação saía com duas autorias no MESMO request: a
+ * timeline, logo abaixo, grava `autorParaTimeline(ctx.actor.type)` — que manda
+ * `api_token` para `system` —, e a coluna do compromisso dizia `ai`. A tela
+ * (`ROTULO_DO_AUTOR`) anunciava "Marcado pelo atendente de IA" para compromisso
+ * que algoritmo nenhum escreveu (issue #866). Fora daqui, `actorParaAtividade`
+ * (lib/leads/activity-emitter.ts) e `especieDe` (lib/operacao/autoria.ts) já
+ * diziam o mesmo: quem age por token é o PRODUTO, não a IA.
+ *
+ * `webhook_source` continua `ai` — e isso é divergência CONHECIDA, não
+ * esquecimento: a automação do motor se apresenta como IA no balão da conversa
+ * (`components/inbox/MessageBubble.tsx`), e mover as duas colunas juntas é
+ * decisão de produto com efeito de leitura (as telas que contam "o que a IA
+ * marcou/falou" passam a excluir automação). Fica para issue própria, com o
+ * mesmo argumento escrito no mapeamento de `messages.sent_via`.
+ */
 function autorParaCriacao(actor: Actor): string {
-  return actor.type === "user" ? "user" : "ai";
+  if (actor.type === "user") return "user";
+  if (actor.type === "api_token") return "system";
+  return "ai";
 }
 
 /**

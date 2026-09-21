@@ -21,12 +21,17 @@ import { pausarIaPorAtendimentoManual } from "@/lib/escalacao/atendimento-manual
 import { acelerarPipelineDeEventos } from "@/lib/dev/kick-local-pipeline";
 import { canonicalPhoneBR } from "@/lib/channels/phone-variants";
 import { estamparAtribuicaoDoContato } from "@/lib/leads/atribuicao-de-anuncio";
+import { extrairEEstamparAtribuicaoGoogle } from "@/lib/plataformas-de-anuncio/google/atribuicao";
 import { extrairAtribuicaoWaha } from "@/lib/waha/atribuicao-de-anuncio";
 import type { createAdminClient } from "@/lib/supabase/admin";
 import { ackToStatus } from "@/lib/types/messaging";
 import type { WahaEnvelope, WahaPayload } from "@/lib/waha/envelope";
 import { bareWaMessageId, chatIdFromWaMessageId } from "@/lib/waha/message-id";
 import { logger } from "@/lib/logger";
+import {
+  ehNumeroInternoDeAviso,
+  registrarMensagemIgnorada,
+} from "@/lib/escalacao/numero-interno-de-aviso";
 
 export type Admin = ReturnType<typeof createAdminClient>;
 
@@ -79,7 +84,19 @@ async function ehEcoDeEnvioNosso(
     .eq("direction", "outbound")
     // `sent_via` separa o que NASCEU aqui do que veio do celular: a linha do
     // celular é gravada como `external_device` e nunca pode servir de álibi.
-    .in("sent_via", ["ai", "user"])
+    //
+    // `automation` entrou junto do carimbo novo (#652). A mensagem que a REGRA
+    // manda nasceu aqui tanto quanto a da IA e a do composer; sem ela nesta
+    // lista, o eco do próprio envio da regra era lido como resposta pelo celular
+    // e a IA ficava pausada na conversa por causa de uma mensagem que o CRM
+    // mandou sozinho. Lista e carimbo andam juntos: quem escreve estes valores é
+    // `origemDaMensagem`, em `app/api/v1/messages/_handler.ts`.
+    //
+    // `system` ENTRA pela mesma razão, e o sintoma seria idêntico: é o valor que
+    // o envio por TOKEN DE SERVIDOR grava (#866). Fora desta lista, a linha da
+    // integração deixa de ser reconhecida como envio NOSSO, o eco do próprio
+    // envio vira "resposta pelo celular" e cala a IA por três horas.
+    .in("sent_via", ["ai", "user", "automation", "system"])
     // Sem `external_id` = ainda não confirmada pelo canal = ainda em voo. É esta
     // a janela exata em que o eco é indistinguível de digitação humana.
     .is("external_id", null)
@@ -280,6 +297,30 @@ export function mediaUrlOf(p: WahaPayload): string | null {
 /** MIME da mídia: idem (payload.media.mimetype é o campo do NOWEB atual). */
 export function mediaMimeOf(p: WahaPayload): string | null {
   return p.mimetype ?? p.media?.mimetype ?? null;
+}
+
+/**
+ * `payload.timestamp` em ISO-8601, robusto à UNIDADE. O WAHA manda segundos
+ * (epoch s), mas um proxy/integrador pode mandar milissegundos ou
+ * nanossegundos — e `new Date(ns * 1000).toISOString()` LANÇA `RangeError:
+ * Invalid time value`, derrubando o webhook inteiro (medido em 2026-09-18).
+ * Aqui a unidade é inferida pela ordem de grandeza; valor ausente/ inválido cai
+ * no `agora`. Nunca lança.
+ */
+export function dataDoTimestamp(timestamp: number | null | undefined, agora: string): string {
+  if (typeof timestamp !== "number" || !Number.isFinite(timestamp) || timestamp <= 0) {
+    return agora;
+  }
+  // `Date` aceita até 8.64e15 ms. Segundos (~1.7e9) ×1000; ms (~1.7e12) direto;
+  // ns (~1.7e18) ÷1e6. Faixas separadas por ordem de grandeza.
+  const ms =
+    timestamp >= 1e16
+      ? timestamp / 1e6 // nanossegundos
+      : timestamp >= 1e11
+        ? timestamp // milissegundos
+        : timestamp * 1000; // segundos
+  const d = new Date(ms);
+  return Number.isNaN(d.getTime()) ? agora : d.toISOString();
 }
 
 /**
@@ -567,6 +608,20 @@ async function handleInbound(
     return;
   }
 
+  // ── O NÚMERO INTERNO DE AVISOS NÃO VIRA ATENDIMENTO ─────────────────────
+  //
+  // Aqui, e não em `pos-entrada`: é o INSERT da conversa (logo abaixo) que
+  // dispara o pedido de rodízio pelo banco. Cortar depois já teria criado
+  // contato, conversa e uma "conversa do suporte" na fila de um atendente — e o
+  // "cancelar" que alguém da equipe digitasse bloquearia esse contato.
+  if (await ehNumeroInternoDeAviso(admin, session.organization_id, parsed)) {
+    await registrarMensagemIgnorada(admin, session.organization_id, {
+      direction: "inbound",
+      sessionId: session.id,
+    });
+    return;
+  }
+
   const contactId = await upsertContact(
     admin,
     session.organization_id,
@@ -585,7 +640,12 @@ async function handleInbound(
   // inbound. `estamparAtribuicaoDoContato` só grava na primeira vez — se o
   // contato já tem atribuição, o UPDATE casa zero linhas.
   const atribuicao = extrairAtribuicaoWaha(p._data?.message);
-  if (atribuicao) await estamparAtribuicaoDoContato(admin, contactId, atribuicao);
+  if (atribuicao) await estamparAtribuicaoDoContato(admin, session.organization_id, contactId, atribuicao);
+
+  // Irmão do bloco acima, para o Google: o token vem no PRÓPRIO texto da
+  // mensagem (não há payload de ad-reply equivalente para essa plataforma) —
+  // ver o cabeçalho de `lib/plataformas-de-anuncio/google/atribuicao.ts`. Best-effort.
+  await extrairEEstamparAtribuicaoGoogle(admin, session.organization_id, contactId, texto);
 
   const conversationId = await upsertConversation(admin, session.organization_id, contactId, session.id);
   if (!conversationId) return;
@@ -607,7 +667,7 @@ async function handleInbound(
       media_url: mediaUrlOf(p),
       media_mime: mediaMimeOf(p),
       sent_via: "external_device",
-      sent_at: p.timestamp ? new Date(p.timestamp * 1000).toISOString() : now,
+      sent_at: dataDoTimestamp(p.timestamp, now),
       delivered_at: now,
       metadata: { raw_type: p.type, ack_name: p.ackName },
     })
@@ -657,7 +717,7 @@ async function handleInbound(
     return;
   }
 
-  await markConversation(admin, session.organization_id, conversationId, "inbound", previewFromMessage(p), p.timestamp ? new Date(p.timestamp * 1000).toISOString() : now);
+  await markConversation(admin, session.organization_id, conversationId, "inbound", previewFromMessage(p), dataDoTimestamp(p.timestamp, now));
 
   await audit({
     action: "message.received",
@@ -771,6 +831,21 @@ async function handleOutboundFromUserPhone(
     return;
   }
 
+  // ── O NÚMERO INTERNO DE AVISOS NÃO VIRA ATENDIMENTO ─────────────────────
+  //
+  // ANTES do dedup por `external_id` e do `upsertContact`. O aviso sai por
+  // TRANSPORTE DIRETO e não grava linha em `messages`, então o reconhecimento
+  // de eco não o reconhece como nosso — sem este corte, o próprio aviso que
+  // acabou de sair voltaria pelo webhook, viraria conversa com o número do
+  // plantão e ainda chamaria `pausarIaPorAtendimentoManual` no fim.
+  if (await ehNumeroInternoDeAviso(admin, session.organization_id, parsed)) {
+    await registrarMensagemIgnorada(admin, session.organization_id, {
+      direction: "outbound",
+      sessionId: session.id,
+    });
+    return;
+  }
+
   // ECO DO PRÓPRIO ENVIO — não duplicar.
   //
   // Toda mensagem que o CRM manda (composer ou IA) volta pelo webhook como
@@ -835,7 +910,7 @@ async function handleOutboundFromUserPhone(
       media_url: mediaUrlOf(p),
       media_mime: mediaMimeOf(p),
       sent_via: "external_device",
-      sent_at: p.timestamp ? new Date(p.timestamp * 1000).toISOString() : now,
+      sent_at: dataDoTimestamp(p.timestamp, now),
       metadata: { raw_type: p.type, fromMe: true },
     })
     .select("id")

@@ -10,12 +10,16 @@ import { Button } from "@/components/ui/button";
 import { useT } from "@/hooks/i18n/useT";
 import { useTagDeIdioma } from "@/hooks/i18n/useLocaleDeData";
 import { showApiError } from "@/components/feedback/ApiErrorToast";
+import { rotuloDoLocal } from "@/lib/agenda/locais";
 
 type Detalhe = {
   meeting?: MeetingDetail | null;
   google_sync?: SyncDetail;
   id: string;
   title: string;
+  description: string | null;
+  location_kind: string | null;
+  location_details: string | null;
   starts_at: string;
   ends_at: string;
   time_zone: string;
@@ -154,6 +158,16 @@ export function DetalheDoCompromisso({
             <p data-testid="compromisso-horario">
               {formatoDeData.formatRange(new Date(a.starts_at), new Date(a.ends_at))}
             </p>
+            {rotuloDoLocal(a.location_kind, a.location_details) ? (
+              <p data-testid="compromisso-local">
+                {rotuloDoLocal(a.location_kind, a.location_details)}
+              </p>
+            ) : null}
+            {a.description?.trim() ? (
+              <p data-testid="compromisso-observacao" className="whitespace-pre-wrap">
+                {a.description}
+              </p>
+            ) : null}
             <p>
               {t(
                 (

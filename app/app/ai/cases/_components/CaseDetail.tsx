@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useCase } from "@/hooks/ai/useCases";
 import { STATUS_BADGE_VARIANT, STATUS_LABEL, caseEventLabel } from "@/lib/ai/case-copy";
 import { useT } from "@/hooks/i18n/useT";
+import { CaseChatPanel } from "./CaseChatPanel";
 import { CaseReplyPanel } from "./CaseReplyPanel";
 
 export function CaseDetail({ caseId }: { caseId: string | null }) {
@@ -68,6 +69,17 @@ export function CaseDetail({ caseId }: { caseId: string | null }) {
       </div>
 
       <CaseReplyPanel caseId={data.id} status={data.status} />
+
+      {/*
+        DEPOIS da decisão, e a ordem é CONTRATO.
+
+        `escalacao-ciclo.spec.ts` acha o campo de decisão por
+        `page.locator("textarea").first()`. Subir o chat aqui faria o e2e
+        digitar a decisão do atendente dentro da pergunta à IA — e os dois e2e
+        que dependem desse localizador ficariam vermelhos com um sintoma que
+        não aponta para este arquivo. Quem mede é `tests/unit/case-detail.test.tsx`.
+      */}
+      <CaseChatPanel caseId={data.id} />
 
       <div>
         <h3 className="mb-2 text-sm font-semibold">{t("Linha do tempo")}</h3>

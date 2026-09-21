@@ -5,11 +5,13 @@ import { useLocaleDeData } from "@/hooks/i18n/useLocaleDeData";
 import type { Locale } from "date-fns";
 import { format, formatDistanceToNowStrict } from "date-fns";
 import { useT } from "@/hooks/i18n/useT";
-import { Phone, Robot } from "@/lib/ui/icons";
+import { Robot } from "@/lib/ui/icons";
+import { ChannelLogo } from "@/components/inbox/ChannelLogo";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { ChipDeEtiqueta } from "@/components/tags/ChipDeEtiqueta";
 import { OwnerBadge } from "@/components/kanban/OwnerBadge";
-import { comandoDaConversa } from "@/lib/inbox/comando-da-conversa";
+import { comandoDaConversa, esperaDaConversa } from "@/lib/inbox/comando-da-conversa";
 import { cn } from "@/lib/utils";
 import type { ConversationWithContact } from "@/hooks/inbox/useConversationsRealtime";
 import { rotuloDoContato } from "@/lib/contacts/rotulo-do-contato";
@@ -100,12 +102,20 @@ function relativeTime(iso: string | null, locale: Locale): string {
   return format(d, "dd/MM");
 }
 
-/** "Aguardando há 5 min" — desde a última mensagem do cliente (fallback: criação). */
+/**
+ * "Aguardando há 5 min" — desde quando o cliente ESPERA.
+ *
+ * A régua é `esperaDaConversa`, a mesma `awaiting_since` que ordena a Fila
+ * (#990): `last_inbound_at` é a ÚLTIMA mensagem do cliente, então a pílula de
+ * quem insistia voltava para "há 1 min" a cada mensagem dele — o tempo na linha
+ * contradizia a posição do lado e a ordem da lista. O fallback segue sendo a
+ * criação, para a conversa que nunca recebeu mensagem.
+ */
 function waitingLabel(
   conversation: ConversationWithContact,
   t: (texto: string) => string = (texto) => texto, locale: Locale,
 ): string {
-  const since = conversation.last_inbound_at ?? conversation.created_at;
+  const since = esperaDaConversa(conversation);
   if (!since) return t("Aguardando");
   return `${t("Aguardando")} ${formatDistanceToNowStrict(new Date(since), { addSuffix: true, locale: locale })}`;
 }
@@ -130,7 +140,28 @@ export function ConversationListItem({
   const overflow = tags.length - visibleTags.length;
   const preview = conversation.last_message_preview?.trim() || t("Sem mensagens");
   const truncated = preview.length > 60 ? `${preview.slice(0, 60)}…` : preview;
-  const time = relativeTime(conversation.last_message_at, localeDaData);
+  const naFila = queuePosition !== undefined;
+  /**
+   * A HORA DO CANTO RESPONDE À MESMA PERGUNTA QUE ORDENA A LISTA.
+   *
+   * Na Fila a lista sai por TEMPO DE ESPERA (`ORDEM_DA_ESPERA`: `awaiting_since`
+   * crescente — a mensagem mais antiga sem resposta, #990), mas a hora do canto era
+   * sempre a da última mensagem de QUALQUER lado. Bastava o atendente responder para o número daquela linha pular para
+   * agora sem que a linha saísse do lugar: lida de cima para baixo, a coluna de
+   * horas saía fora de ordem (#464 — "a lista parece aleatória") embaixo de uma
+   * lista que estava certa.
+   *
+   * Fora da Fila a ordem é por atividade recente, e aí a última mensagem de
+   * qualquer lado É a resposta certa — a régua do relógio segue a régua da lista.
+   *
+   * A origem é a MESMA da pílula "Aguardando há…" (`waitingLabel`), inclusive no
+   * fallback: duas respostas para o mesmo "desde quando?" na mesma linha, a 40px
+   * de distância, seriam a próxima divergência.
+   */
+  const horaDaOrdem = naFila
+    ? esperaDaConversa(conversation)
+    : conversation.last_message_at;
+  const time = relativeTime(horaDaOrdem, localeDaData);
   const unread = conversation.unread_count_for_assignee ?? 0;
 
 
@@ -202,15 +233,16 @@ export function ConversationListItem({
         </Avatar>
         <span
           className={cn(
-            "absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-background",
+            "absolute -bottom-0.5 -left-0.5 h-3 w-3 rounded-full border-2 border-background",
             dot,
           )}
           aria-hidden
         />
+        <ChannelLogo channel={canal} size={16} className="absolute -bottom-1 -right-1 h-5 w-5 rounded-full bg-background ring-2 ring-background" />
       </div>
 
       <div className="min-w-0 flex-1">
-        {queuePosition !== undefined && (
+        {naFila && (
           <div className="mb-1 flex items-center gap-1.5">
             <span
               className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-accent-soft px-1 text-[10px] font-medium tabular-nums text-accent"
@@ -233,7 +265,16 @@ export function ConversationListItem({
           >
             {displayName}
           </span>
-          <span className="shrink-0 text-[11px] tabular-nums text-text-subtle">{time}</span>
+          <span
+            className="shrink-0 text-[11px] tabular-nums text-text-subtle"
+            // O mesmo lugar da tela mostra duas coisas diferentes conforme a aba:
+            // na Fila é "desde quando o cliente ESPERA" (a mensagem mais antiga sem
+            // resposta — #990), nas outras é "há quanto tempo a conversa mexeu". O
+            // rótulo existe só onde a leitura muda.
+            title={naFila ? t("Desde quando o cliente espera resposta") : undefined}
+          >
+            {time}
+          </span>
         </div>
 
         <div className="mt-0.5 flex items-center justify-between gap-2">
@@ -258,9 +299,7 @@ export function ConversationListItem({
         {temSelos && (
           <div className="mt-1.5 flex flex-wrap items-center gap-1">
             {visibleTags.map((t) => (
-              <Badge key={t} variant="secondary" className="h-4 px-1.5 text-[10px]">
-                {t}
-              </Badge>
+              <ChipDeEtiqueta key={t} tag={t} className="h-4 px-1.5 text-[10px]" />
             ))}
             {overflow > 0 && (
               <span className="text-[10px] text-text-muted">+{overflow}</span>
@@ -274,7 +313,6 @@ export function ConversationListItem({
                 className="h-4 gap-1 px-1.5 text-[10px] font-normal text-text-muted"
                 title={`${t("Entrou por")} ${rotuloCanal}`}
               >
-                <Phone size={9} weight="regular" aria-hidden />
                 {rotuloCanal}
               </Badge>
             )}

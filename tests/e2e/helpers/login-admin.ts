@@ -30,6 +30,8 @@ export interface CredsE2E {
   password: string;
   users: Record<string, { email: string }>;
   admin_totp?: { secret: string; factor_id?: string };
+  /** O fator do DONO DO SERVIDOR (`e2e-dono`), promovido a `platform_admins`. */
+  dono_totp?: { secret: string; factor_id?: string };
   /**
    * O agente que o seed de credenciais cria. **É um `rag_bot`** — a tela de
    * configuração por papéis é do `mcp_agent`, então não serve para ela.
@@ -99,17 +101,50 @@ async function tentarMfa(page: Page, secret: string, tentativas: number): Promis
  * re-semeadas no meio do caminho, e nesse caso são diferentes das que o chamador
  * tinha em mãos.
  */
+/**
+ * `admin` é administrador de ORGANIZAÇÃO; `dono` é o administrador da
+ * INSTALAÇÃO (o seed o promove a `platform_admins`). São superfícies
+ * diferentes, e confundi-las faz um teste medir o gate errado — foi o que me
+ * aconteceu: a spec do painel logava como `admin` e concluía que a porta do
+ * modo administrador não aparecia. Ela NÃO deve aparecer para ele.
+ */
+export type PapelDeLogin = "admin" | "dono";
+
 export async function loginComoAdmin(page: Page, creds: CredsE2E): Promise<CredsE2E> {
+  return loginComoPapel(page, creds, "admin");
+}
+
+/** O DONO DO SERVIDOR — quem alcança `/admin/**`. */
+export async function loginComoDono(page: Page, creds: CredsE2E): Promise<CredsE2E> {
+  return loginComoPapel(page, creds, "dono");
+}
+
+export async function loginComoPapel(
+  page: Page,
+  creds: CredsE2E,
+  papel: PapelDeLogin,
+): Promise<CredsE2E> {
   let atuais = creds;
 
   for (let volta = 0; volta < 2; volta++) {
+    const usuario = papel === "dono" ? atuais.users.dono : atuais.users.admin;
+    const fator = papel === "dono" ? atuais.dono_totp : atuais.admin_totp;
+    expect(
+      usuario?.email,
+      `sem \`${papel}\` em \`users\` do .e2e-creds.json — rode seed-e2e-credentials.ts`,
+    ).toBeTruthy();
+    expect(
+      fator?.secret,
+      `sem \`${papel}_totp\` no .e2e-creds.json — rode seed-e2e-credentials.ts`,
+    ).toBeTruthy();
+
     await page.goto("/login");
-    await page.locator("#email").fill(atuais.users.admin!.email);
+    await page.locator("#email").fill(usuario!.email);
     await page.locator("#password").fill(atuais.password);
     await page.getByRole("button", { name: /entrar/i }).click();
     await page.waitForURL(/\/login\/mfa/, { timeout: 30_000 });
 
-    if (await tentarMfa(page, atuais.admin_totp!.secret, 3)) return atuais;
+    if (await tentarMfa(page, fator!.secret, 3)) return atuais;
 
     if (volta === 0) {
       // O segredo em disco não vale mais: outra sessão rodou o seed. Re-semeia
@@ -122,7 +157,7 @@ export async function loginComoAdmin(page: Page, creds: CredsE2E): Promise<Creds
 
   expect(
     false,
-    "MFA do admin falhou mesmo depois de re-semear as credenciais — o problema não é o fator rotacionado",
+    "MFA falhou mesmo depois de re-semear as credenciais — o problema não é o fator rotacionado",
   ).toBe(true);
   return atuais;
 }

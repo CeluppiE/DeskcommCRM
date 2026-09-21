@@ -210,6 +210,16 @@ export const PONTOS_DE_IA: readonly PontoDeIa[] = [
     registraEm: "llm_calls",
   },
   {
+    id: "prospecting_agent_setup_chat",
+    rotulo: "Montar agente por conversa",
+    oQueFaz: "Conversa com o administrador e prepara uma proposta de agente para uma campanha. A criação depende da confirmação no resumo.",
+    papel: "melhorar",
+    exige: {},
+    emissor: "lib/prospecting/agent-chat.ts",
+    sintomaDeFalha: "A conversa de configuração mostra um erro e preserva o que foi escrito; nenhum agente é criado.",
+    registraEm: "llm_calls",
+  },
+  {
     id: "draft_suggestion",
     rotulo: "Sugerir resposta ao atendente",
     oQueFaz:
@@ -257,6 +267,24 @@ export const PONTOS_DE_IA: readonly PontoDeIa[] = [
     emissor: "lib/agent-engine/agent/stage-classifier.ts",
     sintomaDeFalha:
       "Os leads param de andar sozinhos pelo funil e ficam todos na etapa em que entraram.",
+    registraEm: "llm_calls",
+  },
+  {
+    id: "case_chat",
+    rotulo: "Conversar sobre o caso com a equipe",
+    oQueFaz:
+      "Responde às perguntas de quem vai decidir um caso: lê o caso, o que a equipe já decidiu e a " +
+      "conversa com o cliente, e explica em português. Nunca fala com o cliente nem mexe no caso.",
+    papel: "entender",
+    // `exige: {}` porque o ponto roda SEM FERRAMENTA NENHUMA: o servidor monta o
+    // contexto inteiro antes de chamar o modelo. Ferramenta de leitura
+    // alcançaria outros casos e outros contatos da organização; ferramenta de
+    // efeito faria a consulta virar ação. Sem exigência, qualquer modelo barato
+    // serve — e a tela não recusa a escolha por falta de ferramentas.
+    exige: {},
+    emissor: "lib/agent-engine/agent/conversa-do-caso.ts",
+    sintomaDeFalha:
+      "Quem vai decidir o caso pergunta e não recebe resposta — decide sem o contexto, ou larga o caso na fila.",
     registraEm: "llm_calls",
   },
   {

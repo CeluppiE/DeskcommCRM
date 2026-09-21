@@ -70,6 +70,15 @@ const yml = readFileSync(WORKFLOW, "utf8");
 const parte1 = listaDoWorkflow(yml, "SPECS_PARTE_1");
 const parte2 = listaDoWorkflow(yml, "SPECS_PARTE_2");
 const parte3 = listaDoWorkflow(yml, "SPECS_PARTE_3");
+// PARTE_4 — a parte que depende de serviço externo (WAHA + Redis + dublês de
+// Resend/Nuvemshop, issue #179). Listada aqui como as outras: sem isto, a spec
+// que roda SÓ ali apareceria como "sem lista" e o gate acusaria o contrário do
+// que aconteceu.
+const parte4 = listaDoWorkflow(yml, "SPECS_PARTE_4");
+// PARTE_5 — a quarta parte COMUM (a 4 é a da instalação fresca). Nasceu em
+// 19/09 porque três partes comuns já não cabiam no teto: dois cortes por
+// relógio no mesmo dia, ambos sem caso vermelho.
+const parte5 = listaDoWorkflow(yml, "SPECS_PARTE_5");
 const foraDoCi = listaDoWorkflow(yml, "FORA_DO_CI");
 const noDisco = readdirSync(DIR_SPECS)
   .filter((f) => f.endsWith(".spec.ts"))
@@ -77,7 +86,7 @@ const noDisco = readdirSync(DIR_SPECS)
 
 describe("cobertura do e2e no CI", () => {
   it("o parser está vivo — controle positivo antes de qualquer conclusão", () => {
-    // Sem isto, um regex que parou de casar devolveria três listas vazias e a
+    // Sem isto, um regex que parou de casar devolveria listas vazias e a
     // asserção de vigência passaria por vacuidade, enquanto a de completude
     // acusaria as 39 specs de uma vez. Verde e vermelho errados pelo mesmo motivo.
     expect(noDisco.length, "nenhuma spec no disco — o diretório mudou de lugar?").toBeGreaterThan(
@@ -86,16 +95,69 @@ describe("cobertura do e2e no CI", () => {
     expect(parte1.length, "SPECS_PARTE_1 não foi lida do workflow").toBeGreaterThan(10);
     expect(parte2.length, "SPECS_PARTE_2 não foi lida do workflow").toBeGreaterThan(10);
     expect(parte3.length, "SPECS_PARTE_3 não foi lida do workflow").toBeGreaterThan(10);
+    expect(parte4.length, "SPECS_PARTE_4 não foi lida do workflow").toBeGreaterThan(0);
+    expect(parte5.length, "SPECS_PARTE_5 não foi lida do workflow").toBeGreaterThan(0);
     expect(foraDoCi.length, "FORA_DO_CI não foi lida do workflow").toBeGreaterThan(0);
   });
 
+  // ⚠️ LISTA DECLARADA ≠ LISTA INVOCADA. Medido em 19/09, sabotando: tirar o `5`
+  // de `parte: [1, 2, 3, 4, 5]` deixa `SPECS_PARTE_5` no arquivo, com as 14
+  // specs dentro, e NINGUÉM as roda — e todos os casos acima continuavam
+  // verdes, porque elas seguem "declaradas". É a cobertura parcial silenciosa
+  // que este arquivo existe para impedir, entrando pela porta de trás.
+  // ⚠️ A PARTE 4 É UM AMBIENTE, NÃO UMA VAGA LIVRE.
+  //
+  // Nela os passos de semeadura não rodam (`if: matrix.parte != 4`); em vez
+  // deles sobem WAHA, o par Redis e a criação do dono como o `install.sh` faz.
+  // A `vps-fresh-onboarding` existe para provar que "o único dado que existe
+  // antes dela é o dono" — é a P0 da jornada que se vende.
+  //
+  // Medido em 19/09, e é por isso que esta cerca nasceu: a
+  // `funil-arquivado-volta-pela-tela` foi parar nesta lista e PASSOU no CI —
+  // por acoplamento, não por direito. Ela semeia os próprios funis e chama
+  // `scripts/seed-e2e-credentials.ts` no `beforeAll`, ou seja, cria no banco da
+  // instalação fresca exatamente os dados que a vizinha afirma não existirem.
+  // Verde por ordem de execução é verde que morre num retry — e leva junto a
+  // única prova da jornada de instalação. Nada impedia isso de entrar.
+  it("a parte 4 só aceita spec de instalação fresca (lista fechada)", () => {
+    const PERMITIDAS = ["vps-fresh-onboarding.spec.ts"];
+    expect(
+      parte4.filter((f) => !PERMITIDAS.includes(f)),
+      "spec que não é de instalação fresca entrou em SPECS_PARTE_4. O ambiente dela não " +
+        "semeia credenciais nem fixtures, e qualquer dado criado ali quebra a premissa que a " +
+        "`vps-fresh-onboarding` prova. Ponha em SPECS_PARTE_1/2/3/5. Se a spec nova for MESMO " +
+        "de instalação fresca, acrescente-a a PERMITIDAS aqui, com a razão escrita.\n",
+    ).toEqual([]);
+    // Controle positivo: a lista não pode estar vazia por engano de parser —
+    // vazia, a asserção acima passaria sem vigiar nada.
+    expect(parte4.length, "SPECS_PARTE_4 veio vazia — parser morto").toBeGreaterThan(0);
+  });
+
+  it("toda lista declarada é invocada pela matrix (e vice-versa)", () => {
+    const m = /^\s*parte:\s*\[([^\]]+)\]/m.exec(yml);
+    expect(m, "não achei a matrix `parte:` no workflow — o parser envelheceu").not.toBeNull();
+    const naMatrix = m![1]!
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .sort();
+    const declaradas = [...yml.matchAll(/^\s*SPECS_PARTE_(\d+):/gm)].map((x) => x[1]!).sort();
+    expect(declaradas.length, "nenhuma SPECS_PARTE_N lida — parser morto").toBeGreaterThan(1);
+    expect(
+      naMatrix,
+      "a matrix e as listas discordam: parte declarada que ninguém roda esconde specs; " +
+        "parte na matrix sem lista faz o job morrer com `lista vazia`.",
+    ).toEqual(declaradas);
+  });
+
   it("toda spec do disco está em exatamente uma lista", () => {
-    const declaradas = [...parte1, ...parte2, ...parte3, ...foraDoCi];
+    const declaradas = [...parte1, ...parte2, ...parte3, ...parte4, ...parte5, ...foraDoCi];
     const semLista = noDisco.filter((f) => !declaradas.includes(f));
     expect(
       semLista,
       "Spec no disco que não roda no CI nem está declarada como fora. Ponha em " +
-        "SPECS_PARTE_1/2/3 (se rodar sem WAHA/Redis/Resend) ou em FORA_DO_CI com o " +
+        "SPECS_PARTE_1/2/3/5 (se rodar sem WAHA/Redis/Resend), em SPECS_PARTE_4 (com " +
+        "os serviços do job) ou em FORA_DO_CI com o " +
         "motivo escrito. Cobertura parcial silenciosa se lê como cobertura total.\n",
     ).toEqual([]);
 
@@ -109,7 +171,7 @@ describe("cobertura do e2e no CI", () => {
     // O sentido inverso, e ele é pior: `playwright test naoexiste.spec.ts` não
     // acha nada e o job termina VERDE. Uma renomeação silenciosamente desliga a
     // cobertura daquele arquivo.
-    const fantasmas = [...parte1, ...parte2, ...parte3, ...foraDoCi].filter(
+    const fantasmas = [...parte1, ...parte2, ...parte3, ...parte4, ...foraDoCi].filter(
       (f) => !noDisco.includes(f),
     );
     expect(fantasmas, "lista do CI aponta para spec inexistente — renomeada ou apagada").toEqual(

@@ -24,6 +24,25 @@ export interface NodeVisual {
   defaultConfig: () => FlowNode["config"];
 }
 
+type RegraDeCondicao = Extract<FlowNode, { type: "condition" }>["config"]["checks"][number];
+
+/**
+ * A regra com que o nó de condição nasce, e a que o "+ Condição" acrescenta.
+ *
+ * Era `passos ≥ 0` — válida no schema e VERDADEIRA PARA TODO LEAD (o contador
+ * nasce em zero e só soma). No modo uma-saída-por-regra ela desviava todo mundo
+ * e tornava "Nenhuma delas" inalcançável; num OU, fixava o nó em "Sim". E o card
+ * a mostrava com cara de regra pronta.
+ *
+ * Agora nasce INCOMPLETA de propósito: o schema aceita (o rascunho salva), o
+ * motor nunca a satisfaz e o publish a recusa até alguém escolher a etapa. Etapa
+ * porque é a pergunta mais comum de um funil — e a que o seletor responde sem
+ * digitar nada.
+ */
+export function regraEmBranco(): RegraDeCondicao {
+  return { field: "lead_stage", op: "eq", value: "" };
+}
+
 export const NODE_VISUALS: Record<NodeType, NodeVisual> = {
   trigger: {
     type: "trigger",
@@ -50,10 +69,7 @@ export const NODE_VISUALS: Record<NodeType, NodeVisual> = {
     chipClassName: "bg-warning-bg text-warning-fg",
     borderClassName: "border-l-warning",
     defaultLabel: "Verificar condição",
-    defaultConfig: () => ({
-      combinator: "and",
-      checks: [{ field: "steps_taken", op: "gte", value: 0 }],
-    }),
+    defaultConfig: () => ({ combinator: "and", checks: [regraEmBranco()] }),
   },
   ai_classify: {
     type: "ai_classify",
@@ -63,7 +79,13 @@ export const NODE_VISUALS: Record<NodeType, NodeVisual> = {
     borderClassName: "border-l-accent-700",
     defaultLabel: "Classificar resposta",
     defaultConfig: () => ({
-      classes: ["hot", "cold"],
+      // Em português, e dizendo o CRITÉRIO: estes nomes são a definição inteira
+      // que o modelo recebe para classificar a resposta (`followup-flow-classify`),
+      // e aparecem crus na saída do card, na aresta e no dossiê. "hot"/"cold"
+      // pedia ao dono da loja que adivinhasse o critério — e ao modelo também.
+      // Fora do dicionário de propósito: são DADO do usuário, e uma chave faria
+      // o card traduzir o que o motor compara ao pé da letra.
+      classes: ["Interessado", "Sem interesse"],
       grace_timeout_ms: 900_000,
       target: "last_reply",
     }),
@@ -113,6 +135,11 @@ export const NODE_VISUAL_LIST = Object.values(NODE_VISUALS);
 
 type ConfigOf<T extends NodeType> = Extract<FlowNode, { type: T }>["config"];
 
+/** "15 min", com espaço — o mesmo formato do card de espera, que dizia "5 min" enquanto este dizia "15min". */
+function minutos(ms: number): string {
+  return `${Math.round(ms / 60_000)} min`;
+}
+
 /**
  * One-line summary of a node's config — shown as the card subtitle. Takes the
  * RF node's own `type`/`data.config` pair (not a reconstructed `FlowNode`)
@@ -121,9 +148,11 @@ type ConfigOf<T extends NodeType> = Extract<FlowNode, { type: T }>["config"];
 export function describeNodeConfig(
   type: NodeType,
   config: FlowNode["config"],
-  // `t` com padrão identidade: quem chamar sem ele continua em português, e
-  // nenhum chamador quebra. Os cards do canvas passam o `t` do provider.
-  t: (texto: string) => string = (texto) => texto,
+  // `t` OBRIGATÓRIO. Era opcional com padrão identidade, e foi assim que dois
+  // cards que chegaram por outra branch (repetir e casar resposta) ficaram sem
+  // tradução nenhuma sem o typecheck notar: em português o padrão devolve o
+  // mesmo texto, então o esquecimento só aparecia para quem usa espanhol.
+  t: (texto: string) => string,
 ): string {
   switch (type) {
     case "trigger":
@@ -131,8 +160,8 @@ export function describeNodeConfig(
     case "wait": {
       const c = config as ConfigOf<"wait">;
       return c.mode === "fixed"
-        ? `${Math.round(c.duration_ms / 60_000)} min`
-        : `${Math.round(c.min_ms / 60_000)}–${Math.round(c.max_ms / 60_000)} min ${t("(adaptativo)")}`;
+        ? minutos(c.duration_ms)
+        : `${Math.round(c.min_ms / 60_000)}–${minutos(c.max_ms)} ${t("(adaptativo)")}`;
     }
     case "condition": {
       const c = config as ConfigOf<"condition">;
@@ -140,16 +169,19 @@ export function describeNodeConfig(
       // vota, ela roteia). Continuar anunciando "E"/"OU" ali seria o card
       // afirmando uma coisa que o motor ignora — e o usuário acredita no card.
       if (c.branching === "per_check")
-        return `${c.checks.length} ${t("regras · uma saída por regra")}`;
-      return `${c.checks.length} ${t("condição(ões)")} · ${c.combinator === "and" ? t("E") : t("OU")}`;
+        return `${c.checks.length} ${c.checks.length === 1 ? t("regra · uma saída por regra") : t("regras · uma saída por regra")}`;
+      return `${c.checks.length} ${c.checks.length === 1 ? t("condição") : t("condições")} · ${c.combinator === "and" ? t("E") : t("OU")}`;
     }
+    // "grace" é o nome do CAMPO, não palavra nenhuma para quem tem uma loja — e o
+    // formulário do mesmo nó já perguntava "Esperar a resposta por (minutos)".
+    // O card dizia o número com dois nomes na mesma tela.
     case "ai_classify": {
       const c = config as ConfigOf<"ai_classify">;
-      return `${c.classes.length} ${t("classes · grace")} ${Math.round(c.grace_timeout_ms / 60_000)}min`;
+      return `${c.classes.length} ${c.classes.length === 1 ? t("classe · espera") : t("classes · espera")} ${minutos(c.grace_timeout_ms)}`;
     }
     case "match_reply": {
       const c = config as ConfigOf<"match_reply">;
-      return `${c.branches.length} ${t("regras · grace")} ${Math.round(c.grace_timeout_ms / 60_000)}min${
+      return `${c.branches.length} ${c.branches.length === 1 ? t("regra · espera") : t("regras · espera")} ${minutos(c.grace_timeout_ms)}${
         c.save_to
           ? ` · ${t("grava resposta")}${c.if_exists === "skip" ? ` · ${t("pula se já existir")}` : c.if_exists === "confirm" ? ` · ${t("confirma se já existir")}` : ""}`
           : ""
@@ -157,7 +189,7 @@ export function describeNodeConfig(
     }
     case "repeat": {
       const c = config as ConfigOf<"repeat">;
-      return `${t("até")} ${c.max_count} ${t("voltas")}`;
+      return `${t("até")} ${c.max_count} ${c.max_count === 1 ? t("volta") : t("voltas")}`;
     }
     case "action": {
       const c = config as ConfigOf<"action">;

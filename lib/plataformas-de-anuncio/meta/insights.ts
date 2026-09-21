@@ -75,12 +75,12 @@ const TEMPO_LIMITE_MS = 20_000;
 const MAXIMO_DE_PAGINAS = 20;
 
 /**
- * Os campos de insight, no nível de campanha.
+ * Os campos de insight, no nível de campanha — os de sempre.
  *
  * `video_3_sec_watched_actions` NÃO está aqui, e não é esquecimento — ver o
  * achado 2 no cabeçalho. Acrescentá-lo de volta derruba a tela inteira.
  */
-const CAMPOS_DE_INSIGHTS = [
+const CAMPOS_DE_INSIGHTS_BASE = [
   "campaign_id",
   "campaign_name",
   "spend",
@@ -94,7 +94,32 @@ const CAMPOS_DE_INSIGHTS = [
   "cost_per_result",
   "video_play_actions",
   "video_thruplay_watched_actions",
-].join(",");
+];
+
+/**
+ * Os dois nomes que o Connect rate (issue #920) acrescentou — e de onde cada
+ * número vem, porque a conta não é óbvia olhando a lista:
+ *
+ * O Connect rate usa `actions[landing_page_view]` (numerador) e
+ * `inline_link_clicks` (denominador). O denominador não existia no payload que a
+ * tela já pedia: `ctr` e `cpc` são razões e `cpc` conta cliques TOTAIS —
+ * contagem de cliques no link não estava em campo nenhum. Os dois nomes novos
+ * pegam carona na MESMA leitura de insights, então não há chamada nova.
+ */
+const CAMPOS_DO_CONNECT_RATE = ["actions", "inline_link_clicks"];
+
+const CAMPOS_DE_INSIGHTS = [...CAMPOS_DE_INSIGHTS_BASE, ...CAMPOS_DO_CONNECT_RATE].join(",");
+
+/**
+ * O pedido de socorro: a MESMA leitura, sem os dois nomes novos.
+ *
+ * É com esta lista que `lerInsights` repete a chamada quando a plataforma recusa
+ * um dos dois — o desfecho que já aconteceu nesta rota com
+ * `video_3_sec_watched_actions` (achado 2 do cabeçalho) e que, sem a repetição,
+ * derruba a tela INTEIRA: o payload de insights alimenta todas as colunas, não
+ * só a nova.
+ */
+const CAMPOS_DE_INSIGHTS_SEM_CONNECT_RATE = CAMPOS_DE_INSIGHTS_BASE.join(",");
 
 const CAMPOS_DE_CAMPANHA = ["id", "name", "status", "effective_status", "objective"].join(",");
 
@@ -109,11 +134,14 @@ export interface MetricaIndicada {
   values?: { value?: string }[];
 }
 
-/** Métrica que vem como lista por action_type (`video_play_actions`). */
-export interface AcaoDeVideo {
+/** Métrica que vem como lista por action_type (`video_play_actions`, `actions`). */
+export interface AcaoDaPlataforma {
   action_type?: string;
   value?: string;
 }
+
+/** Nome antigo, de quando só as métricas de vídeo usavam esta forma. */
+export type AcaoDeVideo = AcaoDaPlataforma;
 
 export interface LinhaDeInsightCrua {
   campaign_id?: string;
@@ -127,8 +155,12 @@ export interface LinhaDeInsightCrua {
   cpc?: string;
   results?: MetricaIndicada[];
   cost_per_result?: MetricaIndicada[];
-  video_play_actions?: AcaoDeVideo[];
-  video_thruplay_watched_actions?: AcaoDeVideo[];
+  video_play_actions?: AcaoDaPlataforma[];
+  video_thruplay_watched_actions?: AcaoDaPlataforma[];
+  /** Lista de ações por `action_type` — é de onde sai `landing_page_view`. */
+  actions?: AcaoDaPlataforma[];
+  /** Cliques no link, como string. Ausente quando a campanha não recebeu clique. */
+  inline_link_clicks?: string;
 }
 
 export interface CampanhaCrua {
@@ -340,11 +372,40 @@ export async function lerCampanhas(
 }
 
 /**
+ * A frase que a tela mostra quando a coluna do Connect rate não veio.
+ *
+ * Sem nome de campo e sem jargão de propósito — e sem o motivo cru do
+ * provedor, que é do log: quem olha o painel precisa saber que o número é
+ * AUSENTE (não zero) e que o resto da tabela está de pé. O motivo, para quem
+ * for investigar, está na linha de log que acompanha esta repetição.
+ */
+export const AVISO_DO_CONNECT_RATE_AUSENTE =
+  "A plataforma não devolveu as métricas do Connect rate nesta leitura: a coluna ficou sem número (vazio não é zero) e o resto da tabela está completo.";
+
+/**
  * Os insights do período, no nível de campanha.
  *
  * `time_range` com datas explícitas em vez de `date_preset`: o preset é resolvido
  * no fuso da CONTA, e a tela oferece um seletor de intervalo que precisa
  * corresponder exatamente ao que foi pedido.
+ *
+ * ─── A repetição sem os campos do Connect rate ──────────────────────────────
+ *
+ * Na v22.0 um nome inválido em `fields` devolve erro 100 e derruba a resposta
+ * INTEIRA. Não é hipótese nesta rota: `video_3_sec_watched_actions` fez isso
+ * (achado 2 do cabeçalho). E o payload de insights alimenta TODAS as colunas da
+ * tabela, não só a coluna nova — então o desfecho de um nome que a plataforma
+ * deixou de aceitar é a tela toda cair, sem nada que quem opera possa fazer: o
+ * conserto é um deploy.
+ *
+ * O Connect rate (#920) acrescentou dois nomes, e com eles a chance desse
+ * desfecho voltar. Daí a regra: erro de CAMPO INVÁLIDO ⇒ UMA repetição da mesma
+ * leitura sem os dois nomes novos. A coluna fica "—" (a tela já sabe dizer que
+ * não houve medição), as outras colunas continuam de pé, e a cota fica igual:
+ * zero chamada a mais no caminho bom, uma no caminho em que hoje a tela morre.
+ *
+ * Nenhuma outra falha repete: token, permissão, cota e rede não melhoram com um
+ * pedido diferente — e repetir cota gasta justamente o que está faltando.
  */
 export async function lerInsights(
   token: string,
@@ -352,11 +413,41 @@ export async function lerInsights(
   de: string,
   ate: string,
 ): Promise<ResultadoDeLeitura<LinhaDeInsightCrua[]>> {
-  const url = montarUrl(`${encodeURIComponent(contaId)}/insights`, {
+  const caminho = `${encodeURIComponent(contaId)}/insights`;
+  const parametros = {
     level: "campaign",
-    fields: CAMPOS_DE_INSIGHTS,
     time_range: JSON.stringify({ since: de, until: ate }),
     limit: "500",
+  };
+
+  const leitura = await buscarPaginado<LinhaDeInsightCrua>(
+    montarUrl(caminho, { ...parametros, fields: CAMPOS_DE_INSIGHTS }),
+    token,
+    "insights",
+  );
+
+  if (leitura.ok || leitura.falha !== "campo_invalido") return leitura;
+
+  // O motivo CRU que a plataforma devolveu vai junto: é ele que separa "este
+  // campo não existe mais nesta versão da Graph" (conserto é deploy) de "esta
+  // conta não tem permissão para esta métrica" (conserto é token) — duas ações
+  // diferentes para quem opera. `detalhe` não carrega token: o transporte o põe
+  // no header e a URL de paginação é reescrita antes de qualquer log.
+  logger.warn("[ads.meta.insights] campo inválido: repetindo sem os campos do Connect rate", {
+    contexto: "insights",
+    causa: leitura.falha,
+    detalhe: leitura.detalhe,
   });
-  return buscarPaginado<LinhaDeInsightCrua>(url, token, "insights");
+
+  const repetida = await buscarPaginado<LinhaDeInsightCrua>(
+    montarUrl(caminho, { ...parametros, fields: CAMPOS_DE_INSIGHTS_SEM_CONNECT_RATE }),
+    token,
+    "insights",
+  );
+
+  // A repetição fecha a AÇÃO (a tela não morre) e a informação ABRE: sem esta
+  // ressalva, a coluna vazia fica indistinguível de zero — trocaríamos um erro
+  // visível por um erro invisível, que ninguém vai investigar.
+  if (!repetida.ok) return repetida;
+  return { ...repetida, aviso: AVISO_DO_CONNECT_RATE_AUSENTE };
 }

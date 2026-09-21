@@ -44,4 +44,21 @@ describe("controles do canvas de follow-up seguem o tema", () => {
     expect(corpo).toMatch(/background:\s*var\(--color-surface\)/);
     expect(corpo).toMatch(/border:\s*1px solid var\(--color-border\)/);
   });
+
+  /**
+   * A LINHA ENTRE DOIS PASSOS QUASE SUMIA NO TEMA CLARO. O cinza padrão da lib
+   * (`#b1b1b7`) dá 2,03:1 sobre o fundo `#faf9f6` — abaixo dos 3:1 que a WCAG
+   * 1.4.11 pede para elemento gráfico essencial, e a linha É o desenho do fluxo.
+   * O contraste está medido no comentário do CSS; aqui a rede é o token, que
+   * troca sozinho com o tema (o único que passa nos dois é `text-muted`).
+   */
+  it("a linha da aresta sai de um token, nunca do cinza padrão da lib", () => {
+    const corpo = bloco(".react-flow");
+    expect(corpo).toMatch(/--xy-edge-stroke:\s*var\(--color-text-muted\)/);
+    expect(corpo).toMatch(/--xy-edge-stroke-selected:\s*var\(--color-accent\)/);
+    // A linha que o usuário ARRASTA para criar a ligação lê outra var.
+    expect(corpo).toMatch(/--xy-connectionline-stroke:\s*var\(--color-accent\)/);
+    // Sem o sufixo `-default`: com ele, a var da lib venceria e nada mudaria.
+    expect(corpo).not.toMatch(/--xy-edge-stroke-default/);
+  });
 });

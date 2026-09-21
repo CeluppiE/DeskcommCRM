@@ -13,6 +13,8 @@ function payload(): ExportPayload {
     organization_id: "8c1d4e20-0000-4000-8000-000000000002",
     organization_legal_name: "Bem Viver Servicos Medicos LTDA",
     organization_display_name: "MARCA_DO_REVENDEDOR_NAO_USAR",
+    lei_citada: "LGPD Art. 18, II (Lei nº 13.709/2018)",
+    documento_rotulo: "CPF",
     dpo_email: "encarregado@bemviver.test",
     generated_at: "2030-01-02T13:05:00Z",
     no_local_footprint: false,
@@ -25,6 +27,7 @@ function payload(): ExportPayload {
     orders: [],
     activities: [],
     appointments: [],
+    sales: [],
     tasks: [],
     webhook_captures: [],
     audit_log_extract: [],
@@ -45,7 +48,14 @@ function payload(): ExportPayload {
       },
     ],
     voice_calls: [],
-  appointment_notices: [
+    prospecting_candidates: [],
+    cases: [],
+    case_events: [],
+    case_chat_messages: [],
+    passagens: [],
+    avisos_de_caso: [],
+    demandas: [],
+    appointment_notices: [
       {
         id: "aviso-aberto",
         ref_id: "compromisso-confirmado",
@@ -89,6 +99,15 @@ async function rendered(data: ExportPayload) {
     await task.destroy();
   }
 }
+
+// O que responde ao titular é o byte, não a árvore React: um motor de renderização
+// novo pode mudar o formato do arquivo sem que nenhum teste da árvore perceba.
+it("os bytes entregues são um PDF: começam com o cabeçalho %PDF- e têm páginas", async () => {
+  const pdf = await rendered(payload());
+  const cabecalho = Buffer.from(pdf.bytes.subarray(0, 5)).toString("latin1");
+  expect(cabecalho).toBe("%PDF-");
+  expect(pdf.pages).toBeGreaterThan(0);
+});
 
 it("PDF efetivamente entregue contém registros, datas, estados e controlador sem material privado", async () => {
   const data = payload();

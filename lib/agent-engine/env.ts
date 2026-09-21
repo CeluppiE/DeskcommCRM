@@ -141,6 +141,13 @@ const envSchema = z.object({
   FOLLOWUP_MAX_AHEAD_MS: z.coerce.number().int().positive().default(RETORNO_MAX_AHEAD_MS_PADRAO),
   // TTL do prefixo estável de prompt cache (doutrina: 1h).
   LLM_CACHE_TTL: z.enum(['5m', '1h']).default('1h'),
+  // Raciocínio (thinking) da DeepSeek. O provedor LIGA por default, e o token
+  // de raciocínio entra na conta como SAÍDA — medido em produção: o turno do
+  // agente gastou ~8× a saída do OpenAI e +22 s de latência, o que anulou o
+  // desconto de preço. 'provider' (default) preserva o default do provedor;
+  // 'disabled' injeta o desligamento no corpo das chamadas — e SÓ nas da
+  // DeepSeek (a fábrica é dela; ver providers.ts).
+  DEEPSEEK_THINKING: z.enum(['provider', 'disabled']).default('provider'),
   // Payload curado da tool get_lead_context.
   LEAD_CONTEXT_HISTORY_LIMIT: z.coerce.number().int().positive().default(20),
   LEAD_CONTEXT_MAX_TOKENS: z.coerce.number().int().positive().default(1_000),

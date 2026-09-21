@@ -70,6 +70,11 @@ const VAZIO: Omit<AtritoRaw, "escopo"> = {
     esperas_caladas: 0,
     esperas_medidas: 0,
     espera_resposta_p90_s: null,
+    // Zero nos DOIS: a razão é calculada em `montarPares`, e denominador zero
+    // devolve `null` lá. Pôr `null` aqui seria a segunda representação da mesma
+    // ausência, e a primeira a divergir.
+    repeticao_pos_passagem: 0,
+    passagens_medidas: 0,
   },
   empresa: {
     intervencoes_por_demanda: null,
@@ -79,6 +84,8 @@ const VAZIO: Omit<AtritoRaw, "escopo"> = {
     vetos: 0,
     execucoes_medidas: 0,
     envios_por_ia: 0,
+    envios_por_automacao: 0,
+    envios_por_integracao: 0,
     envios_humano_no_sistema: 0,
     envios_humano_fora: 0,
     demandas_sem_proximo_passo: 0,

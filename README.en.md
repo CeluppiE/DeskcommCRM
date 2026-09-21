@@ -176,8 +176,12 @@ turn off things you already have); `--force` exists for that, deliberately.
 
 **Normal things you will see:** a pile of `already exists` / `multiple primary keys` during the
 database step — **expected and harmless**, those are things that already existed. The script
-filters that noise and prints `✓ banco atualizado`. If you see `⚠ avisos que não são os
-esperados`, that one is worth keeping.
+filters that noise and prints `✓ banco atualizado`. If the database is busy with the CRM serving
+customers, it applies again on its own (up to 3 passes) and says so — this holds from the update
+after the one that installs this fix. If you see `⚠ Apareceram avisos no banco que NÃO são os esperados`, that one
+is worth keeping: the **end** of the output tells you what to do in each case (repeat with `--force`
+when the database was busy, declare `SUPABASE_DB_ADMIN_URL` when it was permissions). Restoring the
+backup is the last resort.
 
 **Something went wrong?** `bash hostgator-setup-kit/restore.sh` returns to the backup.
 **Just want a diagnosis?** `bash hostgator-setup-kit/healthcheck.sh`.
@@ -324,9 +328,15 @@ gh api repos/melgarafael/DeskcommCRM/branches/main/protection \
 | `verify` | typecheck + lint + `lint:channels` + `test:unit` + `test:shell` |
 | `invariants` | boots a clean Postgres, applies `baseline.sql` in **install** mode (`ON_ERROR_STOP=1`) and then in **update** mode (proving idempotency), and runs **618 invariants across 98 files** — RBAC, assignment, scoping, routing, follow-up, webhooks and automations |
 | `build-and-size` | `pnpm build` on Node 22 |
-| `e2e` | boots a local Supabase, applies `baseline.sql` and runs **44 of the 45** Playwright specs through the frontend |
+| `e2e` | boots a local Supabase, applies `baseline.sql` and runs through the frontend every Playwright spec except the ones `FORA_DO_CI` declares |
 
-The only spec outside `e2e` is `vps-fresh-onboarding` — it needs a real WAHA + Redis + Resend + Nuvemshop. It is the **P0** of our visual-QA doctrine, so a green `e2e` does **not** prove the fresh-install journey; that one is proven on a VPS.
+Which specs stay out is a question for a command, not for reading — this line used to claim the only one was `vps-fresh-onboarding`, and since PR #983 it runs in CI:
+
+```bash
+git show origin/main:.github/workflows/e2e.yml | python3 -c "import sys,re; y=sys.stdin.read(); print(sorted({s for _,c in re.findall(r'(FORA_DO_CI):\s*>-\n((?:[ ]{8,}.*\n)+)',y) for s in re.findall(r'[a-z0-9-]+\.spec\.ts',c)}))"
+```
+
+`vps-fresh-onboarding` is still the **P0** of our visual-QA doctrine, because the fresh install is the product we sell. Having a gate does not replace proving it on screen: a gate proves it did not regress, not that the experience is good.
 
 Among the invariants is the **RLS isolation test**: it creates 2 organizations, simulates JWT claims through the same `auth.uid()` / `fn_user_org_ids()` path production policies use, and proves a user of org A sees **zero rows** of org B in `conversations`, `messages`, `contacts` and `crm_leads`. A control case first proves org B's rows actually exist — without it, the test would pass against an empty table.
 

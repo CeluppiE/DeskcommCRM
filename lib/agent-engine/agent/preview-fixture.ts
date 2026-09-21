@@ -3,6 +3,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { createFakeRegistry } from '../edge/llm/providers';
+import { MARCA_DA_CONSULTA_INTERNA } from './conversa-do-caso/contexto';
 export function previewFixtureRegistry() {
   return createFakeRegistry(async (options) => {
     const text = JSON.stringify(options.prompt);
@@ -13,7 +14,20 @@ export function previewFixtureRegistry() {
       | { type: 'tool-call'; toolCallId: string; toolName: string; input: string }
     > = [];
     if (!options.tools?.length) {
-      const value = text.includes('Turno interno de memória')
+      // A CONSULTA INTERNA DO CASO vem ANTES dos ramos de JSON.
+      //
+      // Os ramos abaixo devolvem JSON (memória, compactação, checkpoint) porque
+      // é isso que o turno espera de uma chamada sem tools. O chat do caso
+      // espera PROSA — e sem este ramo o e2e mostraria o JSON de compactação
+      // dentro da bolha da IA, na tela, para quem está avaliando o produto.
+      //
+      // A marca é IMPORTADA do módulo do prompt, nunca um literal duplicado:
+      // literal duplicado é a divergência que este repositório já pagou várias
+      // vezes — o prompt muda de um lado e o dublê segue casando o texto velho.
+      const value = text.includes(MARCA_DA_CONSULTA_INTERNA)
+        ? 'Pelo que está registrado, o cliente pediu um desconto acima da política. ' +
+          'A IA travou porque a política permite até 10%.'
+        : text.includes('Turno interno de memória')
         ? {
             notes: [
               { headline: 'Preferência do cenário', body: 'Atendimento com confirmação humana.' },
@@ -34,7 +48,9 @@ export function previewFixtureRegistry() {
               rolling_summary: 'Resposta proposta para revisão humana.',
               declaracao: { promessas: [] },
             };
-      content.push({ type: 'text', text: JSON.stringify(value) });
+      // Prosa sai como prosa; os ramos de JSON continuam serializados. Um
+      // `JSON.stringify` cego poria a resposta do chat entre aspas na tela.
+      content.push({ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) });
     } else {
       const has = (name: string) =>
         options.tools?.some((t) => t.type === 'function' && t.name === name);

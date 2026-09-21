@@ -140,10 +140,11 @@ export interface ExecucaoDeDemonstracao {
  * filtra a regra ANTES de executar (`runAutomationForEvent`): essa linha nunca
  * existiria. Com o lead VIP presente, `add_tag` só deixa de ser feito se a
  * escrita falhar; aí o `assign_owner`, que consulta e escreve no mesmo banco, ou
- * dá certo (`partial`) ou cai na mesma queda — e nesse caso relata
- * `user_not_in_org`, porque trata a consulta de membro que FALHOU como membro
- * ausente. Uma demonstração não deve ensinar esse motivo errado. Regra de uma
- * ação só não tem o problema.
+ * dá certo (`partial`) ou cai na mesma queda — e nesse caso o motivo que a ação
+ * produz é a consulta de membro que não voltou (`membro_indeterminado`, falha
+ * transitória), não o `user_not_in_org` do `partial`. Uma demonstração não deve
+ * ensinar um motivo que a ação não produz. Regra de uma ação só não tem o
+ * problema.
  */
 export function historicoDeDemonstracao(managerId: string): ExecucaoDeDemonstracao[] {
   return [

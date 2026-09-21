@@ -122,7 +122,7 @@ export function renderAgora(agora: Date, fuso: string): string {
  * é UTC) — enquanto o bloco `## Agora` acima, no mesmo prompt, já mostrava o
  * relógio certo no fuso da organização. Um agente instruído a "usar o horário
  * exato de cada mensagem para saber se a loja está aberta" comparava um horário
- * em UTC contra uma janela em hora local: medido em produção (YADEA, fuso
+ * em UTC contra uma janela em hora local: medido em produção (fuso
  * America/Sao_Paulo, expediente 09:00–18:00), uma mensagem enviada às 15:45
  * local chegou ao modelo como `18:45+00`, e o agente respondeu "a oficina está
  * fechada" dentro do próprio horário de atendimento que ele citou na resposta.

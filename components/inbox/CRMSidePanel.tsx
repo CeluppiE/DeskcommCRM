@@ -1,5 +1,7 @@
 "use client";
 
+import { LeadEnrichment } from "./LeadEnrichment";
+import type { ProspectEnrichment } from "@/lib/prospecting/schema";
 import { useAuth } from "@/hooks/auth/AuthProvider";
 import { useLocaleDeData } from "@/hooks/i18n/useLocaleDeData";
 
@@ -8,6 +10,7 @@ import Link from "next/link";
 import { useT } from "@/hooks/i18n/useT";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { format } from "date-fns";
+import { ChipDeEtiqueta } from "@/components/tags/ChipDeEtiqueta";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -42,6 +45,8 @@ interface LeadRow {
   pipeline_id: string;
   custom_fields: Record<string, unknown> | null;
   field_defs: CustomFieldDef[];
+  funil_nome: string | null;
+  etapa_nome: string | null;
 }
 
 interface OrderRow {
@@ -291,6 +296,47 @@ function SemLista({
  * Título, valor e tags já têm casa no dossiê. Quem atende descobre o dado
  * customizado (CPF, plano, endereço) aqui — e tinha de ir no Kanban gravar.
  */
+/**
+ * O banco guarda `open`/`won`/`lost`; a tela mostrava a palavra crua (#943).
+ *
+ * ⚠️ NÃO troque "Ganho"/"Perdido" por `crm_pipelines.vocabulary` sem antes
+ * mudar o que essa coluna guarda. O DEFAULT dela é o de e-commerce (`won:
+ * Pago`, `lost: Cancelado`, supabase/baseline.sql) e nenhum caminho normal a
+ * reescreve: o onboarding troca só as ETAPAS pelo quadro do ramo
+ * (`fn_aplicar_quadro_do_onboarding` atualiza nome e slug do funil), e
+ * `POST /api/v1/pipelines` não a preenche — quem escreve é só a tela Etapas do
+ * funil, à mão. Lida daqui, ela faria uma clínica recém-instalada ver "Pago"
+ * ao lado de "Consulta marcada". Guardado em
+ * tests/unit/inbox-leads-recentes-com-funil.test.tsx.
+ */
+const STATUS_DO_LEAD: Record<string, string> = { open: "Aberto", won: "Ganho", lost: "Perdido" };
+
+/** "Funil · Etapa" — sem isto dois leads de mesmo título ficam idênticos (#943). */
+function ondeEstaOLead(l: LeadRow): string {
+  return [l.funil_nome, l.etapa_nome].filter(Boolean).join(" · ");
+}
+
+/**
+ * `line-clamp-2`, não `truncate` — e a diferença não depende de medir pixel.
+ *
+ * `truncate` corta numa linha só, e corte de texto some pela DIREITA: a metade
+ * perdida é sempre a ETAPA, que é justamente a que diz onde o negócio está.
+ * "Funil de Vendas Consultivas B2B · Proposta enviada" nesta coluna de 296px
+ * viraria "Funil de Vendas Consul…" — o operador lê o funil, que ele já sabia,
+ * e perde a etapa, que é o dado novo. A medida por ferramenta diria a partir de
+ * QUE largura isso acontece; não muda QUAL metade morre, que é o defeito.
+ *
+ * Duas linhas dobram o orçamento sem mexer no texto (mesmo uso que
+ * `Composer.tsx:259` e `MessageBubble.tsx:193` já fazem), e o `title` devolve a
+ * frase inteira no hover para o resto — com o nome do funil cortado não há
+ * outro lugar na tela onde lê-lo.
+ *
+ * ⚠️ NÃO medido: a largura em que a segunda linha também estoura, e o
+ * comportamento em tela de celular (onde não há hover). Fica para quem rodar a
+ * spec de tela com `getBoundingClientRect`.
+ */
+const CLASSES_DE_ONDE_ESTA = "line-clamp-2 text-muted-foreground";
+
 function InboxLeadEditor({
   leads,
   selecionadoId,
@@ -302,7 +348,9 @@ function InboxLeadEditor({
   onSelecionar: (id: string) => void;
   onSalvo: () => void;
 }) {
+  const t = useT();
   const ativo = leads.find((l) => l.id === selecionadoId) ?? leads[0]!;
+  const status = (l: LeadRow) => t(STATUS_DO_LEAD[l.status] ?? l.status);
 
   return (
     <div className="mt-2 space-y-2">
@@ -323,8 +371,11 @@ function InboxLeadEditor({
                   )}
                 >
                   <div className="truncate font-medium">{l.title}</div>
+                  <div className={CLASSES_DE_ONDE_ESTA} title={ondeEstaOLead(l)}>
+                    {ondeEstaOLead(l)}
+                  </div>
                   <div className="text-muted-foreground">
-                    {l.status} · {formatMoney(l.value_cents, l.currency)}
+                    {status(l)} · {formatMoney(l.value_cents, l.currency)}
                   </div>
                 </button>
               </li>
@@ -333,9 +384,12 @@ function InboxLeadEditor({
         </ul>
       )}
       {leads.length === 1 && (
-        <p className="text-xs text-muted-foreground">
-          {ativo.title} · {ativo.status}
-        </p>
+        <div data-testid="inbox-lead-unico" className="text-xs text-muted-foreground">
+          <p>{ativo.title} · {status(ativo)}</p>
+          <p className={CLASSES_DE_ONDE_ESTA} title={ondeEstaOLead(ativo)}>
+            {ondeEstaOLead(ativo)}
+          </p>
+        </div>
       )}
       <CamposDoFunil
         key={ativo.id}
@@ -416,6 +470,8 @@ export function CRMSidePanel({ conversation }: Props) {
   }, [conversation, contactId, desfechoDraft]);
 
 
+  const [enrichment, setEnrichment] = useState<(ProspectEnrichment & { collected_at: string }) | null>(null);
+  const [enrichmentError, setEnrichmentError] = useState(false);
   const [leads, setLeads] = useState<LeadRow[] | null>(null);
   const [orders, setOrders] = useState<OrderRow[] | null>(null);
   const [activities, setActivities] = useState<ActivityRow[] | null>(null);
@@ -465,6 +521,8 @@ export function CRMSidePanel({ conversation }: Props) {
       try {
         const r = await apiClient.get<{
           data: {
+            enrichment?: (ProspectEnrichment & { collected_at: string }) | null;
+            enrichment_error?: boolean;
             leads: LeadRow[];
             orders: OrderRow[];
             activities: ActivityRow[];
@@ -475,6 +533,8 @@ export function CRMSidePanel({ conversation }: Props) {
         }>(`/api/v1/contacts/${contactId}/crm-summary`);
         if (cancelled) return;
         setSummaryContactId(contactId);
+        setEnrichment(r.data.enrichment ?? null);
+        setEnrichmentError(r.data.enrichment_error ?? false);
         setLeads(r.data.leads);
         setOrders(r.data.orders);
         setActivities(r.data.activities);
@@ -513,7 +573,7 @@ export function CRMSidePanel({ conversation }: Props) {
     // Depender do DADO que muda é mais honesto que um contador de invalidação:
     // `assigned_to_user_id` cobre assumir/transferir/liberar e `bot_silenced_until`
     // cobre pausar e devolver — que são exatamente os quatro gestos que geram linha.
-  }, [contactId, tentativa, conversation?.assigned_to_user_id, conversation?.bot_silenced_until, conversation?.service_revision, conversation?.current_demanda_id]);
+  }, [contactId, contact?.is_anonymized, tentativa, conversation?.assigned_to_user_id, conversation?.bot_silenced_until, conversation?.service_revision, conversation?.current_demanda_id]);
 
   // Recarrega o resumo pelo MESMO caminho do "Tentar de novo": o efeito depende
   // de `tentativa`, então a demanda recém-marcada volta do servidor em vez de
@@ -559,9 +619,7 @@ export function CRMSidePanel({ conversation }: Props) {
           {tags.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {tags.map((t) => (
-                <Badge key={t} variant="secondary" className="h-4 px-1.5 text-[10px]">
-                  {t}
-                </Badge>
+                <ChipDeEtiqueta key={t} tag={t} className="h-4 px-1.5 text-[10px]" />
               ))}
             </div>
           )}
@@ -575,7 +633,7 @@ export function CRMSidePanel({ conversation }: Props) {
               aria-pressed={tagEditorOpen}
               onClick={() => setTagEditorOpen((v) => !v)}
             >
-              <Tag size={12} className="mr-1" weight="regular" aria-hidden /> {t("Tag")}
+              <Tag size={12} className="mr-1" weight="regular" aria-hidden /> {t("Tags do contato")}
             </Button>
             <Button
               size="sm"
@@ -585,7 +643,7 @@ export function CRMSidePanel({ conversation }: Props) {
               onClick={() => setLeadDialogOpen(true)}
             >
               <Users size={12} className="mr-1" weight="regular" aria-hidden />
-              {leadDialogOpen && defaultPipeline.isLoading ? t("Carregando…") : t("Lead")}
+              {leadDialogOpen && defaultPipeline.isLoading ? t("Carregando…") : t("Novo Lead")}
             </Button>
             {contactId && (
               <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-xs">
@@ -596,9 +654,16 @@ export function CRMSidePanel({ conversation }: Props) {
               </Button>
             )}
           </div>
-          {tagEditorOpen && contactId && <ContactTagsEditor contactId={contactId} tags={tags} />}
+          {tagEditorOpen && contactId && <ContactTagsEditor contactId={contactId} orgId={conversation.organization_id} tags={tags} />}
         </Card>
       </section>
+
+      <LeadEnrichment
+        data={summaryContactId === contactId && !erro && !contact?.is_anonymized ? enrichment : null}
+        loading={sectionsLoading}
+        error={erro || (summaryContactId === contactId && enrichmentError)}
+        onRetry={recarregar}
+      />
 
       {contactId && defaultPipeline.data && (
         <NewLeadDialog

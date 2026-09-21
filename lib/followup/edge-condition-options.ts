@@ -1,59 +1,16 @@
-import { nodeBranches, type FlowEdge, type FlowNode } from "./graph-schema";
+import type { FlowEdge } from "./graph-schema";
 
 /**
- * Per-source-node menu of valid edge conditions for the builder's edge
- * config panel (Task 6.3). Mirrors exactly what `validate-publish.ts` accepts
- * for each source type — an `ai_classify` node needs one `class_match` edge
- * per declared class + `no_reply` + an `always` fallback; a `condition` node
- * routes `cond_result` true/false; everything else only ever takes `always`.
+ * O par chave/rótulo de uma condição de aresta — o que o painel da aresta grava
+ * e o que o fio mostra quando a origem não está no grafo.
+ *
+ * ⚠️ AQUI HAVIA UM MENU DE OPÇÕES POR TIPO DE NÓ (`edgeConditionOptions`), e ele
+ * saiu. O painel passou a montar as opções a partir de `nodeBranches()` na
+ * W2-RAMOS — a lista por tipo continuava oferecendo "Sim"/"Não" a um nó no modo
+ * uma-saída-por-regra —, e o menu ficou sem consumidor. Ficar não era neutro:
+ * ele ainda chamava a saída de escape de "Sempre" em nó ramificado, o defeito
+ * que `graph-schema.ts` acabou de corrigir. Quem religar isto religa o defeito.
  */
-export type EdgeConditionOption = {
-  /** Stable key for a <Select> — encodes the condition so option <-> value round-trips exactly. */
-  key: string;
-  /** pt-br label shown to the user. */
-  label: string;
-  condition: FlowEdge["condition"];
-};
-
-const ALWAYS_OPTION: EdgeConditionOption = { key: "always", label: "Sempre", condition: { type: "always" } };
-
-function classMatchOption(value: string): EdgeConditionOption {
-  return {
-    key: `class_match:${value}`,
-    label: value === "no_reply" ? "Sem resposta" : value,
-    condition: { type: "class_match", value },
-  };
-}
-
-function condResultOption(value: boolean): EdgeConditionOption {
-  return {
-    key: `cond_result:${value}`,
-    label: value ? "Sim" : "Não",
-    condition: { type: "cond_result", value },
-  };
-}
-
-export function edgeConditionOptions(sourceNode: FlowNode | undefined): EdgeConditionOption[] {
-  if (sourceNode?.type === "ai_classify") {
-    return [
-      ALWAYS_OPTION,
-      ...sourceNode.config.classes.map(classMatchOption),
-      classMatchOption("no_reply"),
-    ];
-  }
-  if (sourceNode?.type === "match_reply" || sourceNode?.type === "repeat") {
-    return nodeBranches(sourceNode).map((b) => ({
-      key: conditionKey(b.condition),
-      label: b.label ?? b.id,
-      condition: b.condition,
-    }));
-  }
-  if (sourceNode?.type === "condition") {
-    return [ALWAYS_OPTION, condResultOption(true), condResultOption(false)];
-  }
-  return [ALWAYS_OPTION];
-}
-
 /** Stable key for a condition value — inverse of the `key` on the option it produced. */
 export function conditionKey(condition: FlowEdge["condition"]): string {
   switch (condition.type) {

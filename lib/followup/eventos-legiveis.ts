@@ -24,15 +24,18 @@ import {
   CONDITION_TRUE_BRANCH_ID,
   FALLBACK_BRANCH_ID,
   NO_REPLY_BRANCH_ID,
+  nodeBranches,
   type FlowEdge,
   type FlowNode,
 } from "./graph-schema";
 import {
+  FRASE_DE_OUTROS_CASOS,
   RAMOS_RESERVADOS_EM_FRASE,
   fraseDaClasse,
   fraseDaRegraNomeada,
   fraseDaRegraSemNome,
   fraseDoRamo,
+  type NomesDeValor,
 } from "./vocabulario";
 
 // ---------------------------------------------------------------------------
@@ -76,6 +79,7 @@ export type TomDoStatus = "neutral" | "success" | "warning" | "error" | "info";
 const STATUS: Record<string, { rotulo: string; tom: TomDoStatus }> = {
   active: { rotulo: "Ativo", tom: "success" },
   waiting_reply: { rotulo: "Aguardando resposta", tom: "info" },
+  dormente: { rotulo: "Aguardando a data do retorno", tom: "info" },
   paused_handoff: { rotulo: "Pausado (atendimento humano)", tom: "warning" },
   paused_manual: { rotulo: "Pausado por uma pessoa", tom: "warning" },
   completed: { rotulo: "Concluído", tom: "neutral" },
@@ -205,9 +209,15 @@ export function resumoDoNo(node: FlowNode): NoDoDossie {
  * dossiê mostra o RÓTULO DO DESTINO ao lado da frase, e é ele que separa duas
  * opções na hora de escolher por onde pular.
  */
-export function rotuloDaAresta(edge: FlowEdge, origem?: FlowNode): string {
+export function rotuloDaAresta(edge: FlowEdge, origem?: FlowNode, nomes: NomesDeValor = {}): string {
   const c = edge.condition;
-  if (c.type === "always") return RAMOS_RESERVADOS_EM_FRASE[FALLBACK_BRANCH_ID];
+  if (c.type === "always") {
+    // Num nó com saídas específicas, o escape não é o "caminho normal": é o que
+    // sobra quando nenhuma das outras serve.
+    return origem !== undefined && nodeBranches(origem).length > 1
+      ? FRASE_DE_OUTROS_CASOS
+      : RAMOS_RESERVADOS_EM_FRASE[FALLBACK_BRANCH_ID];
+  }
   if (c.type === "cond_result") {
     return RAMOS_RESERVADOS_EM_FRASE[c.value ? CONDITION_TRUE_BRANCH_ID : CONDITION_FALSE_BRANCH_ID];
   }
@@ -221,13 +231,13 @@ export function rotuloDaAresta(edge: FlowEdge, origem?: FlowNode): string {
   // v2: reservado tem frase própria; declarado precisa do NÓ, porque é lá que a
   // identidade do ramo mora — e o molde depende do tipo do nó (classe da IA e
   // regra do negócio não se leem igual).
-  return fraseDoRamo(c.branch_id) ?? fraseDoRamoDeclarado(origem, c.branch_id);
+  return fraseDoRamo(c.branch_id) ?? fraseDoRamoDeclarado(origem, c.branch_id, nomes);
 }
 
 const RAMO_SEM_NOME = "por um caminho sem nome";
 
 /** O molde certo para o ramo que o usuário declarou, escolhido pelo tipo do nó. */
-function fraseDoRamoDeclarado(origem: FlowNode | undefined, branchId: string): string {
+function fraseDoRamoDeclarado(origem: FlowNode | undefined, branchId: string, nomes: NomesDeValor): string {
   if (!origem) return RAMO_SEM_NOME;
 
   if (origem.type === "ai_classify") {
@@ -247,7 +257,7 @@ function fraseDoRamoDeclarado(origem: FlowNode | undefined, branchId: string): s
     // extenso — `regra-2` na tela do operador é o que o vocabulário proíbe.
     return check.label
       ? fraseDaRegraNomeada(check.label)
-      : fraseDaRegraSemNome(check.field, check.op, check.value);
+      : fraseDaRegraSemNome(check.field, check.op, check.value, nomes);
   }
 
   return RAMO_SEM_NOME;
@@ -357,6 +367,17 @@ export function descreveEvento(
       return {
         titulo: "Conferiu se a mensagem já tinha saído",
         detalhe: ate ? `confere de novo em ${ate}` : null,
+        ...motor,
+      };
+    }
+    case "action_deferred": {
+      // Adiar NÃO é falhar, e o dossiê tem de dizer isso com todas as letras:
+      // sem esta linha o operador vê o passo parado por horas e lê defeito onde
+      // há obediência à janela que ele mesmo configurou.
+      const ate = quandoLegivel(p.until, idioma);
+      return {
+        titulo: "Segurou o envio até o horário permitido",
+        detalhe: ate ? `a janela estava fechada; envia em ${ate}` : "a janela estava fechada",
         ...motor,
       };
     }

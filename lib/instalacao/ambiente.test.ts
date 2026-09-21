@@ -60,6 +60,9 @@ describe("lerAmbiente", () => {
     // como caminho NORMAL, e não como exceção.
     expect(lerAmbiente({}).email).toBe(false);
     expect(lerAmbiente({ RESEND_API_KEY: "re_x" }).email).toBe(true);
+    // O outro transporte conta igual: quem preencheu só o SMTP tem e-mail, e
+    // ler apenas a chave do serviço externo o chamaria de não configurado.
+    expect(lerAmbiente({ SMTP_HOST: "smtp.revenda.com.br" }).email).toBe(true);
   });
 });
 

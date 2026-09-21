@@ -53,7 +53,7 @@ verificados por leitura de arquivo, config e workflow.
 | H2 — Reproduzível | ✅ | Quickstart no README, `docs/SETUP.md`, `.nvmrc` (22), `packageManager` fixo, `pnpm-lock.yaml`, `docker-compose.yml`, `install.sh` do kit self-host, `baseline.sql` |
 | H3 — Verificável | ✅ | `lint` + `typecheck` + `test:unit` + `build`; CI roda os 3 primeiros em PR |
 | H4 — Preparado para agentes | ✅ | `CLAUDE.md` doutrinal forte; `AGENTS.md` **criado nesta auditoria**; documentação técnica extensa; **e o CI roda o gate de isolamento RLS** (job `invariants` → `pnpm test:db`) |
-| H5 — Automação avançada | ⚠️ **parcial** | CI confiável e ambiente isolado ✅ (Postgres efêmero pg15, worktrees, gov-loop com maker≠checker e hash-check). Falta: **1 das 46 specs E2E fora do CI** (45 rodam via `e2e.yml`, **obrigatório desde 2026-08-08**; a de fora é `vps-fresh-onboarding`, que é justamente a P0), `format:check` fora do CI, e o comando único local (`gov:verify`) não cobre `test:db`/`test:e2e`. *(Números recontados em 2026-08-14 @ `741c4ec8`; a redação anterior — "4 das 32, não-obrigatório" — apodreceu.)* |
+| H5 — Automação avançada | ⚠️ **parcial** | CI confiável e ambiente isolado ✅ (Postgres efêmero pg15, worktrees, gov-loop com maker≠checker e hash-check). Falta: **1 das 46 specs E2E fora do CI** (45 rodam via `e2e.yml`, **obrigatório desde 2026-08-08**; a de fora é `vps-fresh-onboarding`, que é justamente a P0), `format:check` fora do CI, e o comando único local (`gov:verify`) não cobre `test:db`/`test:e2e`. *(Números recontados em 2026-08-14 @ `741c4ec8`; a redação anterior — "4 das 32, não-obrigatório" — apodreceu.)* *(Nota de 2026-09-19: a `vps-fresh-onboarding` deixou de estar fora — desde o PR #983 roda na `SPECS_PARTE_4`. O que fica fora hoje: ver a nota logo abaixo de "O que separa de H5".)* |
 
 **Por que H4 e não H5:** a instrução da auditoria é explícita — não atribuir nível só
 porque os arquivos existem, avaliar se o processo está implementado. Aqui está: o gate de
@@ -66,6 +66,17 @@ O que separa de H5 é estreito: **16 dos 19 E2E não rodam em CI** (`e2e.yml` co
 como o caminho mais crítico do produto. E `pnpm gov:verify`, o comando único que um agente
 naturalmente usa como critério de pronto, **não** inclui `test:db` nem `test:e2e`: o CI
 pega o que ele deixa passar, mas só depois do push.
+
+> **Nota de 2026-09-19 (PR #983):** a `vps-fresh-onboarding.spec.ts` citada acima como fora do
+> CI passou a rodar na `SPECS_PARTE_4` do `e2e.yml`. Em PR que alcança o `e2e` (regra em
+> `scripts/pr-alcanca-o-e2e.sh`), o verde agora cobre a jornada de instalação fresca; em PR
+> que pula as partes, continua não provando tela nenhuma. O parágrafo acima é retrato de antes
+> e fica como está. O que fica fora hoje não se lê deste documento — meça:
+>
+> ```bash
+> git show origin/main:.github/workflows/e2e.yml | \
+>   python3 -c "import sys,re; y=sys.stdin.read(); print(sorted({s for _,c in re.findall(r'(FORA_DO_CI):\s*>-\n((?:[ ]{8,}.*\n)+)',y) for s in re.findall(r'[a-z0-9-]+\.spec\.ts',c)}))"
+> ```
 
 **O que puxa este projeto para cima e é incomum num CRM open-source:** doutrina escrita e
 específica (`CLAUDE.md`), Definition of Done de 13 itens, **56 arquivos de invariantes de
@@ -93,7 +104,7 @@ Legenda: ✅ existente e funcional · ⚠️ existente mas incompleto · ❌ nã
 | 10 | Checagem de tipos | ✅ | `pnpm typecheck` (`tsc --noEmit`, TS 6 estrito), roda no CI |
 | 11 | Testes unitários | ✅ | 221 arquivos `*.test.ts(x)`; `pnpm test:unit` no CI |
 | 12 | Testes de integração | ✅ | **56 arquivos** de invariantes em `tests/invariants/` + `tests/api/`. Excluídos do `test:unit` de propósito (`vitest.config.ts:12`) e rodados pelo job `invariants` do CI via `pnpm test:db` |
-| 13 | Testes E2E | ⚠️ | 20 specs Playwright. **10 rodam no CI** (`e2e.yml`, ainda não-obrigatório), incluindo o P0 `vps-webhook-outbound-ssrf`; o P0 `vps-fresh-onboarding` continua fora (issue #63) |
+| 13 | Testes E2E | ⚠️ | 20 specs Playwright. **10 rodam no CI** (`e2e.yml`, ainda não-obrigatório), incluindo o P0 `vps-webhook-outbound-ssrf`; o P0 `vps-fresh-onboarding` continua fora (issue #63) *(Nota de 2026-09-19: desde o PR #983 ela roda na `SPECS_PARTE_4` — ver a nota logo abaixo de "O que separa de H5".)* |
 | 14 | Comando único de verificação | ⚠️ | `pnpm gov:verify` = `typecheck && lint && test:unit`. **Omite `test:db` e `test:e2e`** — verde localmente não significa verificado. O CI cobre `test:db`, mas só depois do push |
 | 15 | CI executando verificações | ✅ | `ci.yml` tem 2 jobs: `verify` (typecheck + lint + test:unit) e **`invariants` (`pnpm test:db` — isolamento RLS + invariantes de governança, em job paralelo com timeout de 20min)**. Falta E2E e `format:check`. `perf.yml` faz build + bundle size; `publish-image.yml` publica no GHCR |
 | 16 | Proteção contra secrets | ⚠️ | `.gitignore` cobre `.env*` (exceção só para os `.example`) e o Sentry tem `beforeSend` que higieniza PII. **Sem** gitleaks/trufflehog no CI, **sem** pre-commit hook |
@@ -122,6 +133,11 @@ Maior buraco restante. `vps-fresh-onboarding.spec.ts` protege a primeira impress
 doutrina classifica como o caminho mais crítico do produto, e
 `vps-webhook-outbound-ssrf.spec.ts` é a única prova automatizada do guard de SSRF. Rodar
 em PR pode ser lento; um workflow nightly + trigger manual já elimina a regressão silenciosa.
+
+> **Nota de 2026-09-19:** as duas specs que este item cita entraram no CI obrigatório, em PR — não
+> num nightly: a `vps-webhook-outbound-ssrf.spec.ts` entrou antes (item 13 da tabela acima), e a
+> `vps-fresh-onboarding.spec.ts` entrou no PR #983, na `SPECS_PARTE_4`. O que ainda fica fora:
+> ver a nota logo abaixo de "O que separa de H5".
 
 ### 2. Renomear/reforçar o comando único 🟠 · custo: 2 linhas
 

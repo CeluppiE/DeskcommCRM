@@ -8,8 +8,8 @@
  * sugeria um cursor próprio em `watchdog_cursors` drenado DENTRO do tick do
  * `runFollowupTick`. Investiguei o consumidor de `event_log` REALMENTE em
  * produção neste repo — `lib/event-log/dispatcher.ts` + `drain.ts` +
- * `app/api/v1/cron/event-log-drain/route.ts` (roda a cada minuto, tanto no
- * Vercel quanto no cron do kit self-host — ver README.md) — e ele já resolve
+ * `app/api/v1/cron/event-log-drain/route.ts` (roda a cada minuto pelo serviço
+ * `scheduler` do kit self-host — ver README.md) — e ele já resolve
  * exatamente este problema: múltiplos consumidores por `event_type`,
  * idempotência via `consumed_by[]` (sem duplo efeito em re-drain), retry com
  * backoff, dead-letter. `watchdog_cursors` tem ZERO consumidores TS neste
@@ -34,7 +34,8 @@
  *      (`opted_out`). Senão, para enrollments `waiting_reply` do contato:
  *      `cancel_on_reply` no `trigger_config` do pointer → cancela
  *      (`replied`); senão, acorda (marker `inbound_woke` + `next_eval_at=now`).
- *      Inscrições `active` no nó `wait` também acordam — a resposta corta o timer.
+ *      Inscrições `active` no nó `wait` seguem a mesma política: com
+ *      `cancel_on_reply`, cancelam; sem ela, acordam e cortam o timer.
  *   2. `ai.handoff_triggered` (handoff aberto) — já emitido em produção por
  *      `lib/ai/handoff/orchestrator.ts` (triggerHandoff, chamado por
  *      workers/ai-response-worker.ts, workers/ai-handoff-from-sentiment.handler.ts,
@@ -60,7 +61,27 @@ import { idsDoContatoEGemeos } from "@/lib/channels/contato-por-telefone";
 /** Grace pós-resume (spec §4: "grace configurável, default 30min, knob"). */
 export const RESUME_GRACE_MS = 30 * 60_000;
 
+/**
+ * Os status que REAGEM AO INBOUND. `dormente` está fora, e é isso que faz a
+ * espera longa imune existir sem custo nenhum aqui: a inscrição adormecida não é
+ * carregada, então `cancel_on_reply` não a cancela e `acordarPorInbound` não
+ * corta o timer dela — sem uma query a mais por mensagem recebida e sem esta
+ * camada precisar ler o grafo para saber que o nó era imune.
+ *
+ * ⚠️ NÃO é a mesma lista de "vivo" da FILA (`QueueTab`/`queue/route.ts`), que
+ * INCLUI o dormente de propósito: 28 dias de gente invisível seria uma ilha.
+ * Duas listas parecidas com significados diferentes; o nome daqui diz qual é.
+ */
 export const LIVE_STATUSES: readonly EnrollmentStatus[] = ["active", "waiting_reply", "paused_handoff"];
+
+/**
+ * O opt-out alcança o dormente também.
+ *
+ * STOP e LGPD são hard stop: não admitem exceção de status, e uma espera de 28
+ * dias que sobrevivesse ao "pare de me mandar mensagem" voltaria a falar com
+ * quem pediu silêncio — um mês depois, quando ninguém mais lembra por quê.
+ */
+const STATUS_ALCANCADOS_PELO_OPT_OUT: readonly EnrollmentStatus[] = [...LIVE_STATUSES, "dormente"];
 
 export interface LiveEnrollmentRef {
   id: string;
@@ -79,7 +100,17 @@ export interface LiveEnrollmentRef {
 export interface ReactivityAdminClient {
   loadConversationContactId(orgId: string, conversationId: string): Promise<string | null>;
   loadContactBlocked(orgId: string, contactId: string): Promise<boolean>;
-  loadLiveEnrollmentsForContact(orgId: string, contactId: string): Promise<LiveEnrollmentRef[]>;
+  /**
+   * `statuses` existe só para o ramo de opt-out, que precisa alcançar o
+   * `dormente`. As demais reações usam o default e seguem sem enxergá-lo — em
+   * especial o handoff, que se pausasse um dormente o devolveria com a graça de
+   * 30 min e acordaria a espera de 28 dias quase um mês cedo.
+   */
+  loadLiveEnrollmentsForContact(
+    orgId: string,
+    contactId: string,
+    statuses?: readonly EnrollmentStatus[],
+  ): Promise<LiveEnrollmentRef[]>;
   insertEnrollmentEvent(event: {
     organization_id: string;
     enrollment_id: string;
@@ -190,7 +221,14 @@ async function reactToInbound(
   if (!contactId) return { matched: false, reacted: 0 };
 
   const isBlocked = await db.loadContactBlocked(row.organization_id, contactId);
-  const live = await db.loadLiveEnrollmentsForContact(row.organization_id, contactId);
+  // Carrega JÁ com o dormente: o ramo de opt-out abaixo precisa alcançá-lo, e
+  // uma segunda consulta só para o caso bloqueado pagaria uma ida ao banco em
+  // toda mensagem recebida da instalação para servir a minoria.
+  const live = await db.loadLiveEnrollmentsForContact(
+    row.organization_id,
+    contactId,
+    STATUS_ALCANCADOS_PELO_OPT_OUT,
+  );
 
   if (isBlocked) {
     // STOP/opt-out (a regex já rodou em lib/waha/ingest.ts e setou is_blocked
@@ -200,6 +238,10 @@ async function reactToInbound(
     return { matched: true, reacted };
   }
 
+  // Daqui para baixo o dormente sai de cena: os dois filtros abaixo pegam
+  // `waiting_reply` e `active`, e ele não é nenhum dos dois. É assim que a
+  // espera imune sobrevive — não por um `if` de imunidade, mas por não estar
+  // no conjunto que reage.
   const waitingReply = live.filter((e) => e.status === "waiting_reply");
   const esperaAtiva = live.filter((e) => e.status === "active");
   let reacted = 0;
@@ -221,9 +263,26 @@ async function reactToInbound(
 
     if (await acordarPorInbound(db, clock, row, e)) reacted++;
   }
-  // Nó `wait` fica `active` com timer — sem isto a resposta do lead não corta
-  // a espera de 5min (o motor só acordava `waiting_reply`).
+  // Uma espera por tempo fixo fica `active` com timer. Quando o fluxo declara
+  // `cancel_on_reply`, a resposta deve encerrar também esta ocupação — não
+  // acordar o próximo nó e disparar a próxima mensagem imediatamente. Sem a
+  // verificação abaixo, a opção funcionava apenas para nós `waiting_reply`.
   for (const e of esperaAtiva) {
+    if (parseCancelOnReply(e.trigger_config)) {
+      const key = `reactivity:${row.id}:${e.id}:reactivity_replied`;
+      const applied = await applyStep(
+        db,
+        row.organization_id,
+        e,
+        key,
+        "reactivity_replied",
+        { reason: "cancel_on_reply" },
+        cancelPatch(clock, "replied", "cancel_on_reply"),
+      );
+      if (applied) reacted++;
+      continue;
+    }
+
     if (await acordarPorInbound(db, clock, row, e)) reacted++;
   }
   return { matched: true, reacted };
@@ -392,14 +451,14 @@ export function createSupabaseReactivityClient(admin: SupabaseClient): Reactivit
       if (error) throw new Error(error.message);
       return data?.is_blocked ?? false;
     },
-    async loadLiveEnrollmentsForContact(orgId, contactId) {
+    async loadLiveEnrollmentsForContact(orgId, contactId, statuses = LIVE_STATUSES) {
       const ids = await idsDoContatoEGemeos(admin, orgId, contactId);
       const { data: enrollments, error } = await admin
         .from("followup_enrollments")
         .select("id, status, current_node_id, steps_taken, pointer_id")
         .eq("organization_id", orgId)
         .in("contact_id", ids)
-        .in("status", LIVE_STATUSES);
+        .in("status", statuses);
       if (error) throw new Error(error.message);
       if (!enrollments?.length) return [];
 

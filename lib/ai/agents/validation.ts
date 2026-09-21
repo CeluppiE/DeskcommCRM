@@ -49,19 +49,42 @@ const triggerConfigSchema = z
 
 export type TriggerConfig = z.infer<typeof triggerConfigSchema>;
 
+const HHMM = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
+
+/**
+ * Janela PROATIVA do follow-up. O fuso não é configurável aqui: quem executa
+ * sempre usa `organizations.timezone`, para a faixa acompanhar o relógio da
+ * empresa e não o knob anti-ban do número.
+ */
+const followupSendWindowSchema = z
+  .object({
+    start: z.string().regex(HHMM),
+    end: z.string().regex(HHMM),
+    weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7),
+  })
+  .strict()
+  .refine((window) => window.end > window.start, {
+    path: ["end"],
+    message: "followup_window_end_must_be_after_start",
+  });
+
 // Task 7.2 — vínculo do agente com fluxos de follow-up publicados. Aditivo:
 // `.default(...)` faz agents/versions existentes (sem este campo no payload)
 // continuarem válidos, lidos com enabled=false/[] (comportamento inalterado).
 // `flow_pointer_ids` referencia `followup_flow_pointers.id` — sem FK real de
 // array no Postgres (mesma doutrina de `tool_ids`: domínio validado em app,
 // não em constraint de banco).
+//
+// #490 acrescenta `send_window`: `null` preserva o comportamento histórico; uma
+// faixa limita SOMENTE envios proativos, sem tocar o horário do inbound.
 const followupConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
     flow_pointer_ids: z.array(UUID).max(20).default([]),
+    send_window: followupSendWindowSchema.nullable().optional().default(null),
   })
   .strict()
-  .default({ enabled: false, flow_pointer_ids: [] });
+  .default({ enabled: false, flow_pointer_ids: [], send_window: null });
 
 export type FollowupConfig = z.infer<typeof followupConfigSchema>;
 

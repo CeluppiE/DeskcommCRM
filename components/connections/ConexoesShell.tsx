@@ -3,12 +3,14 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+import { RedesSociaisClient } from "./RedesSociaisClient";
 import { CanalOficialClient } from "./CanalOficialClient";
 import { CanalParceiroClient } from "./CanalParceiroClient";
 import { CanalVozClient } from "./CanalVozClient";
 import { ConnectionsClient } from "./ConnectionsClient";
 import { TemplatesClient } from "./TemplatesClient";
 import { TemplatesParceiroClient } from "./TemplatesParceiroClient";
+import { TelefoniaClient } from "./TelefoniaClient";
 import { useT } from "@/hooks/i18n/useT";
 
 /**
@@ -46,13 +48,17 @@ export function ConexoesShell({
   const params = useSearchParams();
   const abaParam = params.get("aba");
   const aba =
-    abaParam === "oficial"
+    abaParam === "sociais"
+      ? "sociais"
+      : abaParam === "oficial"
       ? "oficial"
       : abaParam === "parceiro"
         ? "parceiro"
-        : abaParam === "voz"
-          ? "voz"
-          : "numeros";
+        : abaParam === "telefonia"
+          ? "telefonia"
+          : abaParam === "voz"
+            ? "voz"
+            : "numeros";
   const sub = params.get("sub") === "templates" ? "templates" : "conexao";
 
   const irPara = (proximaAba: string, proximaSub?: string): void => {
@@ -67,7 +73,7 @@ export function ConexoesShell({
 
   return (
     <Tabs value={aba} onValueChange={(v) => irPara(v, sub)} className="flex flex-col gap-4">
-      <TabsList>
+      <TabsList className="h-auto max-w-full flex-wrap justify-start">
         {/* Rótulos pelo que o usuário RECONHECE, não pelo nome técnico do motor por
             trás: ele sabe se leu um QR ou se tem conta na Meta; a sigla do provedor
             não diz nada a quem instalou o sistema para vender.
@@ -85,12 +91,19 @@ export function ConexoesShell({
             porque no dia em que houver um segundo parceiro esta aba não muda.
             Aqui fica o CONCEITO; lá dentro o cartão diz de quem se trata. */}
         <TabsTrigger value="parceiro">{t("Provedor parceiro")}</TabsTrigger>
+        <TabsTrigger value="telefonia">{t("Telefone")}</TabsTrigger>
+        <TabsTrigger value="sociais">{t("Redes sociais")}</TabsTrigger>
         <TabsTrigger value="voz">{t("Chamada de voz")}</TabsTrigger>
       </TabsList>
 
       <TabsContent value="numeros" className="mt-0">
         <ConnectionsClient wahaConfigured={wahaConfigured} />
       </TabsContent>
+
+      <TabsContent value="telefonia" className="mt-0">
+        <TelefoniaClient />
+      </TabsContent>
+      <TabsContent value="sociais" className="mt-0"><RedesSociaisClient /></TabsContent>
 
       <TabsContent value="voz" className="mt-0">
         <CanalVozClient wacallsConfigured={wacallsConfigured} />

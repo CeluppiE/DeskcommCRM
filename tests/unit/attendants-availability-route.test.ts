@@ -32,6 +32,7 @@ const ORG = "22222222-2222-4222-8222-222222222222";
 const ANA = "11111111-1111-4111-8111-111111111111";
 const BRUNO = "99999999-9999-4999-8999-999999999999";
 const VIEWER = "77777777-7777-4777-8777-777777777777";
+const CARLA = "33333333-3333-4333-8333-333333333333";
 
 function sessao(papel: Role) {
   const user: AuthUser = {
@@ -87,6 +88,7 @@ const EQUIPE = {
   user_organizations: [
     { user_id: ANA, role: "agent" },
     { user_id: BRUNO, role: "manager" },
+    { user_id: CARLA, role: "agent" },
     { user_id: VIEWER, role: "viewer" },
   ],
   attendant_availability: [
@@ -95,8 +97,20 @@ const EQUIPE = {
       is_available: true,
       capacity: 5,
       schedule: { timezone: "America/Sao_Paulo", windows: [] },
-      last_heartbeat_at: "2026-08-04T12:00:00Z",
       updated_at: "2026-08-04T12:00:00Z",
+      // Sinal de presença FRESCO: a Ana tem a tela aberta agora.
+      last_heartbeat_at: new Date().toISOString(),
+    },
+    {
+      // O Bruno está de plantão, mas sem sinal de tela — a linha que a issue
+      // #996 existe para o operador poder ver (as duas coisas na mesma linha,
+      // sem uma apagar a outra).
+      user_id: BRUNO,
+      is_available: true,
+      capacity: 5,
+      schedule: { timezone: "America/Sao_Paulo", windows: [] },
+      updated_at: "2026-08-04T12:00:00Z",
+      last_heartbeat_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
     },
   ],
   conversations: [{ assigned_to_user_id: ANA }, { assigned_to_user_id: ANA }],
@@ -120,6 +134,14 @@ describe("GET /api/v1/attendants/availability", () => {
 
     // O contrato de `AttendantAvailability` (hooks/team/useAttendants.ts). Um
     // campo a menos aqui é uma coluna vazia na tela, sem erro nenhum.
+    //
+    // ⚠️ `last_heartbeat_at` e `present` ENTRARAM (issue #996). A coluna tinha
+    // saído do fio por não ter leitor do outro lado — não havia emissor de
+    // presença nenhum, então entregá-la à tela era campo sem sentido. Agora há
+    // emissor (`POST /api/v1/attendants/presence`), há leitor (o selo de
+    // presença na tela Equipe) e há leitor não-tela
+    // (`crm_list_available_attendants`), e o que a tela consome é `present` —
+    // derivado no SERVIDOR com o prazo de `lib/atendimento/presenca.ts`.
     expect(Object.keys(body.data[0] ?? {}).sort()).toEqual(
       [
         "capacity",
@@ -128,12 +150,50 @@ describe("GET /api/v1/attendants/availability", () => {
         "is_available",
         "last_heartbeat_at",
         "name",
+        "present",
         "role",
         "schedule",
         "updated_at",
         "user_id",
       ].sort(),
     );
+  });
+
+  it("presença é derivada na leitura, e NÃO mexe na decisão de plantão", async () => {
+    sessao("agent");
+    vi.mocked(createAdminClient).mockReturnValue(
+      fazerAdmin(EQUIPE) as unknown as ReturnType<typeof createAdminClient>,
+    );
+
+    const body = (await (await chamar()).json()) as {
+      data: Array<{
+        user_id: string;
+        present: boolean;
+        is_available: boolean;
+        last_heartbeat_at: string | null;
+      }>;
+    };
+
+    const ana = body.data.find((r) => r.user_id === ANA);
+    const bruno = body.data.find((r) => r.user_id === BRUNO);
+    const carla = body.data.find((r) => r.user_id === CARLA);
+
+    // Sinal fresco ⇒ presente; sinal de uma hora atrás ⇒ não presente. O prazo
+    // mora num lugar só (`lib/atendimento/presenca.ts`), e é o servidor que o
+    // aplica: a tela lê o booleano, não recalcula a conta.
+    expect(ana?.present).toBe(true);
+    expect(bruno?.present).toBe(false);
+
+    // E as duas metades convivem: estar de plantão não é ter sinal, e ter sinal
+    // não é estar de plantão. O Bruno está de plantão sem sinal de tela; a Ana
+    // tem sinal e plantão. Nenhum dos dois vira um do outro aqui.
+    expect(bruno?.is_available).toBe(true);
+    expect(ana?.is_available).toBe(true);
+
+    // Quem nunca abriu a tela logado não tem carimbo nenhum: `null`, e não uma
+    // data inventada. A tela mostra isso como "sem sinal de tela".
+    expect(carla?.last_heartbeat_at).toBeNull();
+    expect(carla?.present).toBe(false);
   });
 
   it("viewer não é atendente e some do roster; a carga é contada por dono", async () => {
@@ -145,13 +205,13 @@ describe("GET /api/v1/attendants/availability", () => {
     const body = (await (await chamar()).json()) as {
       data: Array<{ user_id: string; current_load: number; capacity: number | null }>;
     };
-    expect(body.data.map((r) => r.user_id).sort()).toEqual([ANA, BRUNO].sort());
+    expect(body.data.map((r) => r.user_id).sort()).toEqual([ANA, BRUNO, CARLA].sort());
 
     const ana = body.data.find((r) => r.user_id === ANA);
     expect(ana?.current_load).toBe(2);
     // Quem nunca configurou disponibilidade vem com capacidade null — é "não
     // configurado", não "capacidade zero", e a tela mostra os dois diferente.
-    expect(body.data.find((r) => r.user_id === BRUNO)?.capacity).toBeNull();
+    expect(body.data.find((r) => r.user_id === CARLA)?.capacity).toBeNull();
   });
 
   it("viewer é barrado antes de qualquer consulta", async () => {

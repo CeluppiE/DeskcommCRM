@@ -147,10 +147,12 @@ plataforma** (`meta_ads`, o vocabulário que a 0164 já criou para a atribuiçã
 importa o transporte. Provado por construção: plantar `graph.facebook.com` em
 `lib/conversoes/` reprova o `pnpm lint:channels`.
 
-E o invariante 4 vale igual neste eixo. `google_ads` está **declarado sem transporte** no
-registro — não ausente. A lacuna é anterior: sem extrator de `gclid` não há clique capturado
-para reportar. Declarada, ela vira `skipped: 'plataforma_sem_transporte'` no livro-razão, que
-a tela mostra; omitida, viraria `undefined` e o chamador a trataria como bug.
+E o invariante 4 vale igual neste eixo. Uma plataforma do vocabulário que ainda não tem
+transporte fica **declarada no registro com `null`** — não ausente. Declarada, ela vira
+`skipped: 'plataforma_sem_transporte'` no livro-razão, que a tela mostra; omitida, viraria
+`undefined` e o chamador a trataria como bug. Hoje nenhuma está nesse estado — `meta_ads` e
+`google_ads` têm transporte (o do Google desde as migrations 0306/0307); para conferir sem
+confiar nesta linha: `grep -n "TRANSPORTES" -A4 lib/plataformas-de-anuncio/registry.ts`.
 
 ---
 

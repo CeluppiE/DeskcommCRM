@@ -60,6 +60,8 @@ let escritas: Array<{ tabela: string; patch: unknown; filtros: Array<[string, un
 let inseridas: Array<{ tabela: string; linha: Record<string, unknown> }>;
 /** O que cada tabela pediu em `.select(...)` — a resposta da rota é o que ela seleciona. */
 let selecionadas: Array<{ tabela: string; colunas: string }>;
+/** Todo `.eq()` de leitura, por tabela — o filtro é o que decide QUAL linha volta. */
+let filtrosLidos: Array<{ tabela: string; coluna: string; valor: unknown }>;
 
 function dubleSupabase() {
   return {
@@ -77,7 +79,8 @@ function dubleSupabase() {
         return cadeia;
       };
       cadeia.eq = (coluna: string, valor: unknown) => {
-        filtrosDaEscrita?.push([coluna, valor]);
+        if (filtrosDaEscrita) filtrosDaEscrita.push([coluna, valor]);
+        else filtrosLidos.push({ tabela, coluna, valor });
         return cadeia;
       };
       cadeia.update = (patch: unknown) => {
@@ -146,6 +149,7 @@ beforeEach(() => {
   escritas = [];
   inseridas = [];
   selecionadas = [];
+  filtrosLidos = [];
   autorizadoComo(EU);
   // ⚠️ CONSENTIMENTO DA ORGANIZAÇÃO, e ele é PRÉ-CONDIÇÃO desde que
   // `exigirVozLigada` ganhou chamadores. Sem esta linha, `POST /voice/calls`
@@ -490,6 +494,18 @@ describe("só quem está na linha desliga", () => {
     expect(wacalls.endCall).toHaveBeenCalledTimes(1);
   });
 
+  it("ligação que JÁ acabou: 204 sem pedir ao serviço de voz e sem gravar encerramento falso", async () => {
+    // Produção, 2026-09-15: o celular desligou, o painel ficou preso, e o clique
+    // 66 s depois gravou dois `voice.call_ended` atribuindo ao atendente o fim
+    // de uma ligação que o cliente tinha encerrado.
+    const { audit } = await import("@/lib/audit");
+    respostas["voice_calls"] = chamadaNoBanco({ owner_user_id: EU, status: "ended" });
+    const res = await desligar();
+    expect(res.status).toBe(204);
+    expect(wacalls.endCall).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+
   it("colega da mesma organização NÃO derruba a ligação alheia", async () => {
     respostas["voice_calls"] = chamadaNoBanco({ owner_user_id: COLEGA, created_by: COLEGA });
     const res = await desligar();
@@ -508,6 +524,32 @@ describe("só quem está na linha desliga", () => {
     const res = await desligar();
     expect(res.status).toBe(403);
     expect(wacalls.endCall).not.toHaveBeenCalled();
+  });
+
+  it("a troca de SDP grava a aba no audit — a pergunta 'quantas abas abriram áudio?' tem resposta", async () => {
+    const { audit } = await import("@/lib/audit");
+    respostas["voice_calls"] = chamadaNoBanco({ owner_user_id: EU });
+    const { POST } = await import("@/app/api/v1/voice/calls/[id]/webrtc/route");
+    const aba = "66666666-6666-4666-8666-666666666666";
+    const res = await POST(
+      new Request("http://x", { method: "POST", body: JSON.stringify({ sdpOffer: "v=0", aba }) }),
+      { params: Promise.resolve({ id: CHAMADA }) },
+    );
+    expect(res.status).toBe(200);
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "voice.call_media_attached", metadata: expect.objectContaining({ aba }) }),
+    );
+  });
+
+  it("aba que não é uuid é recusada antes de falar com o serviço de voz", async () => {
+    respostas["voice_calls"] = chamadaNoBanco({ owner_user_id: EU });
+    const { POST } = await import("@/app/api/v1/voice/calls/[id]/webrtc/route");
+    const res = await POST(
+      new Request("http://x", { method: "POST", body: JSON.stringify({ sdpOffer: "v=0", aba: "<script>" }) }),
+      { params: Promise.resolve({ id: CHAMADA }) },
+    );
+    expect(res.status).toBe(400);
+    expect(wacalls.exchangeWebrtc).not.toHaveBeenCalled();
   });
 
   it("o áudio de uma ligação alheia não abre no navegador de um colega", async () => {
@@ -572,6 +614,26 @@ describe("erro de consulta não é 'nunca ligou'", () => {
     const res = await historico();
     expect(res.status).toBe(200);
     expect((await corpo(res)).data).toHaveLength(1);
+  });
+
+  it("com ?id=, filtra pela ligação — é assim que o painel confere UMA ligação", async () => {
+    respostas["voice_calls"] = { data: [{ id: CHAMADA }], error: null };
+    const { GET } = await import("@/app/api/v1/voice/calls/history/route");
+    const res = await GET(new Request(`http://x/api/v1/voice/calls/history?id=${CHAMADA}&limit=1`));
+    expect(res.status).toBe(200);
+    expect(filtrosLidos).toEqual(
+      expect.arrayContaining([
+        { tabela: "voice_calls", coluna: "organization_id", valor: ORG },
+        { tabela: "voice_calls", coluna: "id", valor: CHAMADA },
+      ]),
+    );
+  });
+
+  it("?id= que não é uuid é 400, sem consultar", async () => {
+    const { GET } = await import("@/app/api/v1/voice/calls/history/route");
+    const res = await GET(new Request("http://x/api/v1/voice/calls/history?id=1%20or%201=1"));
+    expect(res.status).toBe(400);
+    expect(filtrosLidos).toEqual([]);
   });
 
   it("falha de consulta responde erro, e não lista vazia", async () => {

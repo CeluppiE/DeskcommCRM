@@ -5,6 +5,7 @@ import { randomId } from "@/lib/random-id";
 import { toast } from "sonner";
 import { useT } from "@/hooks/i18n/useT";
 
+import { PairingOptions } from "@/components/connections/PairingOptions";
 import { Button } from "@/components/ui/button";
 import { skipWhatsapp, markWhatsappConfigured } from "@/app/actions/onboarding/skipWhatsapp";
 import { CanalOficialClient } from "@/components/connections/CanalOficialClient";
@@ -89,7 +90,7 @@ function rotuloDoEstado(s: Status, t: (texto: string) => string): string {
 function explicacaoDoEstado(s: Status, t: (texto: string) => string): string {
   switch (s) {
     case "SCAN_QR_CODE":
-      return t("Escaneie o código abaixo com o celular que vai atender.");
+      return t("Escolha QR Code ou código de pareamento e confirme no WhatsApp do celular.");
     case "STARTING":
     case "INIT":
       return t("Isso leva alguns segundos. O código aparece aqui sozinho.");
@@ -360,9 +361,9 @@ export function ConnectWhatsappClient({
             <Escolha
               valor="qr"
               atual={forma}
-              titulo={t("Leio um código com o celular")}
+              titulo={t("Uso o WhatsApp no celular")}
               corpo={t(
-                "É assim para quase todo mundo. Você abre o WhatsApp no celular que vai atender e aponta para um código que aparece aqui.",
+                "Conecte com QR Code ou digite um código de pareamento no WhatsApp do celular.",
               )}
               onEscolher={setForma}
             />
@@ -457,7 +458,8 @@ export function ConnectWhatsappClient({
             o cache do navegador a cada novo código — sem ele, a mesma URL não
             recarregaria a imagem quando o WAHA girasse o QR por trás.
           */}
-          {showQr && (
+          {showQr && info.channel_session_id && (
+            <PairingOptions key={info.channel_session_id} sessionId={info.channel_session_id} qr={
             <div className="mt-3 flex flex-col items-center gap-2">
               {qrFailed ? (
                 <p className="text-xs text-muted-foreground">
@@ -477,6 +479,7 @@ export function ConnectWhatsappClient({
                 />
               )}
             </div>
+            } />
           )}
 
           {status === "WORKING" && (

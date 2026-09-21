@@ -42,7 +42,7 @@ describe("splitIntoBubbles", () => {
   });
 
   it("nunca parte um valor em reais no separador de milhar (R$ 10.990) entre bolhas", () => {
-    // Bug real (YADEA, 2026-09-04): "R$ 10.990" virava bolha "R$ 10." + bolha
+    // Bug real em produção (2026-09-04): "R$ 10.990" virava bolha "R$ 10." + bolha
     // "990 no cartão…" — o cliente que via só a primeira lia "R$ 10" como o
     // preço de uma moto de R$ 10.990.
     const out = splitIntoBubbles(

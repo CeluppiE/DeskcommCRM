@@ -14,7 +14,14 @@
  *
  * ─── A fórmula, e por que estes números ─────────────────────────────────────
  *
- *   atraso = clamp(NOTAR + POR_CARACTERE × comprimento, MINIMO, MAXIMO)
+ *   alvo   = clamp(NOTAR + POR_CARACTERE × comprimento, MINIMO, MAXIMO)
+ *   espera = max(0, alvo - tempo que o turno JÁ gastou processando)
+ *
+ * O desconto existe porque o alvo mede o que o CLIENTE espera, não o que o
+ * processo dorme. Quando o turno levou mais tempo do que o alvo para pensar, o
+ * silêncio humano já foi pago com folga — dormir de novo por cima é atraso
+ * puro. O throttle ENTRE bolhas (anti-banimento) é outro mecanismo e segue
+ * intocado: quem o aplica é a cadeia `before_send`, não esta função.
  *
  * `NOTAR` (900ms) é a parcela que NÃO depende do texto: ver a notificação,
  * abrir a conversa, ler o que o cliente escreveu. Ela existe separada do termo
@@ -67,6 +74,8 @@ export function calcularAtrasoHumano(texto: string): number {
 export interface EsperaHumanaArgs {
   /** O corpo que vai sair — é o tamanho DELE que dita a espera. */
   texto: string;
+  /** Tempo já gasto neste turno. Não desconta o throttle ENTRE envios. */
+  processamentoMs?: number;
   sleep: (ms: number) => Promise<void>;
   log: Logger;
   /**
@@ -89,7 +98,14 @@ export interface EsperaHumanaArgs {
  * os segundos de silêncio sem a explicação visual que os torna naturais.
  */
 export async function esperarComoHumano(args: EsperaHumanaArgs): Promise<number> {
-  const ms = calcularAtrasoHumano(args.texto);
+  const gasto = args.processamentoMs ?? 0;
+  const ms = Math.max(
+    0,
+    calcularAtrasoHumano(args.texto) - (Number.isFinite(gasto) ? Math.max(0, gasto) : 0),
+  );
+
+  // O cliente já esperou o alvo: não acrescentar presença decorativa nem sleep.
+  if (ms === 0) return 0;
 
   if (args.sinalizarDigitando !== undefined) {
     try {

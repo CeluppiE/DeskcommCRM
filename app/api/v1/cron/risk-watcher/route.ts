@@ -75,6 +75,11 @@ async function handle(req: NextRequest): Promise<Response> {
   let esfriaram = 0;
   let reativaram = 0;
   let falhas = 0;
+  // Gravações de estado que falharam. O observador parou de abortar a org na
+  // primeira linha ruim e passou a CONTAR a falha — e contagem que ninguém soma
+  // é o silêncio que o `continue` prometia evitar: a org some de
+  // `organizations_com_erro` e nada ocupa o lugar dela.
+  let gravacoesFalhas = 0;
   let propostas = 0;
   let vencidas = 0;
   const comErro: string[] = [];
@@ -86,6 +91,7 @@ async function handle(req: NextRequest): Promise<Response> {
       esfriaram += r.esfriaram;
       reativaram += r.reativaram;
       falhas += r.falhasDeAtividade;
+      gravacoesFalhas += r.falhasDeGravacao;
       propostas += r.propostas;
 
       // O VENCIMENTO RODA NO MESMO TICK, depois da travessia. Se morasse num
@@ -110,6 +116,9 @@ async function handle(req: NextRequest): Promise<Response> {
   if (falhas > 0) {
     logger.warn("[risk-watcher] travessias sem linha na timeline", { falhas, requestId });
   }
+  if (gravacoesFalhas > 0) {
+    logger.warn("[risk-watcher] travessias sem estado gravado", { gravacoesFalhas, requestId });
+  }
 
   return ok(
     {
@@ -120,6 +129,7 @@ async function handle(req: NextRequest): Promise<Response> {
       propostas_criadas: propostas,
       propostas_vencidas: vencidas,
       atividades_falhas: falhas,
+      gravacoes_falhas: gravacoesFalhas,
       organizations_com_erro: comErro.length,
     },
     { requestId },

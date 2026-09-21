@@ -33,10 +33,14 @@ import {
   resolveCaseFromHuman,
   markAwaitingLead,
   escalateCase,
-  buildCaseSummary,
 } from "@/lib/agent-engine/agent/human-cases";
 import { performHumanHandoff } from "@/lib/agent-engine/agent/human-handoff";
 import { avisarLeadDoCrm } from "@/lib/ai/handoff/aviso-ao-lead";
+import {
+  checkpointDoBanco,
+  montarBriefingDaPassagem,
+  type CheckpointParaBriefing,
+} from "@/lib/escalacao/briefing-da-passagem";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getRequestPool } from "@/lib/agent-engine/db/request-pool";
 import { createLogger } from "@/lib/agent-engine/obs/logger";
@@ -153,12 +157,32 @@ export async function POST(req: NextRequest, { params }: RouteParams): Promise<R
     // entra na transação abaixo. Se ele falhar, o caso continua `awaiting_human`
     // e a retentativa se cura sozinha; na ordem inversa sobraria um caso
     // `escalated` que nunca chegou a humano nenhum — e sem volta pela API.
+    // O contexto de quem assume era SÓ o caso — título, resumo e bloqueio. A
+    // spec 15 já mandava levar o resumo do checkpoint da conversa junto, e o
+    // código nunca o fez: quem recebia a passagem de um caso escalado não via
+    // nada do que a IA tinha conversado com o cliente antes de travar.
+    const briefing = montarBriefingDaPassagem({
+      checkpoint: await checkpointDaConversa(pool, org.orgId, contactId),
+      motivo: { codigo: "caso_escalado", texto: body },
+      caso: {
+        titulo: caseRow.title,
+        summary: caseRow.summary,
+        blocker: caseRow.blocker,
+        razaoHumana: body,
+      },
+    });
     await performHumanHandoff(
       pool,
       { tenantId: org.orgId, leadId: contactId, conversationId },
       {
         reason: body,
-        conversationSummary: buildCaseSummary(caseRow),
+        conversationSummary: briefing.body,
+        passagem: {
+          origem: "caso_escalado",
+          motivoCodigo: "caso_escalado",
+          briefing,
+          casoId: caseId,
+        },
         avisoAoLead: aviso,
         log: createLogger(),
       },
@@ -229,4 +253,30 @@ export async function POST(req: NextRequest, { params }: RouteParams): Promise<R
   });
 
   return ok({ status: NEW_STATUS[action] }, { requestId });
+}
+
+/**
+ * O checkpoint durável da conversa, para a montagem do briefing.
+ *
+ * Lido por `pg` porque a rota já tem o pool aberto (o handoff usa o mesmo).
+ * Nunca lança: contexto a menos é pior, contexto nenhum é o estado de hoje —
+ * mas uma passagem que não acontece porque um `select` falhou é inaceitável.
+ */
+async function checkpointDaConversa(
+  pool: ReturnType<typeof getRequestPool>,
+  organizationId: string,
+  contactId: string,
+): Promise<CheckpointParaBriefing | null> {
+  try {
+    const { rows } = await pool.query(
+      `select commitments, objections, next_action, rolling_summary, declaracao
+         from lead_checkpoints
+        where organization_id = $1 and contact_id = $2
+        order by seq desc limit 1`,
+      [organizationId, contactId],
+    );
+    return checkpointDoBanco(rows[0] ?? null);
+  } catch {
+    return null;
+  }
 }

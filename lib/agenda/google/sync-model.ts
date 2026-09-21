@@ -190,6 +190,32 @@ export function compare(base: Base | null, local: Projection, remote: Projection
     groups: dirty,
   };
 }
+/**
+ * O convite do Google para o e-mail da FICHA vai junto de uma ALTERAÇÃO, nunca
+ * sozinho.
+ *
+ * O e-mail da ficha não entra no stamp (`fn_google_projection_stamp` só vê
+ * `guest_email`), então `compare` não enxerga quando ele falta no evento. A
+ * primeira versão deste PR forçava o grupo `guest` também no `converged` — e
+ * `sendUpdates=all` transformava isso em convite: na 1ª sincronização depois
+ * da atualização, TODO compromisso futuro já publicado com e-mail na ficha
+ * mandava e-mail real ao cliente, de uma vez, sem o dono da empresa ter pedido.
+ *
+ * Decisão do dono (doc 36, opção b): o convite vale só para compromisso
+ * criado ou alterado DEPOIS da atualização. Criado sai pelo POST, que já leva
+ * os participantes. Alterado é `publish` — há um grupo local sujo indo para o
+ * Google de qualquer jeito, e o e-mail da ficha vai junto. `converged`, que é
+ * o compromisso antigo que ninguém tocou, fica como está.
+ */
+export function comConviteDaFicha(
+  decision: Comparison,
+  ficha: { temEmail: boolean; eventoJaTemOEmail: boolean; cancelado: boolean },
+): Comparison {
+  if (decision.kind !== "publish") return decision;
+  if (!ficha.temEmail || ficha.eventoJaTemOEmail || ficha.cancelado) return decision;
+  if (decision.groups.includes("guest")) return decision;
+  return { ...decision, groups: [...decision.groups, "guest"] };
+}
 export function checkpoint(
   base: Base | null,
   local: Projection,
@@ -209,7 +235,11 @@ export function checkpoint(
 }
 /** Só grupos locais dirty entram no PATCH; RSVP e participantes externos sobrevivem. */
 export function delta(
-  a: AgendamentoParaGoogle & { guest_email?: string | null },
+  a: AgendamentoParaGoogle & {
+    guest_email?: string | null;
+    contact_email?: string | null;
+    contact_nome?: string | null;
+  },
   e: EventoDoGoogle,
   base: Base | null,
   changed: readonly Group[],
@@ -226,16 +256,33 @@ export function delta(
     if (g === "description") patch.description = body.description ?? "";
     if (g === "location") patch.location = body.location ?? "";
     if (g === "guest") {
-      const wanted = a.guest_email?.trim().toLowerCase();
+      const wantedGuest = a.guest_email?.trim().toLowerCase();
+      const wantedContact = a.contact_email?.trim().toLowerCase();
       const existing = e.attendees ?? [];
       const kept = existing.filter(
         (p) =>
           p.organizer ||
           hash(p.email?.toLowerCase()) !== base?.remote.guest ||
-          p.email?.toLowerCase() === wanted,
+          p.email?.toLowerCase() === wantedGuest,
       );
-      if (wanted && !kept.some((p) => p.email?.toLowerCase() === wanted))
-        kept.push({ email: wanted, responseStatus: "needsAction" });
+      if (wantedGuest && !kept.some((p) => p.email?.toLowerCase() === wantedGuest))
+        kept.push({ email: wantedGuest, responseStatus: "needsAction" });
+      // O e-mail da ficha não entra no hash `guest` (stamp SQL só vê
+      // `guest_email`). Sem esta linha, um compromisso já publicado nunca
+      // ganharia o lead como convidado. ponytail: troca de e-mail na ficha
+      // depois da primeira ida não dispara push sozinha — o teto é o stamp;
+      // upgrade é incluir o e-mail do contato em `fn_google_projection_stamp`.
+      if (
+        wantedContact &&
+        !kept.some((p) => p.email?.toLowerCase() === wantedContact)
+      ) {
+        const convidado: { email: string; responseStatus: "needsAction"; displayName?: string } = {
+          email: wantedContact,
+          responseStatus: "needsAction",
+        };
+        if (a.contact_nome?.trim()) convidado.displayName = a.contact_nome.trim();
+        kept.push(convidado);
+      }
       patch.attendees = kept;
     }
   }

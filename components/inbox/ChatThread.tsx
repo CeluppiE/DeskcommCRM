@@ -10,33 +10,63 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MessageBubble } from "./MessageBubble";
 import { NoteCard } from "./NoteCard";
+import { PassagemCard } from "./PassagemCard";
 import { useMessagesRealtime } from "@/hooks/inbox/useMessagesRealtime";
 import { useConversationNotes } from "@/hooks/inbox/useConversationNotes";
+import { usePassagensDaConversa } from "@/hooks/inbox/usePassagensDaConversa";
+import { useClaimConversation } from "@/hooks/inbox/useClaimConversation";
 import { useDeleteNote } from "@/hooks/inbox/useDeleteNote";
 import { useDebugToggle } from "@/hooks/ai/useDebugToggle";
 import { useActiveOrg, useUser } from "@/hooks/auth/AuthProvider";
 import { ROLE_RANK } from "@/lib/auth/types";
+import { montarCartoesDaPassagem, type CartaoDaPassagem } from "@/lib/escalacao/cartao-da-passagem";
 import type { Message, Note } from "@/lib/types/messaging";
 
 interface Props {
   conversationId: string | null;
   /** Escolher uma mensagem para responder. Sobe até o composer. */
   onResponder?: (m: Message) => void;
+  /**
+   * Quem é o dono da conversa HOJE, e quem é o contato.
+   *
+   * O cartão da passagem precisa dos dois para escolher o gesto: sem dono ele
+   * convida a assumir; com outro dono ele diz quem atende (oferecer "assumir"
+   * ali seria oferecer um gesto que a rota recusa); e o caminho de opt-out leva
+   * à ficha do contato, que é onde mora o bloqueio.
+   *
+   * Opcional para o fio continuar renderizável sem a conversa em mãos — o
+   * cartão então cai no estado mais conservador (nenhum convite).
+   */
+  dono?: { userId: string | null; nome: string | null } | null;
+  contatoId?: string | null;
 }
 
-/** Onda 5.2: union de item do thread — mensagem real ou nota interna (nunca vai ao cliente). */
+/**
+ * Onda 5.2: union de item do thread — mensagem real ou nota interna (nunca vai
+ * ao cliente). A passagem é o TERCEIRO tipo: também não é mensagem, também não
+ * vai ao cliente, e entra no fio pelo mesmo mecanismo.
+ */
 export type ThreadItem =
   | { kind: "message"; ts: string; data: Message }
-  | { kind: "note"; ts: string; data: Note };
+  | { kind: "note"; ts: string; data: Note }
+  | { kind: "passagem"; ts: string; data: CartaoDaPassagem };
 
-/** Intercala mensagens e notas por timestamp asc (puro, sem I/O — testado em thread-merge.test.ts). */
-export function mergeThreadItems(messages: Message[], notes: Note[]): ThreadItem[] {
+/** Intercala mensagens, notas e passagens por timestamp asc (puro, sem I/O — testado em thread-merge.test.ts). */
+export function mergeThreadItems(
+  messages: Message[],
+  notes: Note[],
+  // Opcional porque o fio existe desde antes da passagem, e uma conversa que
+  // nunca saiu do automático não tem nenhuma.
+  passagens: CartaoDaPassagem[] = [],
+): ThreadItem[] {
   const items: ThreadItem[] = [
     ...messages.map((data): ThreadItem => ({ kind: "message", ts: data.sent_at, data })),
     ...notes.map((data): ThreadItem => ({ kind: "note", ts: data.created_at, data })),
+    ...passagens.map((data): ThreadItem => ({ kind: "passagem", ts: data.criadoEm, data })),
   ];
   // Sort estável (Array#sort é estável no V8/Node): empate mantém a ordem de
-  // inserção acima — mensagens antes de notas no mesmo instante.
+  // inserção acima — mensagens antes de notas no mesmo instante, e a passagem
+  // DEPOIS das duas, que é o que aconteceu: ela é consequência da última fala.
   items.sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
   return items;
 }
@@ -47,14 +77,24 @@ function dayLabel(d: Date, t: (texto: string) => string = (texto) => texto, loca
   return format(d, "dd/MM/yyyy", { locale: locale });
 }
 
-export function ChatThread({ conversationId, onResponder }: Props) {
+export function ChatThread({ conversationId, onResponder, dono, contatoId }: Props) {
   const localeDaData = useLocaleDeData();
   const t = useT();
   const q = useMessagesRealtime(conversationId);
   const notes = useConversationNotes(conversationId);
+  const passagens = usePassagensDaConversa(conversationId);
+  const claim = useClaimConversation();
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const paginasVistas = useRef(0);
+  /**
+   * Esta conversa já ancorou no fim ALGUMA vez, com conteúdo na tela?
+   *
+   * Enquanto for `false`, a abertura ainda não terminou — e a guarda de
+   * distância (que existe para não arrancar quem está lendo o histórico) não
+   * pode valer, porque ninguém rolou nada ainda. Ver o efeito abaixo.
+   */
+  const jaAncorou = useRef(false);
   const activeOrg = useActiveOrg();
   const currentUser = useUser();
   const deleteNote = useDeleteNote(conversationId ?? "");
@@ -76,9 +116,19 @@ export function ChatThread({ conversationId, onResponder }: Props) {
    */
   const porId = useMemo(() => new Map(messages.map((m) => [m.id, m])), [messages]);
 
+  const cartoes: CartaoDaPassagem[] = useMemo(
+    () =>
+      montarCartoesDaPassagem(passagens, {
+        usuarioId: currentUser.id,
+        donoId: dono?.userId ?? null,
+        donoNome: dono?.nome ?? null,
+      }),
+    [passagens, currentUser.id, dono?.userId, dono?.nome],
+  );
+
   const items: ThreadItem[] = useMemo(
-    () => mergeThreadItems(messages, notes),
-    [messages, notes],
+    () => mergeThreadItems(messages, notes, cartoes),
+    [messages, notes, cartoes],
   );
 
   const paginas = q.data?.pages.length ?? 0;
@@ -87,6 +137,7 @@ export function ChatThread({ conversationId, onResponder }: Props) {
   // próxima conversa seria confundida com um "carregar mais antigas".
   useEffect(() => {
     paginasVistas.current = 0;
+    jaAncorou.current = false;
   }, [conversationId]);
 
   // Rola ao fim na primeira carga e quando chega mensagem/nota nova — mas NÃO
@@ -101,19 +152,43 @@ export function ChatThread({ conversationId, onResponder }: Props) {
   // A segunda guarda cobre o outro caso: se o usuário rolou para ler o
   // histórico, mensagem nova não deve arrancá-lo de onde estava.
   useEffect(() => {
-    const primeiraCarga = paginasVistas.current === 0;
-    const carregouAntigas = !primeiraCarga && paginas > paginasVistas.current;
+    const carregouAntigas = paginasVistas.current !== 0 && paginas > paginasVistas.current;
     paginasVistas.current = paginas;
     if (carregouAntigas) return;
 
-    // A guarda de distância NÃO vale na primeira carga: ali o scroller ainda
-    // está no topo por definição, e tratá-lo como "usuário lendo o histórico"
-    // abriria a conversa na mensagem mais antiga da página em vez da mais nova
-    // (medido: a thread abria em msg#15 em vez de msg#64).
-    if (!primeiraCarga) {
+    /**
+     * A guarda de distância NÃO vale ENQUANTO A ABERTURA NÃO TERMINOU.
+     *
+     * A versão anterior chamava isso de "primeira carga" e media pelo contador
+     * de PÁGINAS da consulta de mensagens — e isso é um proxy, não a coisa. O
+     * fio não é só mensagens: ele intercala notas e **cartões de passagem**, que
+     * chegam de consultas próprias e podem resolver DEPOIS da primeira pintura.
+     *
+     * Medido em 2026-09-18, na prova em tela do cartão "Por que a IA passou para
+     * você", numa conversa SEM mensagens (que é o normal logo depois de uma
+     * passagem): a primeira pintura vem vazia e já consome a "primeira carga";
+     * quando o cartão chega, o efeito roda de novo, a guarda passa a valer, e o
+     * scroller está no topo com o conteúdo recém-nascido embaixo — distância
+     * bem maior que 120px. A guarda concluía "o usuário está lendo o histórico"
+     * de um usuário que não tinha rolado nada, e devolvia sem rolar.
+     *
+     * O efeito visível é o pior possível para esta tela: quem assume vê o
+     * cabeçalho do cartão e o motivo, e o convite **"Assumir e responder" fica
+     * abaixo da dobra do fio** — o gesto existe, está montado, é clicável por
+     * programa e ninguém o vê. Medido por ferramenta: botão em y=1008 numa
+     * janela de 720px.
+     *
+     * `jaAncorou` pergunta o que a guarda precisa saber de verdade — "esta
+     * conversa já chegou ao fim alguma vez, com conteúdo na tela?" —, em vez de
+     * inferir isso da paginação de UMA das três fontes do fio.
+     */
+    if (jaAncorou.current) {
       const sc = scrollerRef.current;
       if (sc && sc.scrollHeight - sc.scrollTop - sc.clientHeight > 120) return;
     }
+    // Fio ainda vazio não ancora nada: marcar aqui faria a guarda valer a partir
+    // da pintura em branco, que é exatamente o defeito acima.
+    if (items.length > 0) jaAncorou.current = true;
 
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [items.length, conversationId, paginas]);
@@ -224,7 +299,24 @@ export function ChatThread({ conversationId, onResponder }: Props) {
               </span>
             </div>
             {g.items.map((item) =>
-              item.kind === "note" ? (
+              item.kind === "passagem" ? (
+                <PassagemCard
+                  key={`passagem-${item.data.id}`}
+                  cartao={item.data}
+                  contatoId={contatoId ?? null}
+                  assumindo={claim.isPending}
+                  // O MESMO gesto do cabeçalho — uma rota, um efeito. Uma
+                  // segunda maneira de assumir seria uma segunda chance de os
+                  // dois caminhos divergirem sobre o que "assumir" faz.
+                  onAssumir={() =>
+                    conversationId &&
+                    claim.mutate({
+                      conversation_id: conversationId,
+                      expected_assignee: dono?.userId ?? null,
+                    })
+                  }
+                />
+              ) : item.kind === "note" ? (
                 <NoteCard
                   key={`note-${item.data.id}`}
                   note={item.data}

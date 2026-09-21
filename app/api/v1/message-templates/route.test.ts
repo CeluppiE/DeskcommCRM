@@ -62,9 +62,23 @@ function banco() {
         }),
       };
     }
-    // idempotency_keys — a mesma cadeia que o helper usa.
-    let filtros: Array<[string, unknown]> = [];
+    // idempotency_keys — a mesma cadeia que o helper usa: leitura, reserva
+    // (`insert`) e recibo terminal / tomada de posse (`update`), este último
+    // aguardado direto ou por `.select().maybeSingle()`.
+    const filtros: Array<[string, unknown]> = [];
     let maiorQue: [string, unknown] | null = null;
+    let patch: Linha | null = null;
+    const casam = () =>
+      recibos.filter(
+        (r) =>
+          filtros.every(([c, v]) => r[c] === v) &&
+          (maiorQue ? String(r[maiorQue[0]]) > String(maiorQue[1]) : true),
+      );
+    const atualizar = () => {
+      const alvos = casam();
+      for (const alvo of alvos) Object.assign(alvo, patch);
+      return alvos;
+    };
     const builder = {
       select: () => builder,
       eq: (coluna: string, valor: unknown) => {
@@ -75,20 +89,24 @@ function banco() {
         maiorQue = [coluna, valor];
         return builder;
       },
-      maybeSingle: async () => ({
-        data:
-          recibos.find(
-            (r) =>
-              filtros.every(([c, v]) => r[c] === v) &&
-              (maiorQue ? String(r[maiorQue[0]]) > String(maiorQue[1]) : true),
-          ) ?? null,
-        error: null,
-      }),
+      maybeSingle: async () => {
+        if (patch) {
+          const alvos = atualizar();
+          return { data: alvos[0] ? { id: alvos[0].id } : null, error: null };
+        }
+        return { data: casam()[0] ?? null, error: null };
+      },
       insert: async (linha: Linha) => {
-        recibos.push(linha);
-        filtros = [];
-        maiorQue = null;
+        recibos.push({ id: `recibo-${++seq}`, ...linha });
         return { error: null };
+      },
+      update: (valores: Linha) => {
+        patch = valores;
+        return builder;
+      },
+      then: (aoResolver?: ((v: unknown) => unknown) | null) => {
+        atualizar();
+        return Promise.resolve({ data: null, error: null }).then(aoResolver ?? ((v) => v));
       },
     };
     return builder;

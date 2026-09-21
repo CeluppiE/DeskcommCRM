@@ -46,6 +46,10 @@ import { ToolPicker } from "./ToolPicker";
 import { TriggerEditor, type TriggerValue } from "./TriggerEditor";
 import { HandoffKeywordsInput } from "./HandoffKeywordsInput";
 import { FollowupFlowPicker } from "./FollowupFlowPicker";
+import {
+  FollowupWindowEditor,
+  type FollowupWindowValue,
+} from "./FollowupWindowEditor";
 import { PainelDoOperador } from "./PainelDoOperador";
 import { PainelDeSeguranca } from "./PainelDeSeguranca";
 import { BasesDoAgente, type MaterialDoAcervo } from "./BasesDoAgente";
@@ -75,6 +79,18 @@ import type { FunilDaResposta } from "@/hooks/pipelines/usePipelines";
  * de quem monta a lista (é lá que mora o filtro de canal arquivado).
  */
 export type { ChannelSessionLite };
+
+/**
+ * O id que liga o botão "Publicar" ao TEXTO que diz por que ele está desabilitado.
+ *
+ * O motivo vivia só no `title` de um span: aparecia com o ponteiro parado em
+ * cima. Em tela de toque não existe hover — nunca aparecia —, e o botão
+ * desabilitado nem entra na ordem do Tab, então quem navega de teclado também
+ * não sabia o que faltava para o agente entrar no ar. Além do texto na tela, o
+ * `aria-describedby` do botão aponta para cá: quem chega pelo leitor de tela
+ * ouve o motivo junto do rótulo, sem depender de hover.
+ */
+const ID_DO_MOTIVO_DO_PUBLICAR = "motivo-do-publicar";
 
 interface BaseProps {
   credentials: CredentialRow[];
@@ -166,9 +182,15 @@ interface FormState {
 interface FollowupValue {
   enabled: boolean;
   flow_pointer_ids: string[];
+  /** Ausente em versões antigas; null = sem janela própria. */
+  send_window?: FollowupWindowValue | null;
 }
 
-const DEFAULT_FOLLOWUP: FollowupValue = { enabled: false, flow_pointer_ids: [] };
+const DEFAULT_FOLLOWUP: FollowupValue = {
+  enabled: false,
+  flow_pointer_ids: [],
+  send_window: null,
+};
 
 const DEFAULT_TRIGGER: TriggerValue = {
   events: ["message"],
@@ -184,8 +206,9 @@ const DEFAULT_TRIGGER: TriggerValue = {
 function buildState(args: {
   agent?: AgentRow;
   version: AgentVersionRow | null;
+  t: (texto: string) => string;
 }): FormState {
-  const { agent, version } = args;
+  const { agent, version, t } = args;
   return {
     name: agent?.name ?? "",
     description: agent?.description ?? "",
@@ -196,9 +219,12 @@ function buildState(args: {
     // reabrir o agente mostraria o campo em branco e pediria para escolher de novo.
     credential_id: version ? (version.credential_id ?? CHAVE_DA_INSTALACAO) : "",
     channel_session_id: version?.channel_session_id ?? "",
+    // O DEFAULT vira o prompt real do agente se ninguém editar — por isso é
+    // traduzido de verdade (não só a interface): em espanhol ele instrui a IA
+    // a responder em espanhol, não em pt-BR.
     system_prompt:
       version?.system_prompt ??
-      "Você é um atendente. Responda de forma educada e clara, em pt-BR.",
+      t("Você é um atendente. Responda de forma educada e clara, em pt-BR."),
     tool_ids: version?.tool_ids ?? [],
     trigger_config: (version?.trigger_config as unknown as TriggerValue) ?? DEFAULT_TRIGGER,
     max_steps: version?.max_steps ?? 10,
@@ -296,10 +322,10 @@ export function AgentForm(props: Props) {
       // O fallback existe para chamadores que ainda não a passam; sem ele, um
       // agente pausado abriria no texto padrão e o prompt "sumiria".
       const ref = props.base ?? props.draft ?? props.published;
-      return buildState({ agent: props.agent, version: ref });
+      return buildState({ agent: props.agent, version: ref, t });
     }
-    return buildState({ version: null });
-  }, [isEdit, props]);
+    return buildState({ version: null, t });
+  }, [isEdit, props, t]);
 
   const [form, setForm] = React.useState<FormState>(baseline);
   const [saving, setSaving] = React.useState(false);
@@ -601,6 +627,7 @@ export function AgentForm(props: Props) {
                 variant="default"
                 onClick={() => setConfirmOpen(true)}
                 disabled={disabled || publishBlockReason !== null}
+                aria-describedby={publishBlockReason ? ID_DO_MOTIVO_DO_PUBLICAR : undefined}
               >
                 {publishing
                   ? t("Publicando…")
@@ -612,6 +639,27 @@ export function AgentForm(props: Props) {
           ) : null}
         </div>
       </div>
+
+      {/*
+        O MOTIVO NA TELA, não só no `title` (issue #951).
+
+        O `title` do span acima continua ali para quem usa mouse, mas ele é
+        hover: em tela de toque não existe, e um botão desabilitado nem entra na
+        ordem do Tab — a explicação do bloqueio ficava inalcançável justamente
+        para quem mais precisa dela. Aqui o MESMO motivo (`publishBlockReason`) é
+        texto da tela, e o `aria-describedby` do botão o anuncia junto do rótulo.
+      */}
+      {isEdit && publishBlockReason ? (
+        <p
+          id={ID_DO_MOTIVO_DO_PUBLICAR}
+          data-testid={ID_DO_MOTIVO_DO_PUBLICAR}
+          role="status"
+          aria-live="polite"
+          className="-mt-2 text-xs text-muted-foreground"
+        >
+          {publishBlockReason}
+        </p>
+      ) : null}
 
       {/*
         NAVEGAÇÃO POR PAPEL (spec 16 §6). Um form só, um save só — os papéis são
@@ -1149,6 +1197,13 @@ export function AgentForm(props: Props) {
                 "Os fluxos abaixo só entram em ação para um cliente se este agente estiver publicado com follow-up habilitado.",
               )}
             </p>
+            <FollowupWindowEditor
+              value={form.followup.send_window ?? null}
+              onChange={(send_window) =>
+                patch({ followup: { ...form.followup, send_window } })
+              }
+              disabled={disabled || !form.followup.enabled}
+            />
             <FollowupFlowPicker
               value={form.followup.flow_pointer_ids}
               onChange={(ids) =>

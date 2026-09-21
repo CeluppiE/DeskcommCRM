@@ -23,9 +23,24 @@ export function entregarAviso(input: EntregarAvisoInput): void {
   const idioma = idiomaAtual();
   const title = traduzir(input.title, idioma);
   const body = traduzir(input.body, idioma);
+  const href = input.href;
 
   if (canalLigado(input.category, "in_app")) {
-    toast(title, { description: body });
+    // O aviso já carrega o destino (`href`); sem ação, o toast dizia "nova
+    // mensagem" e deixava a pessoa procurando a conversa na mão. Com ação, ele
+    // leva direto para lá. Sem destino, não inventa botão: um botão morto é
+    // pior que nenhum.
+    toast(title, {
+      description: body,
+      action: href
+        ? {
+            label: traduzir("Abrir conversa", idioma),
+            onClick: () => {
+              window.location.assign(href);
+            },
+          }
+        : undefined,
+    });
   }
   if (canalLigado(input.category, "push")) {
     emitNotification({

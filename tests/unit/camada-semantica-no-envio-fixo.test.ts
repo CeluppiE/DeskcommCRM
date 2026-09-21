@@ -41,9 +41,14 @@ import type { JobRow } from "@/lib/agent-engine/queue/queue";
 
 // O parâmetro é DECLARADO para que `mock.calls[0][0]` exista para o typechecker:
 // sem ele o vitest infere a tupla vazia e o `pnpm typecheck` reprova o arquivo.
+// `outcome` com `kind`, e não `{}`: a cadeia real SEMPRE devolve um desfecho
+// nomeado, e quem chama passou a decidir por ele (`sent`/`deferred`/`skipped`).
+// Um dublê sem `kind` fazia o chamador cair fora do switch e devolver
+// `undefined` — um estado que a produção não tem, e que mascarava justamente o
+// desfecho que este teste não exercita.
 const runBeforeSend = vi.fn(async (_args: Record<string, unknown>) => ({
   status: "sent",
-  outcome: {},
+  outcome: { kind: "sent" },
   trace: [],
 }));
 vi.mock("@/lib/agent-engine/guardrails/before-send", () => ({ runBeforeSend }));

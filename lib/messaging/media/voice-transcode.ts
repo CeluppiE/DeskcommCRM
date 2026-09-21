@@ -39,8 +39,21 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-/** O que o WhatsApp aceita como nota de voz. */
-export const VOICE_MIME = "audio/ogg";
+/**
+ * O que o WhatsApp aceita como nota de voz.
+ *
+ * O `codecs=opus` NÃO é enfeite: a doc do canal oficial lista
+ * `audio/ogg (OPUS codecs only; base audio/ogg not supported)`. Guardar o
+ * arquivo como `audio/ogg` puro faz o Storage servir esse Content-Type, e a
+ * plataforma recusa o download com o MESMO `131053` que o cabeçalho deste
+ * arquivo descreve — a conversão acertava o container e errava a etiqueta.
+ *
+ * O defeito só aparecia no Chrome, e é por isso que passou: o Firefox grava
+ * direto em `audio/ogg;codecs=opus` (`AudioRecorder.tsx`, `PREFERRED_MIMES`),
+ * não passa por aqui, e a nota de voz dele sempre chegou. Esta é literalmente a
+ * mesma string que o browser usa quando sabe gravar ogg.
+ */
+export const VOICE_MIME = "audio/ogg;codecs=opus";
 
 /** Teto de segurança: nota de voz é curta, e acima disto é outra coisa. */
 const MAX_BYTES = 16 * 1024 * 1024;

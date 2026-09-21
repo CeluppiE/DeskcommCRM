@@ -5,6 +5,8 @@
  *   - banco zerado do baseline.sql (Supabase local pg17)
  *   - primeiro usuário criado via scripts/bootstrap-owner.ts (como o install.sh)
  *   - WAHA ativo, Redis local, RESEND_API_KEY VAZIO (realidade da VPS fresca)
+ *   - SEM chave de IA na instalação (o install.sh deixa pular com Enter; o
+ *     .env.e2e não traz nenhuma) — J1.7 e J1.24 afirmam o agente em rascunho
  *   - app em produção (next build + next start) na E2E_PORT
  *
  * Casos: J1.1–J1.13 do docs/testing/user-journey-map.md. Tudo pelo frontend;
@@ -15,6 +17,8 @@ import * as path from "node:path";
 
 import { test, expect, type Page } from "@playwright/test";
 import { createClient } from "@supabase/supabase-js";
+
+import { PROVEDOR_POR_ID } from "@/lib/ai/pontos/provedores";
 
 import { generateTotp, msUntilNextTotpWindow } from "./utils/totp";
 
@@ -224,49 +228,27 @@ test.describe("J1 — onboarding do dono numa instalação fresca", () => {
     await snap(page, "j1.6-setup-ai");
   });
 
-  test("J1.7 setup IA: cria agente default e avança", async ({ page }) => {
+  test("J1.7 setup IA sem chave: cria o agente como rascunho, diz o que falta e deixa seguir", async ({ page }) => {
+    // ⚠️ ESTE CASO MUDOU DE DESFECHO, e a razão é o ambiente, não o produto.
+    // Ele afirmava "cria, PUBLICA e vai para /onboarding/testar" — o que só é
+    // verdade numa instalação que já tem chave de IA. O `install.sh` deixa pular
+    // a chave com Enter, e o `.env.e2e` (o ambiente desta suíte, local e CI) não
+    // traz nenhuma. Medido no run 35150134046 (parte 4 do PR #983, a primeira
+    // vez que esta spec rodou no CI): o clique em "Criar e continuar" devolve
+    // `publish_blocked_by: "chave"`, a tela mostra o aviso de rascunho com
+    // "Continuar sem publicar", e o `waitForURL(/testar/)` estourou 20s parado
+    // nesse aviso. O J1.24 logo abaixo já afirmava "rascunho" na tela de testar
+    // — os dois casos descreviam instalações diferentes.
     await login(page);
     await page.waitForURL(/\/onboarding\/setup-ai/);
 
     await page.locator("#name").fill("Tomik QA");
     await page.getByRole("button", { name: /criar e continuar/i }).click();
-    // O wizard ganhou um passo entre treinar e chamar o time: ver o
-    // funcionário atender. Terminar sem nunca tê-lo visto fazer nada era como
-    // o onboarding entregava a pessoa num inbox vazio.
-    await page.waitForURL(/\/onboarding\/testar/, { timeout: 20_000 });
-    await snap(page, "j1.7-testar");
 
     // `eq(organization_id)` pela MESMA razão de `orgRow()` acima: sem ele, este
-    // `select` lê os agentes de TODAS as organizações do banco, e o
-    // `expect(length).toBe(1)` deixa de medir "o wizard criou um agente" e passa
-    // a medir "o banco inteiro tem um agente" — que é falso em qualquer
-    // instalação com uso, e vermelho por motivo que não é o desta jornada.
+    // `select` lê de TODAS as organizações do banco, e as asserções deixam de
+    // medir a instalação que o wizard acabou de configurar.
     const orgDoDono = await orgRow();
-    const { data: agents } = await svc
-      .from("ai_agents")
-      .select("id, name, is_active, is_default, published_version_id")
-      .eq("organization_id", orgDoDono.id);
-    expect(agents?.length).toBe(1);
-    expect(agents?.[0]).toMatchObject({ name: "Tomik QA", is_active: true, is_default: true });
-
-    // A VERSÃO, e não só o agente. Este caso olhava apenas `ai_agents` — e foi
-    // por isso que a regressão do provedor nasceu invisível: o agente ficava
-    // bonito na tabela enquanto a versão publicada apontava para uma empresa de
-    // IA que a instalação não contratou, morrendo em toda mensagem.
-    const { data: versoes } = await svc
-      .from("ai_agent_versions")
-      .select("provider, model, status, channel_session_id")
-      .eq("agent_id", agents?.[0]?.id ?? "");
-    expect(versoes?.length).toBe(1);
-    expect(versoes?.[0]?.status).toBe("published");
-
-    // E o provedor da versão é o MESMO que a instalação escolheu. Comparar com
-    // uma string fixa aqui não provaria nada: o teste passaria justamente na
-    // instalação Anthropic, que é a única em que o defeito não aparecia.
-    // A SEGUNDA instância de "a primeira organização" neste mesmo arquivo. Aqui
-    // ela não apaga nada — faz pior de um jeito silencioso: `escolhido` vira o
-    // provedor de OUTRA organização, e a asserção abaixo passa ou reprova sem
-    // relação com a instalação que o wizard acabou de configurar.
     const { data: org } = await svc
       .from("organizations")
       .select("settings")
@@ -274,18 +256,98 @@ test.describe("J1 — onboarding do dono numa instalação fresca", () => {
       .maybeSingle();
     const escolhido =
       (org?.settings as { llm?: { provider?: string } } | null)?.llm?.provider ?? "anthropic";
-    expect(versoes?.[0]?.provider).toBe(escolhido);
 
-    // O modelo veio do catálogo DAQUELE provedor — nunca um id emprestado.
-    const { data: curado } = await svc
-      .from("ai_models")
-      .select("model_id")
-      .eq("provider", escolhido)
-      .eq("is_default_for_provider", true)
-      .is("deprecated_at", null)
-      .limit(1)
+    // O aviso nomeia a empresa de IA que a INSTALAÇÃO escolheu. É o que sobra,
+    // sem chave, da guarda da regressão do provedor: o passo publicava
+    // "anthropic" literal para quem tinha escolhido outra, e o `provider` deste
+    // aviso sai da mesma leitura de `settings.llm.provider` que a versão usaria.
+    // Comparar com uma string fixa não provaria nada — passaria justamente na
+    // instalação Anthropic, a única em que o defeito não aparecia.
+    const aviso = page.getByRole("alert").filter({ hasText: /rascunho/i });
+    await expect(aviso).toBeVisible({ timeout: 20_000 });
+    await expect(aviso).toContainText(PROVEDOR_POR_ID.get(escolhido)?.rotulo ?? escolhido);
+    await snap(page, "j1.7-sem-chave-rascunho");
+
+    // Sem esta saída o passo é um beco: o diagnóstico está certo e nenhum botão.
+    await aviso.getByRole("button", { name: /continuar sem publicar/i }).click();
+    // Depois de treinar vem "Onde ele organiza" (J1.26, `/onboarding/funil`),
+    // e só então "Ver ele atender". Medido no run 35401941259 (parte 4): o
+    // clique avançou para `/onboarding/funil` e este `waitForURL` esperava
+    // `/testar`, o passo seguinte. O produto seguiu; a spec é que pulava um passo.
+    await page.waitForURL(/\/onboarding\/funil/, { timeout: 20_000 });
+    await snap(page, "j1.7-funil");
+
+    const { data: agents } = await svc
+      .from("ai_agents")
+      .select("id, name, is_active, is_default, published_version_id")
+      .eq("organization_id", orgDoDono.id);
+    expect(agents?.length).toBe(1);
+    expect(agents?.[0]).toMatchObject({
+      name: "Tomik QA",
+      is_active: true,
+      is_default: true,
+      published_version_id: null,
+    });
+
+    // A VERSÃO, e não só o agente: sem chave utilizável nenhuma é gravada. Uma
+    // versão "publicada" aqui seria o agente que morre em toda mensagem pedindo
+    // uma chave que a instalação nunca teve.
+    const { data: versoes } = await svc
+      .from("ai_agent_versions")
+      .select("id")
+      .eq("agent_id", agents?.[0]?.id ?? "");
+    expect(versoes?.length).toBe(0);
+
+    // O passo aconteceu mesmo sem publicar — é o que faz o wizard seguir em
+    // vez de reabrir "Treine seu funcionário".
+    const depois = await orgRow();
+    expect(
+      (depois.onboarding_state as { ai?: { agent_id?: string } } | null)?.ai?.agent_id,
+    ).toBe(agents?.[0]?.id);
+  });
+
+  test("J1.26 onde ele organiza: sem funcionário no ar, oferece um quadro pronto e deixa seguir", async ({ page }) => {
+    // Numa instalação sem chave de IA o agente ficou rascunho (J1.7), então a
+    // sugestão de quadro, que sai do MESMO modelo que vai atender, não tem a
+    // quem pedir. O passo não pode virar beco: diz o porquê, começa de um
+    // modelo pronto e deixa seguir.
+    await login(page);
+    await page.waitForURL(/\/onboarding\/funil/, { timeout: 20_000 });
+    await expect(page.getByRole("heading", { name: /onde ele organiza seus clientes/i })).toBeVisible();
+    await expect(page.getByText(/ainda não está no ar/i)).toBeVisible();
+    await expect(page.getByText(/isso não trava nada/i)).toBeVisible();
+
+    // O que a tela mostra é o que tem de ser gravado: lido da própria tela, não
+    // de uma lista fixa, para o caso valer com qualquer modelo pronto.
+    const nomeDoQuadro = await page.getByLabel("Nome do quadro").inputValue();
+    const colunas = await page.getByLabel(/^Nome da coluna \d+$/).evaluateAll((els) =>
+      els.map((e) => (e as HTMLInputElement).value),
+    );
+    expect(nomeDoQuadro.trim()).not.toBe("");
+    expect(colunas.length).toBeGreaterThan(0);
+    await snap(page, "j1.26-funil-sem-ia");
+
+    await page.getByRole("button", { name: /usar este quadro/i }).click();
+    await page.waitForURL(/\/onboarding\/testar/, { timeout: 20_000 });
+
+    const org = await orgRow();
+    const funil = (org.onboarding_state as { funil?: { pipeline_id?: string } } | null)?.funil;
+    expect(funil?.pipeline_id, "o passo do quadro ficou registrado").toBeTruthy();
+    const { data: pipeline } = await svc
+      .from("crm_pipelines")
+      .select("name")
+      .eq("organization_id", org.id)
+      .eq("id", funil?.pipeline_id ?? "")
       .maybeSingle();
-    expect(versoes?.[0]?.model).toBe(curado?.model_id);
+    expect(pipeline?.name).toBe(nomeDoQuadro.trim());
+    const { data: etapas } = await svc
+      .from("crm_stages")
+      .select("name")
+      .eq("organization_id", org.id)
+      .eq("pipeline_id", funil?.pipeline_id ?? "");
+    for (const coluna of colunas) {
+      expect(etapas?.map((e) => e.name), `a coluna "${coluna}" da tela foi gravada`).toContain(coluna.trim());
+    }
   });
 
   test("J1.24 ver ele atender: o wizard não termina sem mostrar o funcionário", async ({ page }) => {
@@ -297,10 +359,21 @@ test.describe("J1 — onboarding do dono numa instalação fresca", () => {
     await page.waitForURL(/\/onboarding\/testar/, { timeout: 20_000 });
     await expect(page.getByRole("heading", { name: /veja ele atender/i })).toBeVisible();
 
-    // O agente desta jornada nasceu SEM canal (o WhatsApp foi pulado em J1.6),
-    // então ficou rascunho — e rascunho não responde. A tela tem de dizer isso
-    // em vez de oferecer um ensaio que nunca funcionaria.
-    await expect(page.getByText(/rascunho/i)).toBeVisible();
+    // O agente desta jornada ficou rascunho — sem versão, porque a instalação
+    // não tem chave de IA (ver J1.7; o canal existe desde o QR de J1.5) — e
+    // rascunho não responde. A tela tem de dizer isso em vez de oferecer um
+    // ensaio que nunca funcionaria.
+    //
+    // A asserção mora no aviso (`role="status"`), e não em "a palavra aparece
+    // em algum lugar da página": no run 35407985023 o `getByText(/rascunho/i)`
+    // casou DOIS nós — o `<strong>` da frase e o parágrafo que explica —, os
+    // dois certos, e o strict mode reprovou a sonda, não o produto. Prender o
+    // aviso e exigir as DUAS frases é mais estreito do que era antes: diz o
+    // ESTADO (não foi para o ar) e a CONSEQUÊNCIA (não há o que ensaiar).
+    const aviso = page.getByRole("status").filter({ hasText: /rascunho/i });
+    await expect(aviso).toBeVisible();
+    await expect(aviso).toContainText(/ainda não foi para o ar/i);
+    await expect(aviso).toContainText(/não responde mensagem/i);
     await snap(page, "j1.24-testar-rascunho");
 
     await page.getByRole("button", { name: /^continuar$/i }).click();
@@ -319,9 +392,22 @@ test.describe("J1 — onboarding do dono numa instalação fresca", () => {
 
     // Honestidade: sem RESEND_API_KEY nenhum email sai. A UI deve dizer isso
     // e oferecer o link de aceite copiável (nunca redirecionar em silêncio).
-    await expect(page.getByText(/não está configurado neste servidor/i)).toBeVisible({
+    //
+    // A frase que este caso procurava ("não está configurado neste servidor")
+    // não existe mais no produto — `git grep` devolve zero. O texto de hoje é
+    // o do bloco âmbar de `app/onboarding/invite-team/_form.tsx:109`, e a tela
+    // ainda diz a verdade: medido no job 105816595263 (parte 4), ela mostra
+    // "Esta instalação não envia e-mail" com o link e o botão de copiar.
+    await expect(page.getByText(/não envia e-mail/i).first()).toBeVisible({
       timeout: 15_000,
     });
+    // O nome deste caso é "a UI não pode MENTIR que enviou": o controle
+    // negativo é o que o torna verdade, e ele faltava. Nenhuma frase de envio
+    // bem-sucedido pode aparecer numa instalação sem serviço de e-mail.
+    await expect(page.getByText(/convites? enviad/i)).toHaveCount(0);
+    // E a pessoa convidada aparece nominalmente ao lado do link dela, senão
+    // "copie o link" não diz de quem é o link.
+    await expect(page.getByText("atendente@qa.local").first()).toBeVisible();
     const acceptUrl = (
       await page.locator("code", { hasText: /team\/accept-invite/ }).first().innerText()
     ).trim();
@@ -366,9 +452,14 @@ test.describe("J1 — onboarding do dono numa instalação fresca", () => {
     await expect(page.getByText("Desativada")).toBeVisible({ timeout: 20_000 });
     await page.getByRole("button", { name: /^ativar$/i }).click();
 
-    await expect(
-      page.getByRole("heading", { name: /verificação em duas etapas/i }),
-    ).toBeVisible({ timeout: 20_000 });
+    // O título do DIÁLOGO, e não "o texto aparece em algum lugar": a página de
+    // Segurança tem a seção "Verificação em duas etapas" e o diálogo tem
+    // "Configure a verificação em duas etapas". Medido no run da parte 4 (job
+    // 105825863584): o `getByRole('heading', /verificação em duas etapas/i)`
+    // casava os DOIS e o strict mode reprovava — os dois certos, a sonda é que
+    // não dizia qual. Prender no `#mfa-title` é o que prova que o diálogo ABRIU.
+    await expect(page.locator("#mfa-title")).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator("#mfa-title")).toHaveText(/verificação em duas etapas/i);
     await snap(page, "j1.10-mfa-ativar");
 
     await page.getByRole("button", { name: /iniciar configuração/i }).click();
@@ -391,7 +482,19 @@ test.describe("J1 — onboarding do dono numa instalação fresca", () => {
       await page.locator('input[aria-label="Dígito 1"]').click();
       await page.keyboard.type(generateTotp(secret), { delay: 40 });
       try {
-        await expect(page.getByRole("heading", { name: /códigos de recuperação/i })).toBeVisible({
+        // MESMA ARMADILHA DO FECHO, e aqui ela desligava o retry: a página de
+        // Segurança tem a seção "Códigos de recuperação" impressa desde antes
+        // do enroll (`_client.tsx:176`, fora de condicional), então
+        // `getByRole('heading', /códigos de recuperação/i)` já valia ANTES de
+        // o modal chegar ao passo dos códigos — e passava na hora, mesmo com o
+        // TOTP recusado. Medido: com os dois títulos no DOM o strict mode
+        // reprova (`resolved to 2 elements`), então o verde só podia vir do
+        // casamento único, o da página. Resultado: este `for` nunca dava a
+        // segunda volta e a virada da janela TOTP caía lá embaixo, como falha
+        // confusa. `#mfa-title` é o título do passo ATUAL do modal (intro,
+        // scan e codes são ramos exclusivos), então prendê-lo aqui é o que
+        // pergunta de fato "o modal avançou?".
+        await expect(page.locator("#mfa-title")).toHaveText(/códigos de recuperação/i, {
           timeout: 8_000,
         });
         break;
@@ -416,12 +519,35 @@ test.describe("J1 — onboarding do dono numa instalação fresca", () => {
     await page.getByText(/salvei meus códigos/i).click();
     await page.getByRole("button", { name: /^concluir$/i }).click();
 
-    // gate some após reload; shell do app visível
+    // ⚠️ SEGUNDA HERANÇA DA MESMA MUDANÇA DE PORTA. Cobrar que o título
+    // "Verificação em duas etapas" SUMA valia quando o cadastro vinha do
+    // bloqueador de tela cheia e terminar caía no inbox — daí o nome
+    // `j1.10-inbox-livre`. Hoje o fluxo começa e termina em Configurações ›
+    // Segurança, e essa página imprime a seção "Verificação em duas etapas"
+    // o tempo todo (`app/app/settings/security/_client.tsx:78`, fora de
+    // qualquer condicional). Medido no job 105829755207: `44 × locator
+    // resolved to 1 element` — o único casamento era essa seção, com o
+    // diálogo já fechado e o selo em "Ativada". O vermelho media a mudança de
+    // porta, não regressão.
+    //
+    // O que prova o fim do fluxo HOJE são duas coisas, e a segunda é a que
+    // não deixa o caso passar por acidente:
     await page.waitForLoadState("networkidle");
-    await expect(
-      page.getByRole("heading", { name: /verificação em duas etapas/i }),
-    ).toHaveCount(0, { timeout: 20_000 });
-    await snap(page, "j1.10-inbox-livre");
+    // 1) o DIÁLOGO fechou — `#mfa-title` é o título dos três passos do modal
+    //    (intro, QR, códigos), então count 0 é o modal inteiro desmontado;
+    await expect(page.locator("#mfa-title")).toHaveCount(0, { timeout: 20_000 });
+    // 2) CONTROLE NEGATIVO — o estado MUDOU no servidor. Se o enroll não
+    //    persistisse, ou se "Concluir" desfizesse o cadastro, a página
+    //    recarregada voltaria exatamente ao estado em que este caso COMEÇOU
+    //    (selo "Desativada" + botão "Ativar") e o modal também estaria
+    //    fechado — ou seja, só a asserção (1) passaria feliz. Esta reprova.
+    await expect(page.getByText("Ativada", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^desligar$/i })).toBeVisible();
+    await expect(page.getByText("Desativada", { exact: true })).toHaveCount(0);
+    // e a pessoa não ficou presa: o shell do app respondeu ao reload (se a
+    // sessão tivesse caído no enroll, aqui seria a tela de login).
+    await expect(page.getByRole("link", { name: "Inbox", exact: true })).toBeVisible();
+    await snap(page, "j1.10-verificacao-ativada");
   });
 
   test("J1.13 wizard não reabre depois de concluído", async ({ page }) => {

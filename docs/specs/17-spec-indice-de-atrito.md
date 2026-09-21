@@ -82,8 +82,16 @@ Regra 3.3 da doutrina: toda métrica de eficiência é publicada ao lado da cont
 | `won` / taxa de conversão | Turnos até desfecho · opt-outs · insistência média | ✅ derivável |
 | `conversations_handled` | Abandono · reabertura | ◐ definição |
 | `avg_first_response_seconds` | Repetição da mesma pergunta | ✗ instrumentação |
-| Automação (% sem humano) | Pedidos de humano · **taxa de contorno** | ✅ derivável |
+| Automação (% sem humano) | Pedidos de humano · **taxa de contorno** · **repetição depois da passagem** | ✅ derivável |
 | Custo por conversa | Tempo humano por desfecho | ◐ proxy |
+
+**A repetição depois da passagem** (migration 0294) é o laço de retorno da entrega de contexto na
+passagem para humano: das passagens em que o cliente VOLTOU a falar nas 24 h seguintes, em quantas
+ele teve de repetir o que já tinha dito (limiar 0,7, o mesmo do índice de repergunta). Se o
+briefing chega a quem assume, ela cai; se não chega, não muda. Numerador e denominador viajam
+separados (`repeticao_pos_passagem` / `passagens_medidas`) porque é a borda que transforma
+denominador zero em `—`, e não em `0%`. Para ver a régua em vigor sem confiar nesta linha:
+`grep -n "repeticao_pos_passagem" -B24 supabase/baseline.sql | head -40`.
 
 ---
 

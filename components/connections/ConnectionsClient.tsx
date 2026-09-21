@@ -17,8 +17,10 @@ import {
   useChannelSessions,
   type ChannelSession,
 } from "@/hooks/channels/useChannelSessions";
+import { CHANNEL_PROVIDER_SOCIAL } from "@/lib/channels/capabilities";
 import { usePacingKnobs } from "@/hooks/channels/usePacingKnobs";
 import { AntiBanSheet } from "./AntiBanSheet";
+import { PairingOptions } from "./PairingOptions";
 import { ChannelAiAccess } from "./ChannelAiAccess";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -222,7 +224,7 @@ export function ConnectionsClient({ wahaConfigured }: { wahaConfigured: boolean 
     invalidate();
   }, [invalidate, t]);
 
-  const list = sessions ?? [];
+  const list = (sessions ?? []).filter((session) => session.provider !== CHANNEL_PROVIDER_SOCIAL);
 
   return (
     <div className="flex flex-col gap-4">
@@ -676,12 +678,13 @@ function QrDialog({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
             {t(
-              "No celular: WhatsApp → Aparelhos conectados → Conectar um aparelho → escaneie o código.",
+              "Escolha QR Code ou código de pareamento e confirme no WhatsApp do celular.",
             )}
           </DialogDescription>
         </DialogHeader>
         <div className="flex min-h-[16rem] flex-col items-center justify-center gap-3 py-2">
           {status === "SCAN_QR_CODE" ? (
+            <PairingOptions key={sessionId} sessionId={sessionId} qr={
             // Sem `key={tick}`: trocar só o src reaproveita o mesmo <img>, e o
             // browser segura o frame anterior até decodificar o novo. Remontar o
             // elemento a cada refresh é o que causaria o flash branco.
@@ -691,6 +694,7 @@ function QrDialog({
               alt={t("QR Code para conectar WhatsApp")}
               className="h-64 w-64 rounded-md border bg-white p-2"
             />
+            } />
           ) : status === "WORKING" ? (
             <div className="flex flex-col items-center gap-2 text-sm font-medium text-success-fg">
               <CheckCircle size={28} weight="fill" aria-hidden />

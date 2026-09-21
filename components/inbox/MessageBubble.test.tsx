@@ -64,9 +64,14 @@ describe("MessageBubble — rótulo de origem", () => {
     expect(screen.getByText("Celular")).toBeInTheDocument();
   });
 
-  it("automação não inventa rótulo — ninguém grava esse valor", () => {
+  it("automação tem rótulo próprio — o motor passou a gravar esse valor (#652)", () => {
+    // Até a #652 ninguém carimbava `'automation'` — tudo que não era pessoa saía
+    // `'ai'` —, e este caso prendia o rótulo AUSENTE: a tela não podia oferecer
+    // uma distinção que o motor não fazia. Com o carimbo em `origemDaMensagem`,
+    // o rótulo ganhou emissor e o caso inverte de lado. O par continua vigiado
+    // nas duas direções por tests/unit/rotulo-de-origem-tem-emissor.test.ts.
     render(<MessageBubble message={msg({ sent_via: "automation" })} />);
-    expect(screen.queryByText("Automação")).not.toBeInTheDocument();
+    expect(screen.getByText("Automação")).toBeInTheDocument();
   });
 
   it("digitada no CRM por QUEM ESTÁ LENDO mostra 'Você'", () => {
@@ -120,10 +125,13 @@ describe("MessageBubble — rótulo de origem", () => {
     expect(screen.queryByText("Celular")).not.toBeInTheDocument();
   });
 
-  it("system não inventa rótulo", () => {
+  it("system leva 'Sistema' — a integração respondeu, mas não foi a IA", () => {
+    // Antes este caso exigia o CONTRÁRIO ("não inventa rótulo"), e estava certo
+    // enquanto nenhuma linha gravava `system`. Desde a #866 o envio por token
+    // grava esse valor: sem o ramo, a bolha voltava a omitir a autoria de quem
+    // falou — e a tela lia como se tudo tivesse saído do CRM.
     render(<MessageBubble message={msg({ sent_via: "system" })} />);
-    for (const rotulo of ["Celular", "Automação", "Você", "Atendente", "IA"]) {
-      expect(screen.queryByText(rotulo)).not.toBeInTheDocument();
-    }
+    expect(screen.getByText("Sistema")).toBeInTheDocument();
+    expect(screen.queryByText("IA")).not.toBeInTheDocument();
   });
 });

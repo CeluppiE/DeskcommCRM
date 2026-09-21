@@ -16,10 +16,10 @@
  * isolado, só loga) — o cron sempre devolve o resultado de `runFollowupTick`.
  *
  * No fim, drena texto fixo pendente (`enviarTextoFixoPendente`) — o mesmo
- * atalho do relógio HTTP. Na Vercel não há `agent-worker`; sem isto o job
- * `followup_turn` fica `pending` e o no_reply nunca vira mensagem. O ledger
- * (job_id, seq) impede envio em dobro no self-host, onde o worker também
- * consome a fila.
+ * atalho do relógio HTTP. Onde não há `agent-worker` (instalação sem o
+ * contêiner `worker`), sem isto o job `followup_turn` fica `pending` e o
+ * no_reply nunca vira mensagem. O ledger (job_id, seq) impede envio em dobro no
+ * self-host, onde o worker também consome a fila.
  *
  * Auth: Bearer INTERNAL_CRON_SECRET|INTERNAL_SECRET, fail-closed. Audit
  * agregada por tick (`followup.worker_run` + `followup.silence_sweep_run`),
@@ -140,9 +140,10 @@ async function handle(req: NextRequest): Promise<Response> {
     logger.error("[followup-flow-worker.cron] runSilenceSweep threw", { error: detail, requestId });
   }
 
-  // ponytail: o cron nativo da Vercel não tem agent-worker. Sem este dreno o
-  // no_reply avança o grafo e a mensagem seguinte fica pending. Teto: jobs
-  // sem fixed_body (mode ai_message) continuam precisando do worker.
+  // ponytail: instalação sem `agent-worker` (relógio HTTP, cron puro) não tem
+  // quem consuma a fila. Sem este dreno o no_reply avança o grafo e a mensagem
+  // seguinte fica pending. Teto: jobs sem fixed_body (mode ai_message) continuam
+  // precisando do worker.
   try {
     await enviarTextoFixoPendente(admin);
   } catch (err) {

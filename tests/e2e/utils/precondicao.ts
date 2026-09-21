@@ -136,3 +136,58 @@ export async function afirmarAdminDeTenantPuro(email: string): Promise<void> {
     );
   }
 }
+
+/**
+ * Afirma que `email` É o dono do servidor — linha ATIVA em `platform_admins`.
+ *
+ * É o inverso de `afirmarAdminDeTenantPuro`, e existe pela mesma razão que ele:
+ * as partes do job `e2e` compartilham banco SEM reset, e quem promove o
+ * `e2e-dono` é `seed-e2e-system-update` — que o CI **não roda como passo**, só
+ * é executado por quem precisa dele. Uma spec do painel de administração que
+ * dependa de outra spec ter rodado antes mede a ordem de execução, não o
+ * produto: passa numa parte e reprova noutra, sem nada ter mudado no código.
+ *
+ * PROMOVE quando falta, em vez de só reprovar. A diferença importa: reprovar
+ * transferiria para quem lê a falha a tarefa de descobrir qual seed rodar — e
+ * esta precondição é barata de satisfazer (uma linha), ao contrário da revogação,
+ * que tem efeito colateral sobre 10 specs vizinhas e por isso continua sendo só
+ * afirmada.
+ */
+export async function afirmarDonoDoServidor(email: string): Promise<void> {
+  const userId = await idPorEmail(email);
+  const svc = servico();
+  const { count, error } = await svc
+    .from("platform_admins")
+    .select("user_id", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .is("revoked_at", null);
+  if (error) throw new Error(`precondição: consulta a platform_admins falhou (${error.message})`);
+
+  // Mesma falha fechada da irmã: contagem nula é "não medi", nunca "é zero".
+  if (count === null) {
+    throw new Error(
+      `precondição: platform_admins não devolveu contagem para ${email} — ` +
+        `sem esse número a spec mediria a superfície errada sem saber.`,
+    );
+  }
+  if (count > 0) return;
+
+  // `granted_by` é NOT NULL — a tabela registra QUEM promoveu, e a primeira
+  // versão desta função omitia a coluna. O CI reprovou com a mensagem do
+  // Postgres inteira, que é o comportamento desejado: a precondição falhou alto
+  // e nomeou a causa em vez de deixar a bateria medir a superfície errada.
+  // Auto-concessão é o que `seed-e2e-system-update.ts:93-97` já faz — não há um
+  // "quem promoveu" anterior num banco semeado do zero.
+  const { error: erroInsert } = await svc.from("platform_admins").insert({
+    user_id: userId,
+    granted_by: userId,
+    reason: "precondição e2e — dono do servidor para a bateria do painel da instalação",
+  } as never);
+  if (erroInsert) {
+    throw new Error(
+      `PRECONDIÇÃO NÃO SATISFEITA: ${email} não é dono do servidor e a promoção falhou ` +
+        `(${erroInsert.message}). Esta spec mede o painel da INSTALAÇÃO, que só o dono ` +
+        `alcança. Conserto manual: ${CONSERTO}`,
+    );
+  }
+}

@@ -637,3 +637,103 @@ describe('validateFlowForPublish — cobertura por ramo num repeat', () => {
     expect(result.errors.some((e) => e.branch_id === 'body')).toBe(true);
   });
 });
+
+/**
+ * Regra que não decide nada não publica. Três formas MEDIDAS de uma regra que a
+ * tela deixava com cara de pronta e o motor nunca satisfaz (ou satisfaz sempre):
+ * valor vazio, número de passos que não é número, e etapa que não é etapa — a
+ * clínica digitava "PAGO" e o motor compara o `stage_id`. O rascunho continua
+ * aceitando tudo isso (trabalho pela metade precisa salvar); quem recusa é o
+ * publish, no momento em que há alguém na tela para corrigir.
+ */
+describe('validateFlowForPublish — a regra precisa poder decidir', () => {
+  const ETAPA_PAGO = '6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b';
+  const ETAPA_ARQUIVADA = '7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d';
+  const ETAPA_APAGADA = '1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d';
+  const etapas = new Map([
+    [ETAPA_PAGO, { nome: 'Pago · Vendas', arquivada: false }],
+    [ETAPA_ARQUIVADA, { nome: 'Antiga · Vendas', arquivada: true }],
+  ]);
+  type Check = Extract<FlowNode, { type: 'condition' }>['config']['checks'][number];
+
+  /** trigger -> c1 -> fim, com TODA saída ligada: o único erro possível é o da regra. */
+  function comRegras(checks: Check[], modo: 'combined' | 'per_check' = 'combined'): FlowGraph {
+    const porRegra = modo === 'per_check';
+    const c1: FlowNode = {
+      id: 'c1',
+      type: 'condition',
+      label: 'c1',
+      position: pos,
+      config: {
+        combinator: 'and',
+        ...(porRegra ? { branching: 'per_check' as const } : {}),
+        checks: porRegra ? checks.map((c, i) => ({ ...c, id: `regra-${i + 1}` })) : checks,
+      },
+    };
+    const saidas = porRegra
+      ? [...checks.map((_, i) => edge('c1', 'fim', { type: 'branch', branch_id: `regra-${i + 1}` })), edge('c1', 'fim', always())]
+      : [edge('c1', 'fim', condResult(true)), edge('c1', 'fim', condResult(false))];
+    return graph([trigger('t1'), c1, end('fim')], [edge('t1', 'c1', always()), ...saidas]);
+  }
+
+  const codigos = (r: ReturnType<typeof validateFlowForPublish>) => (r.ok ? [] : r.errors.map((e) => e.code));
+
+  it('regra sem valor reprova nos dois modos, e no modo por regra aponta a saída', () => {
+    const vazia: Check = { field: 'tag', op: 'eq', value: '  ' };
+    expect(codigos(validateFlowForPublish(comRegras([vazia]), { etapas }))).toEqual(['empty_check_value']);
+
+    const r = validateFlowForPublish(comRegras([{ field: 'tag', op: 'eq', value: 'vip' }, vazia], 'per_check'), { etapas });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0]).toMatchObject({ node_id: 'c1', code: 'empty_check_value', branch_id: 'regra-2' });
+    expect(r.errors[0]!.message).toMatch(/Regra 2/);
+  });
+
+  it('passos com texto que não é número reprova; o número digitado como texto passa', () => {
+    expect(codigos(validateFlowForPublish(comRegras([{ field: 'steps_taken', op: 'gte', value: 'três' }]), { etapas }))).toEqual([
+      'check_value_not_number',
+    ]);
+    expect(validateFlowForPublish(comRegras([{ field: 'steps_taken', op: 'gte', value: '3' }]), { etapas })).toEqual({ ok: true });
+    // O motor compara 2.5 sem problema: recusar seria recusar o que funciona.
+    expect(validateFlowForPublish(comRegras([{ field: 'steps_taken', op: 'lte', value: 2.5 }]), { etapas })).toEqual({ ok: true });
+  });
+
+  it('etapa digitada pelo nome (fluxo antigo) reprova pedindo para escolher na lista', () => {
+    const r = validateFlowForPublish(comRegras([{ field: 'lead_stage', op: 'eq', value: 'PAGO' }]), { etapas });
+    expect(codigos(r)).toEqual(['check_stage_not_found']);
+    if (r.ok) return;
+    expect(r.errors[0]!.message).toContain('PAGO');
+    expect(r.errors[0]!.message).toMatch(/escolha a etapa/i);
+  });
+
+  it('etapa apagada reprova sem ecoar o identificador', () => {
+    const r = validateFlowForPublish(comRegras([{ field: 'lead_stage', op: 'neq', value: ETAPA_APAGADA }]), { etapas });
+    expect(codigos(r)).toEqual(['check_stage_not_found']);
+    if (r.ok) return;
+    expect(r.errors[0]!.message).not.toContain(ETAPA_APAGADA);
+  });
+
+  it('etapa arquivada reprova — nenhum negócio fica nela, a regra nunca decide', () => {
+    const r = validateFlowForPublish(comRegras([{ field: 'lead_stage', op: 'eq', value: ETAPA_ARQUIVADA }]), { etapas });
+    expect(codigos(r)).toEqual(['check_stage_archived']);
+    if (r.ok) return;
+    expect(r.errors[0]!.message).toContain('Antiga · Vendas');
+  });
+
+  it('etapa ativa publica, e outra falha no mesmo nó fala o NOME da etapa, nunca o id', () => {
+    expect(validateFlowForPublish(comRegras([{ field: 'lead_stage', op: 'eq', value: ETAPA_PAGO }]), { etapas })).toEqual({ ok: true });
+
+    const semSaida = comRegras([{ field: 'lead_stage', op: 'eq', value: ETAPA_PAGO }], 'per_check');
+    semSaida.edges = semSaida.edges.filter((e) => e.condition.type !== 'branch');
+    const r = validateFlowForPublish(semSaida, { etapas });
+    expect(codigos(r)).toEqual(['missing_branch_edge']);
+    if (r.ok) return;
+    expect(r.errors[0]!.message).toContain('Pago · Vendas');
+    expect(r.errors[0]!.message).not.toContain(ETAPA_PAGO);
+  });
+
+  it('sem a lista de etapas a etapa não é conferida — só quem lê o banco pode dizer se ela existe', () => {
+    expect(validateFlowForPublish(comRegras([{ field: 'lead_stage', op: 'eq', value: 'PAGO' }]))).toEqual({ ok: true });
+  });
+});

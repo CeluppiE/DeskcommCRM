@@ -564,3 +564,87 @@ export const crmProposeReactivation: McpToolDefinition<typeof reativacaoShape> =
     };
   },
 };
+
+// ---------------------------------------------------------------------------
+// crm_enroll_followup_flow
+// ---------------------------------------------------------------------------
+
+const inscreverShape = {
+  contact_id: z.string().uuid(),
+  /** O fluxo em que inscrever. `crm_list_followups` não lista fluxos; o operador escolhe na tela e o prompt traz o id. */
+  flow_id: z.string().uuid(),
+};
+
+/**
+ * Inscreve o contato num fluxo de acompanhamento já publicado.
+ *
+ * ⚠️ POR QUE ELA EXISTE, e por que não é `crm_schedule_followup` com outro nome:
+ * aquela agenda UM toque e guarda a promessa em texto — quem decide o que dizer,
+ * quantas vezes insistir e quando desistir continua sendo o PROMPT. Esta entrega
+ * a cadência inteira ao fluxo, que é editável na tela, visível na fila e medido
+ * por desfecho. O agente contribui com o que só ele sabe (que o atendimento
+ * terminou sem o próximo horário marcado); o resto é configuração.
+ *
+ * ⚠️ RECUSA DE NEGÓCIO NÃO É EXCEÇÃO — mesma doutrina do cabeçalho deste arquivo.
+ * "Já existe um acompanhamento vivo para este contato" é a resposta mais comum
+ * (o índice único permite um por contato na organização inteira) e o modelo
+ * precisa aprender e seguir, não receber um erro que o faça tentar de novo igual.
+ */
+export const crmEnrollFollowupFlow: McpToolDefinition<typeof inscreverShape> = {
+  name: "crm_enroll_followup_flow",
+  description:
+    "Inscreve o cliente num acompanhamento já configurado (um fluxo), que cuida do resto: " +
+    "quando falar, o que dizer e quando parar. Use quando o atendimento terminou e ainda há " +
+    "um motivo para voltar a falar mais adiante — por exemplo, um retorno de manutenção. " +
+    "ISTO NÃO FALA COM O CLIENTE AGORA e não reserva nada na agenda dele: é o acompanhamento " +
+    "começando a correr. Um acompanhamento vivo por cliente: se já houver, a resposta vem com " +
+    "inscrito=false e o motivo, e NÃO é erro — siga sem tentar de novo.",
+  inputSchema: inscreverShape,
+  category: "write",
+  requiresRole: "ai_operator",
+  requiresScope: "mcp:write",
+  handler: async (input, ctx) => {
+    const { createAdminClient } = await import("@/lib/supabase/admin");
+    const { enrollFollowupFlow } = await import("@/lib/followup/enroll");
+
+    const a = actorAudit(ctx);
+    const r = await enrollFollowupFlow(createAdminClient(), {
+      organizationId: ctx.organizationId,
+      pointerId: input.flow_id,
+      contactId: input.contact_id,
+      actorUserId: a.actorUserId,
+      requestId: ctx.requestId,
+    });
+
+    if (!r.ok) {
+      // Recusa de negócio vira RESPOSTA. Só falha de infraestrutura sobe como
+      // exceção — o wrapper do runtime a devolve como `{ error }` e o audit
+      // marca a chamada como malsucedida.
+      if (r.status >= 500) throw new ApiError(r.status, r.code, undefined, ctx.requestId, r.message);
+      return {
+        inscrito: false,
+        motivo: r.code,
+        mensagem: r.message,
+      };
+    }
+
+    const enrollmentId = String((r.enrollment as { id?: unknown }).id ?? "");
+    await audit({
+      action: "followup_enrollment.created",
+      actorUserId: a.actorUserId,
+      actorApiTokenId: ctx.apiTokenId,
+      organizationId: ctx.organizationId,
+      resourceType: "followup_enrollment",
+      resourceId: enrollmentId,
+      requestId: ctx.requestId,
+      metadata: { ...a.metadataActor, via: "mcp", flow_id: input.flow_id, contact_id: input.contact_id },
+    });
+
+    return {
+      inscrito: true,
+      enrollment_id: enrollmentId,
+      mensagem:
+        "acompanhamento iniciado. Não anuncie isso ao cliente: quem fala com ele é o próprio acompanhamento, no tempo dele.",
+    };
+  },
+};

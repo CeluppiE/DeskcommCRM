@@ -102,20 +102,33 @@ export type ResultadoDeEnvio =
   | { tipo: "transitorio"; detalhe: string; tentarEmMs?: number }
   | { tipo: "permanente"; detalhe: string };
 
-/** As credenciais que o transporte precisa, já decifradas. */
+/**
+ * As credenciais que o transporte precisa, já decifradas.
+ *
+ * `datasetId`/`accessToken`/`testEventCode` são o formato que a Meta usa
+ * (token longo-vivo, direto). O Google Ads não cabe nesse molde — o access
+ * token dele expira em ~1h e é derivado na hora, a partir de um refresh
+ * token, pelo PRÓPRIO transporte (`google/conversions.ts`), não por
+ * `credenciais.ts`, que é agnóstico e não sabe fazer essa troca. `google`
+ * carrega o que falta: o refresh token decifrado e os três identificadores
+ * de para onde reportar (migration 0307). `undefined` para quem não é Google.
+ */
 export interface CredencialDeConversao {
   datasetId: string;
   accessToken: string;
   /** Preenchido = envio marcado como teste, não conta para otimização. */
   testEventCode: string | null;
+  google?: {
+    /** Decifrado; NUNCA o access token — esse é derivado a cada envio. */
+    refreshToken: string;
+    customerId: string;
+    /** `null` = acesso direto, sem conta de gerente (MCC). */
+    loginCustomerId: string | null;
+    conversionActionId: string;
+  };
 }
 
-/**
- * O contrato que todo transporte de conversão cumpre.
- *
- * `google_ads` não implementa nenhum hoje — e a ausência é DECLARADA no
- * registry, não deduzida do silêncio (invariante 4).
- */
+/** O contrato que todo transporte de conversão cumpre. */
 export interface TransporteDeConversao {
   plataforma: PlataformaDeAnuncio;
   enviar(
@@ -193,7 +206,22 @@ export type FalhaDeLeitura =
   | "transitorio";
 
 export type ResultadoDeLeitura<T> =
-  | { ok: true; dados: T }
+  | {
+      ok: true;
+      dados: T;
+      /**
+       * Ressalva da leitura que quem olha a TELA precisa saber, mesmo tendo dado.
+       *
+       * Hoje é uma só, e vem da repetição sem os campos do Connect rate (ver
+       * `lerInsights`): o dado chegou, mas uma coluna ficou vazia porque a
+       * plataforma recusou o campo. Coluna vazia sem explicação é
+       * indistinguível de "esta campanha não mediu" — e trocar um erro visível
+       * (a tela caindo) por um erro invisível (número ausente com cara de zero)
+       * é pior. O motivo CRU do provedor fica no log do servidor; aqui vai a
+       * frase que a tela consegue mostrar.
+       */
+      aviso?: string;
+    }
   | { ok: false; falha: FalhaDeLeitura; detalhe: string };
 
 /**
@@ -236,6 +264,11 @@ export interface LinhaDeCampanha {
   alcance: number | null;
   cpm: number | null;
   ctr: number | null;
+  /**
+   * Percentual já calculado (visualizações da página ÷ cliques no link × 100).
+   * Nulo em campanha sem clique no link ou cujo objetivo não leva a uma página.
+   */
+  connectRate: number | null;
   frequencia: number | null;
   cpc: number | null;
   /** Percentual já calculado (reproduções ÷ impressões × 100). Nulo em campanha sem vídeo. */

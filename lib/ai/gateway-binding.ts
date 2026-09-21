@@ -26,6 +26,7 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAI } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
 
+import { DEEPSEEK_ENDPOINT } from "@/lib/agent-engine/edge/llm/providers";
 import { decryptKey, byteaToBuffer } from "@/lib/crypto/aes_gcm";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -74,7 +75,14 @@ export async function resolverModeloDoPonto(
         return { model, modelId: String(padrao), origem: "credencial_da_organizacao" };
       }
     }
-    const model = resolveLanguageModel(padrao);
+    // Sem credencial cadastrada sobra a chave da INSTALAÇÃO, e quem diz de QUEM
+    // é essa chave é o provedor que a organização escolheu (issue #1181). A
+    // leitura desse provedor é preguiçosa: id que já traz rota resolve sem ela,
+    // e é esse o caminho de toda instalação padrão.
+    const model = await padraoDaInstalacao(
+      () => (daOrg !== null ? Promise.resolve(daOrg.provider) : providerDaOrganizacao(organizationId)),
+      padrao,
+    );
     return model === null ? null : { model, modelId: String(padrao), origem: "padrao" };
   }
 
@@ -87,7 +95,7 @@ export async function resolverModeloDoPonto(
       organization_id: organizationId,
       purpose,
     });
-    const model = resolveLanguageModel(padrao);
+    const model = await padraoDaInstalacao(() => Promise.resolve(binding.provider), padrao);
     return model === null ? null : { model, modelId: String(padrao), origem: "padrao" };
   }
 
@@ -98,7 +106,7 @@ export async function resolverModeloDoPonto(
       purpose,
       provider: binding.provider,
     });
-    const fallback = resolveLanguageModel(padrao);
+    const fallback = await padraoDaInstalacao(() => Promise.resolve(binding.provider), padrao);
     return fallback === null ? null : { model: fallback, modelId: String(padrao), origem: "padrao" };
   }
 
@@ -158,6 +166,75 @@ function idParaOProvider(provider: string, id: string): string | null {
   if (!id.includes("/")) return id;
   if (id.startsWith(`${provider}/`)) return id.slice(provider.length + 1);
   return null;
+}
+
+/**
+ * O último degrau da escada: a chave da INSTALAÇÃO, no provedor que a
+ * configuração manda usar.
+ *
+ * `resolveLanguageModel` roteia pelo PREFIXO do id canônico
+ * (`openai/gpt-5.6-terra`) — e o catálogo serve id BARE: `gpt-5.6-terra` é o
+ * `is_default_for_provider` da OpenAI (migration 0104, `ai_models`). Id sem
+ * prefixo não acha provedor nenhum, o resolver devolvia `null` e o worker de
+ * resposta automática PULAVA a mensagem do cliente com
+ * `reason: "ai_gateway_key_missing"` mesmo com `OPENAI_API_KEY` no `.env` —
+ * enquanto o ensaio do agente e o "Sugerir resposta", que montam o provedor
+ * pelo par (provider, chave), respondiam pela mesma chave (issue #1181).
+ *
+ * O prefixo sintetizado aqui vem do provedor que a ORGANIZAÇÃO escolheu, e é só
+ * isso que ele é: ROTA. O nome do modelo que chega ao SDK continua sendo o do
+ * catálogo, como em `idParaOProvider`. Id que já traz rota não passa por aqui:
+ * quem o roteia (ou recusa) é o próprio `resolveLanguageModel`, acima — e é o
+ * mesmo freio do PR #151, que impede id de outro provedor de virar chamada com
+ * a chave desta organização.
+ *
+ * O provedor chega como função e só é lido quando o id é BARE: no caminho sem
+ * binding ele custa uma consulta a `organizations`, e o id prefixado — o de
+ * toda instalação padrão — resolve sem ela.
+ *
+ * Devolve `null` quando não há chave nenhuma para o provedor — o chamador PULA
+ * com motivo claro, em vez de inventar provedor.
+ */
+async function padraoDaInstalacao(
+  providerDaConfiguracao: () => Promise<string | null>,
+  padrao: ModelId,
+): Promise<LanguageModel | null> {
+  const peloId = resolveLanguageModel(padrao);
+  if (peloId !== null) return peloId;
+  const id = String(padrao);
+  if (id.includes("/")) return null;
+  const provider = await providerDaConfiguracao();
+  if (provider === null || provider === "openrouter") return null;
+  return resolveLanguageModel(`${provider}/${id}`);
+}
+
+/**
+ * O provedor que a organização escolheu (Configurações › IA).
+ *
+ * `credencialDaOrganizacao` já o leu quando havia credencial cadastrada; esta
+ * leitura só acontece no caminho em que não havia — e é este provedor que diz
+ * de QUEM é a chave da instalação que atende o ponto. Nunca lança: leitura que
+ * falha devolve `null`, e a escada termina no mesmo desfecho de antes.
+ */
+async function providerDaOrganizacao(organizationId: string): Promise<string | null> {
+  try {
+    const admin = createAdminClient();
+    // Admin client bypassa RLS: filtro por organização é PROGRAMÁTICO e
+    // obrigatório (CLAUDE.md, anti-pattern 10).
+    const { data } = await admin
+      .from("organizations")
+      .select("settings")
+      .eq("id", organizationId)
+      .maybeSingle();
+    const provider = (data?.settings as { llm?: { provider?: string } } | null)?.llm?.provider;
+    return typeof provider === "string" && provider !== "" ? provider : null;
+  } catch (erro) {
+    logger.warn("[gateway-binding] não consegui ler o provedor da organização", {
+      organization_id: organizationId,
+      erro: erro instanceof Error ? erro.name : typeof erro,
+    });
+    return null;
+  }
 }
 
 /**
@@ -287,6 +364,11 @@ function instanciar(
       return createGoogleGenerativeAI({ apiKey })(modelId);
     case "openrouter":
       return createOpenAI({ apiKey, baseURL: baseUrl ?? OPENROUTER_BASE_URL })(modelId);
+    // A DeepSeek fala a API da OpenAI. Sem este caso, uma organização em
+    // DeepSeek cairia no `default` (null) e a pilha antiga seguiria para o
+    // padrão com aviso — a tela ofereceria um provedor que estes workers ignoram.
+    case "deepseek":
+      return createOpenAI({ apiKey, baseURL: baseUrl ?? DEEPSEEK_ENDPOINT })(modelId);
     default:
       return null;
   }

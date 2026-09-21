@@ -12,6 +12,7 @@ import { LegacyRecovery } from "./_components/LegacyRecovery";
 import { AgentOperation } from "./_components/AgentOperation";
 import type { MaterialDoAcervo } from "./_components/BasesDoAgente";
 import { AgentTabs } from "./_components/AgentTabs";
+import { AgentEditorClient } from "./_client";
 import type { FunilDaResposta } from "@/hooks/pipelines/usePipelines";
 import { coberturaDoFunil, type EtapaDoMapa } from "@/lib/leads/agent-mapping";
 import type { CoberturaPorFunil } from "./_components/FunisDoAgente";
@@ -21,7 +22,7 @@ import { escolherVersoesDaTela } from "@/lib/ai/agents/versoes-da-tela";
 export const dynamic = "force-dynamic";
 
 const AGENT_COLUMNS =
-  "id, organization_id, name, description, model, system_prompt, is_active, is_default, kind, priority, published_version_id, paused_at, operation_mode, operation_revision, archived_at, config, guardrails, active_kb_version_id, created_at, updated_at";
+  "id, organization_id, name, description, model, system_prompt, is_active, is_default, kind, channel, priority, published_version_id, paused_at, operation_mode, operation_revision, archived_at, config, guardrails, active_kb_version_id, created_at, updated_at";
 
 const VERSION_COLUMNS =
   "id, organization_id, agent_id, version_number, system_prompt, provider, model, credential_id, tool_ids, trigger_config, channel_session_id, max_steps, token_budget, cost_budget_cents, history_message_window, history_token_window, handoff_keywords, handoff_tool_enabled, cases_enabled, split_messages, split_max_chars, followup, operator_enabled, operator_model, operator_tool_ids, status, published_at, superseded_at, created_at, created_by,pipeline_ids,knowledge_source_ids,provisioning_origin";
@@ -67,6 +68,37 @@ export default async function AgentEditorPage({ params }: { params: Promise<{ id
   const agent = agentRow as unknown as AgentRow;
   const readOnly = ROLE_RANK[activeOrg.role] < ROLE_RANK.admin;
 
+  // Agente de voz não passa pelo fluxo de versão/publicação (esse é todo
+  // desenhado em torno de `channel_session_id`, um número de WhatsApp
+  // conectado -- uma ligação nem tem isso). O editor simples
+  // (system_prompt + config direto em `ai_agents`, sem versão) é o que se
+  // aplica: mesma tela que já existe pra config geral/modelo/RAG/voz,
+  // sem forçar o agente de voz a fingir que tem canal do WhatsApp.
+  //
+  // ─── A EXCEÇÃO AO EDITOR LEGADO, E A CONDIÇÃO QUE A ENCERRA (issue #456) ───
+  //
+  // O editor legado é PROIBIDO no resto desta página, e com razão: editar o
+  // prompt por ele gravava em `ai_agents.system_prompt` enquanto o motor do
+  // WhatsApp lia a linha de `ai_agent_versions` apontada por
+  // `published_version_id` — a tela mostrava um texto e o agente respondia com
+  // outro. Aqui ele é o CERTO pelo mesmo critério: para voz, tela e motor leem
+  // o MESMO lugar (`getActiveVoiceAgent` em `lib/ai/agents.ts` busca
+  // `system_prompt` de `ai_agents`, e `workers/voice-agent/index.ts` manda esse
+  // texto para a Realtime).
+  //
+  // A exceção vale enquanto esse fato valer. No dia em que a voz ganhar versão
+  // publicada e passar a resolver por `published_version_id`, este ramo SAI e a
+  // tela passa ao editor de versões — e quem avisa não é a memória de ninguém:
+  // `tests/unit/prompt-editado-e-o-que-o-motor-executa.test.ts` reprova, no caso
+  // "o motor de voz lê a coluna que o editor legado grava".
+  if (agent.channel === "voice") {
+    return (
+      <div className="flex h-full flex-col gap-6 p-6">
+        <AgentEditorClient agentId={id} initialData={agent} readOnly={readOnly} />
+      </div>
+    );
+  }
+
   // mcp_agent: busca versions + lookups.
   const [versionsRes, credentialsRes, channelSessions, routerMemberRes, funisRes, acervoRes] =
     await Promise.all([
@@ -102,7 +134,7 @@ export default async function AgentEditorPage({ params }: { params: Promise<{ id
       // no primeiro render diria isso por engano.
       supabase
         .from("ai_knowledge_sources")
-        .select("id, name, source_type, chunks_count, last_index_status")
+        .select("id, name, source_type, chunks_count, last_index_status, is_active")
         .eq("organization_id", activeOrg.orgId)
         .eq("is_active", true)
         .order("created_at", { ascending: true }),
@@ -110,7 +142,7 @@ export default async function AgentEditorPage({ params }: { params: Promise<{ id
 
   const versions = (versionsRes.data ?? []) as unknown as AgentVersionRow[];
   const funis = (funisRes.data ?? []) as unknown as FunilDaResposta[];
-  const materiais = (acervoRes.data ?? []) as unknown as MaterialDoAcervo[];
+  const materiaisVivos = (acervoRes.data ?? []) as unknown as MaterialDoAcervo[];
 
   // Quanto de cada funil o assistente sabe percorrer (spec 17 passo 4). Vem
   // junto com a página porque a lacuna precisa aparecer no MESMO lugar em que o
@@ -151,6 +183,29 @@ export default async function AgentEditorPage({ params }: { params: Promise<{ id
     versions,
     agent.published_version_id ?? null,
   );
+
+  // Material ARQUIVADO que ficou MARCADO (issue #774). O acervo vem filtrado por
+  // `is_active = true`, então o id marcado e arquivado não voltava para a tela: o
+  // formulário seguia com ele em `knowledge_source_ids` (o `base` é a versão
+  // vigente, mesma régua do AgentForm), o salvar recusava com "um dos materiais
+  // marcados não existe mais, ou foi arquivado" e não havia onde desmarcar — a
+  // seção não desenhava a linha dele. A marcação é vínculo material-agente e não
+  // pode impedir o arquivamento: quem arquiva está certo. Aqui a linha volta só
+  // quando FALTA algum marcado, então o caminho comum — nada arquivado marcado —
+  // continua com a MESMA consulta de antes, sem ida extra ao banco.
+  const idsMarcadosForaDaLista = (base?.knowledge_source_ids ?? []).filter(
+    (id) => !materiaisVivos.some((m) => m.id === id),
+  );
+  const arquivadosMarcadosRes = idsMarcadosForaDaLista.length
+    ? await supabase
+        .from("ai_knowledge_sources")
+        .select("id, name, source_type, chunks_count, last_index_status, is_active")
+        .eq("organization_id", activeOrg.orgId)
+        .in("id", idsMarcadosForaDaLista)
+    : null;
+  const materiaisArquivadosMarcados = (arquivadosMarcadosRes?.data ??
+    []) as unknown as MaterialDoAcervo[];
+  const materiais = [...materiaisVivos, ...materiaisArquivadosMarcados];
 
   return (
     <div className="flex h-full flex-col gap-6 p-6">

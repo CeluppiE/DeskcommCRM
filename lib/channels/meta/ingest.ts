@@ -23,7 +23,14 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import { estamparAtribuicaoDoContato } from "@/lib/leads/atribuicao-de-anuncio";
+import {
+  ehNumeroInternoDeAviso,
+  registrarMensagemIgnorada,
+} from "@/lib/escalacao/numero-interno-de-aviso";
+
 import { ARCHIVED_AT, queryTolerantToMissingArchived } from "../archived";
+import { extrairAtribuicaoMeta } from "../atribuicao-de-anuncio-oficial";
 import { aplicarEfeitosPosEntrada } from "../pos-entrada";
 import { encontrarContatoPorTelefone } from "../contato-por-telefone";
 import { marcarConversaComMensagem } from "../marcar-conversa";
@@ -37,6 +44,21 @@ export type IngestOutcome =
   | { status: "ingested"; messageId: string; conversationId: string }
   | { status: "duplicate" }
   | { status: "no_session" }
+  /**
+   * Recusa DELIBERADA, e por isso um status próprio.
+   *
+   * `duplicate` diria "já ingerimos esta" e `failed` diria "tentamos e não deu"
+   * — as duas são mentiras sobre o que aconteceu, e as duas mandam quem lê o log
+   * procurar no lugar errado. Hoje o único motivo é `numero_interno_de_aviso`:
+   * a mensagem veio do número que a própria equipe usa para receber os avisos de
+   * atendimento, e por desenho nada que venha dele vira contato, conversa ou
+   * despacho do agente. O `reason` existe para o próximo motivo não precisar de
+   * um status novo.
+   *
+   * O chamador (a rota do webhook) só ramifica em `failed`/`no_session`, então
+   * este valor entra sem mexer em decisão nenhuma lá.
+   */
+  | { status: "ignored"; reason: string }
   | { status: "failed"; reason: string };
 
 /**
@@ -136,6 +158,26 @@ export async function ingestMetaInbound(
 
   const orgId = sessao.organization_id;
 
+  // ── O NÚMERO INTERNO DE AVISOS NÃO VIRA ATENDIMENTO ─────────────────────
+  //
+  // Antes do upsert do contato, que é o que importa: é o nascimento da conversa
+  // que dispara o pedido de rodízio pelo banco. O identificador aqui chega só em
+  // dígitos (`wa_id`), e o `+` é o que a comparação por variantes do nono dígito
+  // espera — quem casa é a mesma regra dos outros dois ingestores.
+  if (
+    await ehNumeroInternoDeAviso(admin, orgId, {
+      kind: "phone",
+      phone: `+${e.from.replace(/\D/g, "")}`,
+      lid: null,
+    })
+  ) {
+    await registrarMensagemIgnorada(admin, orgId, {
+      direction: "inbound",
+      sessionId: sessao.id,
+    });
+    return { status: "ignored", reason: "numero_interno_de_aviso" };
+  }
+
   const existente = await findContactByVariants(admin, orgId, e.from);
   // Celular BR grava COM o nono. A busca acima já reencontra a grafia sem o 9;
   // a RPC promove o cadastro antigo quando ainda está nos 12 dígitos.
@@ -157,6 +199,12 @@ export async function ingestMetaInbound(
   if (erroContato || !contactId) {
     return { status: "failed", reason: `contato: ${erroContato?.message ?? "sem id"}` };
   }
+
+  // Clique em anúncio: o `referral` vem na própria mensagem e só nela. Estampar
+  // AQUI, antes de `aplicarEfeitosPosEntrada`, porque é lá que o lead nasce. A
+  // guarda de primeiro toque fica no banco, então a re-entrega não reescreve.
+  const atribuicao = extrairAtribuicaoMeta(e.referral);
+  if (atribuicao) await estamparAtribuicaoDoContato(admin, orgId, contactId as string, atribuicao);
 
   const { data: conversationId, error: erroConversa } = await admin.rpc(
     "fn_upsert_wa_conversation" as never,

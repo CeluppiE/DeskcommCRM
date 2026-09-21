@@ -31,13 +31,50 @@
  * cliente admin passa por cima da RLS, e o filtro de tenant vira
  * responsabilidade do arquivo (anti-pattern 10 do `CLAUDE.md`). Isso é matéria
  * de revisão humana. Aqui a pergunta é só: a escrita tem chance de acontecer?
+ *
+ * ═══ AS QUATRO FORMAS DE TER O CLIENTE ADMIN ═══
+ *
+ * A cerca aceita quatro, e nenhuma delas é prova de nome — todas são prova de
+ * ORIGEM ou de TIPO:
+ *
+ *   1. **criado aqui** — `const admin = createAdminClient()`, que
+ *      `nomesDoClienteAdmin` lê pela origem;
+ *   2. **recebido por parâmetro e TIPADO** — `p.admin` com
+ *      `admin: ReturnType<typeof createAdminClient>`, que
+ *      `caminhosDoClienteAdmin` lê pela anotação resolvida;
+ *   3. **anotado por um tipo que mora em OUTRO arquivo, ou herdado** —
+ *      `import type { Admin } from "@/lib/waha/ingest"` (o alias já exportado
+ *      lá) e `interface Pedido extends ComAdmin`, que os dois resolvedores
+ *      seguem até o módulo que declara o tipo (issue #1157, itens 1 e 2);
+ *   4. **passado de uma função para outra do mesmo arquivo** — o parâmetro SEM
+ *      anotação cuja chamada visível entrega um cliente admin
+ *      (`nomesProvadosPelaChamada`, item 3 da mesma issue).
+ *
+ * A (2) entrou porque a cerca acusava escrita irregular num arquivo CORRETO
+ * (PR #1017, `lib/ai/pontos/padrao-da-organizacao.ts`): `raizDaCadeia` devolve a
+ * raiz `"p"` de `p.admin.from(...)` e a propriedade se perdia, e a lista de
+ * origem só cobre cliente criado no mesmo arquivo. Não era furo antigo, era caso
+ * novo chegando: 21 arquivos já recebem o cliente por parâmetro e quatro deles
+ * tocam `organizations`, mas todos os quatro só `.select()` — o #1017 foi o
+ * primeiro a MUTAR assim, e `MUTACOES` é o que esta cerca olha.
+ *
+ * **Aceitar qualquer `x.admin` seria trocar a prova por uma senha**: bastaria
+ * batizar de `admin` um parâmetro com o cliente de SESSÃO para escrever por
+ * baixo da cerca. É por isso que (2) a (4) são medidas pelo tipo, e é por isso
+ * que o CONTROLE abaixo sabota a si mesmo em cada forma que separa tipo de nome
+ * — as três novas inclusive, cada uma com o par verde e vermelho.
  */
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { arquivosDeCodigo, caminhoRelativo } from "./helpers/varrer-codigo";
-import { nomesDoClienteAdmin, raizDaCadeia } from "./helpers/cliente-admin";
+import {
+  caminhoDaCadeia,
+  caminhosDoClienteAdmin,
+  nomesDoClienteAdmin,
+  raizDaCadeia,
+} from "./helpers/cliente-admin";
 
 const RAIZES = ["app", "lib", "workers"] as const;
 const MUTACOES = new Set(["update", "insert", "upsert", "delete"]);
@@ -73,7 +110,20 @@ function escritasEmOrganizations(caminho: string): Achado[] {
   if (!texto.includes('from("organizations")')) return [];
 
   const fonte = ts.createSourceFile(caminho, texto, ts.ScriptTarget.Latest, true);
+  const achados = achadosNaFonte(fonte, caminhoRelativo(caminho));
+  return achados;
+}
+
+/**
+ * Os achados de uma fonte já lida — separado de `escritasEmOrganizations` para
+ * que o CONTROLE possa alimentar a varredura com fonte sintética, sem gravar
+ * arquivo. É a única forma de sabotar as variantes de "cliente de sessão com
+ * nome de admin" — as de anotação, as de tipo importado de outro arquivo e as
+ * de cliente passado entre funções — num teste que roda em todo CI.
+ */
+function achadosNaFonte(fonte: ts.SourceFile, arquivo: string): Achado[] {
   const admins = nomesDoClienteAdmin(fonte);
+  const caminhosAdmin = caminhosDoClienteAdmin(fonte);
   const achados: Achado[] = [];
 
   const visitar = (no: ts.Node): void => {
@@ -97,12 +147,21 @@ function escritasEmOrganizations(caminho: string): Achado[] {
         ts.isStringLiteral(argumentoDoFrom) &&
         argumentoDoFrom.text === "organizations"
       ) {
-        const raiz = raizDaCadeia(alvo.expression.expression);
-        if (raiz !== null && !admins.has(raiz)) {
+        const receptor = alvo.expression.expression;
+        const raiz = raizDaCadeia(receptor);
+        // Quatro formas de ter o cliente admin, e nenhuma delas é o nome (ver o
+        // cabeçalho): criado aqui (origem), recebido por anotação — inclusive
+        // por um tipo que mora em OUTRO arquivo, ou herdado por `extends` — ou
+        // passado por outra função deste mesmo arquivo (a chamada prova).
+        const caminho = caminhoDaCadeia(receptor);
+        const deServico =
+          (raiz !== null && admins.has(raiz)) ||
+          (caminho !== null && caminhosAdmin.has(caminho));
+        if (raiz !== null && !deServico) {
           achados.push({
-            arquivo: caminhoRelativo(caminho),
+            arquivo,
             linha: fonte.getLineAndCharacterOfPosition(no.getStart()).line + 1,
-            cliente: raiz,
+            cliente: caminho ?? raiz,
             metodo: no.expression.name.text,
           });
         }
@@ -115,6 +174,23 @@ function escritasEmOrganizations(caminho: string): Achado[] {
 }
 
 const ARQUIVOS = arquivosDeCodigo(RAIZES);
+
+/** Fonte sintética para os controles — nome de arquivo só para a mensagem. */
+const fonteDe = (codigo: string): ts.SourceFile =>
+  ts.createSourceFile("sintetico.ts", codigo, ts.ScriptTarget.Latest, true);
+
+const IMPORTA_A_FABRICA = 'import type { createAdminClient } from "@/lib/supabase/admin";\n';
+const IMPORTA_A_SESSAO = 'import type { createClient } from "@/lib/supabase/server";\n';
+const MUTA = 'await p.admin.from("organizations").update({ settings }).eq("id", p.orgId);';
+/** A mesma escrita pelo parâmetro SEM anotação, que só a chamada pode provar. */
+const MUTA_PELO_CLIENTE_PASSADO =
+  'await cliente.from("organizations").update({ settings }).eq("id", orgId);';
+
+/** O alias REAL que a issue #1157 cita como instância do item 1. */
+const MODULO_DO_ALIAS_DO_CLIENTE_ADMIN = "@/lib/waha/ingest";
+/** Os fixtures com os MESMOS nomes: um declara o cliente admin, o outro o de sessão. */
+const FIXTURE_VERDE = "@/tests/fixtures/escrita-em-organizations/verde/cliente";
+const FIXTURE_VERMELHA = "@/tests/fixtures/escrita-em-organizations/vermelha/cliente";
 
 describe("toda escrita em `organizations` passa pelo cliente admin", () => {
   it("CONTROLE: a varredura enxerga os arquivos que tocam a tabela", () => {
@@ -130,6 +206,231 @@ describe("toda escrita em `organizations` passa pelo cliente admin", () => {
     const gemeo = ARQUIVOS.find((a) => caminhoRelativo(a) === "app/actions/auth/politicaDeMfa.ts");
     expect(gemeo, "o gêmeo que escreve o MESMO jsonb sumiu — a sonda perdeu a referência").toBeDefined();
     expect(escritasEmOrganizations(gemeo as string)).toEqual([]);
+  });
+
+  it("CONTROLE: o cliente admin recebido por parâmetro é aceito — tipado aqui, importado, herdado ou passado", () => {
+    const aceitos: readonly { forma: string; codigo: string }[] = [
+      {
+        forma: "propriedade de `interface` (a forma de `lib/ai/pontos/padrao-da-organizacao.ts`)",
+        codigo:
+          IMPORTA_A_FABRICA +
+          "interface Pedido { admin: ReturnType<typeof createAdminClient>; orgId: string }\n" +
+          `export async function gravar(p: Pedido, settings: unknown) { ${MUTA} }`,
+      },
+      {
+        forma: "propriedade de tipo de objeto inline",
+        codigo:
+          IMPORTA_A_FABRICA +
+          "export async function gravar(p: { admin: ReturnType<typeof createAdminClient>; orgId: string }, settings: unknown) " +
+          `{ ${MUTA} }`,
+      },
+      {
+        forma: "parâmetro direto",
+        codigo:
+          IMPORTA_A_FABRICA +
+          "export async function gravar(admin: ReturnType<typeof createAdminClient>, orgId: string, settings: unknown) " +
+          '{ await admin.from("organizations").update({ settings }).eq("id", orgId); }',
+      },
+      {
+        forma: "parâmetro por `type` local (a forma de `lib/channels/pos-entrada.ts`)",
+        codigo:
+          IMPORTA_A_FABRICA +
+          "type Admin = ReturnType<typeof createAdminClient>;\n" +
+          "export async function gravar(admin: Admin, orgId: string, settings: unknown) " +
+          '{ await admin.from("organizations").update({ settings }).eq("id", orgId); }',
+      },
+      {
+        forma: "parâmetro desestruturado",
+        codigo:
+          IMPORTA_A_FABRICA +
+          "export async function gravar({ admin, orgId }: { admin: ReturnType<typeof createAdminClient>; orgId: string }, settings: unknown) " +
+          '{ await admin.from("organizations").update({ settings }).eq("id", orgId); }',
+      },
+      {
+        forma: `alias de tipo IMPORTADO de outro arquivo (o \`${MODULO_DO_ALIAS_DO_CLIENTE_ADMIN}\` da issue)`,
+        codigo:
+          `import type { Admin } from "${MODULO_DO_ALIAS_DO_CLIENTE_ADMIN}";\n` +
+          "export async function gravar(admin: Admin, orgId: string, settings: unknown) " +
+          '{ await admin.from("organizations").update({ settings }).eq("id", orgId); }',
+      },
+      {
+        forma: "`interface` IMPORTADA que herda o cliente por `extends` (dois saltos)",
+        codigo:
+          `import type { Pedido } from "${FIXTURE_VERDE}";\n` +
+          `export async function gravar(p: Pedido, settings: unknown) { ${MUTA} }`,
+      },
+      {
+        forma: "`interface` deste arquivo que ESTENDE a que tem o cliente admin",
+        codigo:
+          IMPORTA_A_FABRICA +
+          "interface ComAdmin { admin: ReturnType<typeof createAdminClient>; orgId: string }\n" +
+          "interface Pedido extends ComAdmin { settings: unknown }\n" +
+          `export async function gravar(p: Pedido, settings: unknown) { ${MUTA} }`,
+      },
+      {
+        forma: "cliente passado de uma função para outra (o receptor recebe SEM anotação: a chamada prova)",
+        codigo:
+          IMPORTA_A_FABRICA +
+          "interface Pedido { admin: ReturnType<typeof createAdminClient>; orgId: string }\n" +
+          "async function aplicar(cliente, orgId: string, settings: unknown) " +
+          `{ ${MUTA_PELO_CLIENTE_PASSADO} }\n` +
+          "export async function gravar(p: Pedido, settings: unknown) " +
+          "{ await aplicar(p.admin, p.orgId, settings); }",
+      },
+      {
+        forma: "cliente passado por DUAS funções (cada passagem provada pela chamada dela)",
+        codigo:
+          IMPORTA_A_FABRICA +
+          "interface Pedido { admin: ReturnType<typeof createAdminClient>; orgId: string }\n" +
+          "async function executar(cliente, orgId: string, settings: unknown) " +
+          `{ ${MUTA_PELO_CLIENTE_PASSADO} }\n` +
+          "async function aplicar(cliente, orgId: string, settings: unknown) " +
+          "{ await executar(cliente, orgId, settings); }\n" +
+          "export async function gravar(p: Pedido, settings: unknown) " +
+          "{ await aplicar(p.admin, p.orgId, settings); }",
+      },
+      {
+        forma: "cliente criado AQUI e passado a uma função local (a forma literal do item 3)",
+        codigo:
+          IMPORTA_A_FABRICA +
+          "const admin = createAdminClient();\n" +
+          "async function aplicar(cliente, orgId: string, settings: unknown) " +
+          `{ ${MUTA_PELO_CLIENTE_PASSADO} }\n` +
+          "export async function gravar(orgId: string, settings: unknown) " +
+          "{ await aplicar(admin, orgId, settings); }",
+      },
+    ];
+    for (const { forma, codigo } of aceitos) {
+      // `expect.soft`: o vermelho lista TODAS as formas que passaram, e não só a
+      // primeira — é o que torna a sabotagem desta cerca contável (a medição
+      // está no PR).
+      expect.soft(
+        achadosNaFonte(fonteDe(codigo), "sintetico.ts"),
+        `${forma}: o cliente admin chegou TIPADO e a cerca acusou escrita irregular — ` +
+          "é o falso vermelho que o PR #1017 pagou",
+      ).toEqual([]);
+    }
+  });
+
+  it("CONTROLE: `admin` que não é ADMIN pelo TIPO continua reprovado", () => {
+    // Sabotagem permanente, e não uma rodada da minha sessão: cada caso abaixo
+    // é uma forma de chamar um cliente de `admin` sem que o tipo o sustente. Se
+    // um deles ficar verde, o reconhecimento do parâmetro virou senha.
+    const reprovados: readonly { forma: string; codigo: string; esperado?: readonly string[] }[] = [
+      {
+        forma: "cliente de SESSÃO criado no próprio arquivo",
+        codigo:
+          IMPORTA_A_SESSAO +
+          "export async function gravar(orgId: string, settings: unknown) " +
+          '{ const p = { admin: await createClient() }; await p.admin.from("organizations").update({ settings }).eq("id", orgId); }',
+      },
+      {
+        forma: "parâmetro `admin` tipado como cliente de SESSÃO, num arquivo que importa a fábrica admin",
+        codigo:
+          IMPORTA_A_FABRICA +
+          IMPORTA_A_SESSAO +
+          "interface DoServico { admin: ReturnType<typeof createAdminClient> }\n" +
+          "interface DaSessao { admin: Awaited<ReturnType<typeof createClient>>; orgId: string }\n" +
+          "export function naoUsada(_p: DoServico): void {}\n" +
+          `export async function gravar(p: DaSessao, settings: unknown) { ${MUTA} }`,
+      },
+      {
+        forma: "parâmetro `admin` tipado `any`",
+        codigo:
+          IMPORTA_A_FABRICA +
+          "export async function gravar(p: { admin: any; orgId: string }, settings: unknown) " +
+          `{ ${MUTA} }`,
+      },
+      {
+        forma: "parâmetro `admin` SEM anotação de tipo",
+        codigo:
+          IMPORTA_A_FABRICA +
+          `export async function gravar(p, settings) { ${MUTA} }`,
+      },
+      {
+        forma: "alias IMPORTADO de outro arquivo cujo tipo é o de SESSÃO (o import compra o nome, não o tipo)",
+        codigo:
+          `import type { Admin } from "${FIXTURE_VERMELHA}";\n` +
+          "export async function gravar(admin: Admin, orgId: string, settings: unknown) " +
+          '{ await admin.from("organizations").update({ settings }).eq("id", orgId); }',
+        esperado: ["admin.update"],
+      },
+      {
+        forma: "`extends` que herda o cliente de SESSÃO (seguir a herança não é liberar por ela)",
+        codigo:
+          IMPORTA_A_FABRICA +
+          IMPORTA_A_SESSAO +
+          "interface ComAdminDeSessao { admin: Awaited<ReturnType<typeof createClient>>; orgId: string }\n" +
+          "interface Pedido extends ComAdminDeSessao { settings: unknown }\n" +
+          `export async function gravar(p: Pedido, settings: unknown) { ${MUTA} }`,
+      },
+      {
+        forma: "cliente de SESSÃO passado de uma função para outra (a chamada prova o contrário)",
+        codigo:
+          IMPORTA_A_FABRICA +
+          IMPORTA_A_SESSAO +
+          "interface Pedido { admin: ReturnType<typeof createAdminClient>; orgId: string }\n" +
+          "export function naoUsada(_p: Pedido): void {}\n" +
+          "async function aplicar(cliente, orgId: string, settings: unknown) " +
+          `{ ${MUTA_PELO_CLIENTE_PASSADO} }\n` +
+          "export async function gravar(orgId: string, settings: unknown) " +
+          "{ const sessao = await createClient(); await aplicar(sessao, orgId, settings); }",
+        esperado: ["cliente.update"],
+      },
+      {
+        forma: "a MESMA função chamada com admin num lugar e com SESSÃO noutro (`every`, não `some`)",
+        codigo:
+          IMPORTA_A_FABRICA +
+          IMPORTA_A_SESSAO +
+          "interface Pedido { admin: ReturnType<typeof createAdminClient>; orgId: string }\n" +
+          "async function aplicar(cliente, orgId: string, settings: unknown) " +
+          `{ ${MUTA_PELO_CLIENTE_PASSADO} }\n` +
+          "export async function gravar(p: Pedido, settings: unknown) " +
+          "{ await aplicar(p.admin, p.orgId, settings); }\n" +
+          "export async function vazar(orgId: string, settings: unknown) " +
+          "{ const sessao = await createClient(); await aplicar(sessao, orgId, settings); }",
+        esperado: ["cliente.update"],
+      },
+      {
+        forma: "função EXPORTADA como receptora sem anotação (outro arquivo pode chamá-la: a cerca acusa)",
+        codigo:
+          IMPORTA_A_FABRICA +
+          "interface Pedido { admin: ReturnType<typeof createAdminClient>; orgId: string }\n" +
+          "export async function aplicar(cliente, orgId: string, settings: unknown) " +
+          `{ ${MUTA_PELO_CLIENTE_PASSADO} }\n` +
+          "export async function gravar(p: Pedido, settings: unknown) " +
+          "{ await aplicar(p.admin, p.orgId, settings); }",
+        esperado: ["cliente.update"],
+      },
+      {
+        forma:
+          "o MESMO nome de parâmetro provado numa função e NÃO provado noutra (o caminho é do " +
+          "ARQUIVO: o nome inteiro fica fora e as DUAS escritas são acusadas)",
+        codigo:
+          IMPORTA_A_FABRICA +
+          IMPORTA_A_SESSAO +
+          "interface Pedido { admin: ReturnType<typeof createAdminClient>; orgId: string }\n" +
+          "async function aplicar(cliente, orgId: string, settings: unknown) " +
+          `{ ${MUTA_PELO_CLIENTE_PASSADO} }\n` +
+          "async function vazar(cliente, orgId: string, settings: unknown) " +
+          `{ ${MUTA_PELO_CLIENTE_PASSADO} }\n` +
+          "export async function gravar(p: Pedido, settings: unknown) " +
+          "{ await aplicar(p.admin, p.orgId, settings); }\n" +
+          "export async function outro(orgId: string, settings: unknown) " +
+          "{ const sessao = await createClient(); await vazar(sessao, orgId, settings); }",
+        esperado: ["cliente.update", "cliente.update"],
+      },
+    ];
+    for (const { forma, codigo, esperado = ["p.admin.update"] } of reprovados) {
+      // `expect.soft` pelo mesmo motivo do CONTROLE verde: uma sabotagem por vez
+      // não pode esconder as outras.
+      expect.soft(
+        achadosNaFonte(fonteDe(codigo), "sintetico.ts").map((a) => `${a.cliente}.${a.metodo}`),
+        `${forma}: a cerca deixou passar. O reconhecimento do parâmetro tem de ser ` +
+          "prova de TIPO — se o nome basta, escrever em `organizations` por baixo da " +
+          "cerca custa renomear uma variável, e a falha devolve SUCESSO com zero linhas.",
+      ).toEqual(esperado);
+    }
   });
 
   it("nenhum arquivo escreve com o cliente de sessão", () => {

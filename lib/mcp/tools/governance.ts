@@ -13,6 +13,7 @@
 import { z } from "zod";
 
 import { audit } from "@/lib/audit";
+import { normalizarTags } from "@/lib/contacts/tag-normalizada";
 import { conversationTagSchema, conversationTagsSchema } from "@/lib/schemas/messaging";
 import { getQueueStatus } from "@/lib/routing/queue";
 import type { McpContext } from "../types";
@@ -199,7 +200,10 @@ export const crmManageTags: McpToolDefinition<typeof tagsInputShape> = {
     if (fetchErr) throw new Error(fetchErr.message);
     if (!row) throw new Error("target_not_found");
 
-    const current = ((row as { tags: string[] | null }).tags ?? []).map((t) => t);
+    // O que já está gravado pode vir em caixa mista (dado anterior à #1224):
+    // sem normalizar aqui, `remove: ["vip"]` não alcançaria o "VIP" do banco e
+    // o marcador ficaria impossível de tirar pela MCP.
+    const current = normalizarTags((row as { tags: string[] | null }).tags ?? []);
     const merged = [...current, ...addTags].filter((t) => !removeTags.has(t));
     // Dedup + teto de 20 (rejeita se estourar) — mesma validação da G3-05.
     const nextTags = conversationTagsSchema.parse(merged);

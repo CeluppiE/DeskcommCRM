@@ -245,6 +245,14 @@
       "type": "route",
       "label": "PATCH /v1/demandas/:id",
       "sublabel": "piso agent — quem atende é quem sabe o que vem a seguir"
+    },
+    {
+      "id": "passagens",
+      "lane": "entrada",
+      "col": 1,
+      "type": "table",
+      "label": "passagens_de_atendimento",
+      "sublabel": "uma linha por passagem IA→humano (0291): e o marco a partir do qual se mede se o cliente repetiu"
     }
   ],
   "edges": [
@@ -451,6 +459,18 @@
       "from": "rotalead",
       "to": "crmleads",
       "label": "PATCH · audit + lead_edited só do que mudou"
+    },
+    {
+      "id": "e35",
+      "from": "passagens",
+      "to": "fnatrito",
+      "label": "denominador = passagens em que o cliente VOLTOU a falar em 24h; sem fala nova nao ha repeticao a medir"
+    },
+    {
+      "id": "e36",
+      "from": "fnjaccard",
+      "to": "passagens",
+      "label": "o MESMO limiar 0,7 da repergunta compara a fala de depois com a de antes da passagem"
     }
   ],
   "cards": [

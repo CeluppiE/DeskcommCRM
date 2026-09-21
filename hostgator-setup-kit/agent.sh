@@ -44,6 +44,26 @@ log_err() {  # log_err <mensagem> — grava com timestamp, corta pra ~200 linhas
 # base num número que não descreve o que está no ar.
 recusar_projeto_de_outra_arvore log_err || exit 0
 
+# A senha das rotinas que o log do sistema guardou (#1054) é trocada AQUI quando
+# a atualização veio do botão da tela: o `update.sh` dirigido por um agent.sh
+# não pode trocá-la (o agente que o dirige fala com a senha velha até o fim).
+# Esta execução já é a do kit novo — o cron relê o arquivo a cada 5 minutos — e
+# ainda não segura nenhuma atualização. Uma vez só: a marca em disco encerra.
+# Depois da troca, `setup_event_log_drain_cron` reescreve a linha do crontab
+# (numa instalação que atualizou por um update.sh antigo, ela ainda carrega a
+# senha escrita) e o SECRET desta execução passa a ser o novo.
+if [ ! -e "${PROJECT_DIR}/${MARCA_SEGREDO_DO_CRON_NOME}" ]; then
+  if trocar_segredo_do_cron_vazado >/dev/null 2>&1; then
+    if [ -n "${SEGREDO_DO_CRON_TROCADO:-}" ]; then
+      setup_event_log_drain_cron >/dev/null 2>&1 || true
+      log_err "troquei a senha interna das rotinas (a antiga ficou no log do sistema por versões anteriores do instalador). Recomendado: apagar os logs antigos — sudo truncate -s 0 /var/log/syslog && sudo rm -f /var/log/syslog.* && sudo journalctl --rotate && sudo journalctl --vacuum-time=1s"
+    fi
+  else
+    log_err "não consegui trocar a senha interna das rotinas nesta execução — tento de novo na próxima"
+  fi
+  SECRET="${INTERNAL_CRON_SECRET:-${INTERNAL_SECRET:-}}"
+fi
+
 post() {  # post <json> → corpo da resposta em 2xx; VAZIO em qualquer falha
   # (quem chama, ex. o laço de retry do run_result, usa "saiu vazio" como sinal
   # de falha — por isso o corpo só é impresso no ramo de sucesso).
@@ -146,6 +166,33 @@ fi
 # Sem nenhuma tag conhecida E sem ter conseguido buscar: também não dá para
 # afirmar que não há versão nova — nem sabemos se existe alguma publicada.
 [ -z "$LATEST_TAG" ] && [ "$FETCH_OK" = 0 ] && COMPARE_FAILED=true
+
+# ── A ETIQUETA PODE SAIR NA FRENTE DA IMAGEM ─────────────────────────────────
+#
+# MEDIDO em 2026-09-13: a tela ofereceu a "Nova versão · 1.17.16" enquanto a
+# imagem dela ainda estava sendo construída — porque este agente decidia olhando
+# SÓ a etiqueta no Git. São uns seis minutos entre uma coisa e outra.
+#
+# Antes da pausa dos serviços, clicar naquela janela era um susto: a atualização
+# avisava "a versão ainda está publicando" e o sistema seguia no ar com a versão
+# antiga. Agora o app é PARADO antes do banco e a volta usa o endereço da imagem
+# NOVA. Sem imagem, ele não volta.
+#
+# ⚠️ E aqui o silêncio é ESCOLHIDO, ao contrário de todo o resto deste arquivo.
+# Este bloco não acende `COMPARE_FAILED`: seria inventar um sinal falso, porque
+# a comparação funcionou — o que falta é a imagem, não a resposta. E não há
+# campo no batimento para "existe versão nova, mas ainda não dá para instalar".
+# Ficar calado por alguns minutos é a escolha certa aqui e só aqui, por três
+# razões: o estado é transitório, ele se cura sozinho na passada seguinte (5
+# min), e a alternativa é um botão que derruba o sistema.
+VEREDITO_IMAGEM=""
+if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "$CURRENT" ]; then
+  VEREDITO_IMAGEM="$(veredito_da_imagem_do_app "${LATEST_TAG#v}" "${CURRENT_TAG#v}")" || VEREDITO_IMAGEM=""
+  # Só `ausente` cala. `indisponivel` é "não consegui perguntar ao registro", e
+  # nesse caso anunciar é o que preserva o comportamento de sempre — uma VPS com
+  # saída de rede ruim não pode ficar sem atualização para sempre, em silêncio.
+  [ "$VEREDITO_IMAGEM" = "ausente" ] && LATEST_TAG=""
+fi
 
 CHANGELOG=""
 if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "$CURRENT" ]; then
@@ -275,6 +322,13 @@ export API SECRET ERRLOG RUN_ID
 # em vez de o run sumir sem explicação.
 UPDATE_ARGS=()
 [ -n "$LATEST_TAG" ] && UPDATE_ARGS=(--to "$LATEST_TAG")
+
+# Cada execução do agente começa sem medição nenhuma do banco: o arquivo da
+# rodada é desta rodada, e resíduo da execução anterior não pode virar história
+# desta (a tela conta o que aconteceu AGORA). Quem grava é o reaplicar_baseline,
+# no _common.sh.
+export RODADA_DO_BANCO_ARQUIVO="${TMPDIR:-/tmp}/deskcomm-rodada-do-banco.$$"
+rm -f "$RODADA_DO_BANCO_ARQUIVO" 2>/dev/null || true
 set +e
 DESKCOMM_AGENT_REPORT=1 \
 DESKCOMM_AGENT_PREV_IMAGE="$PREV_IMAGE" \
@@ -329,9 +383,19 @@ fi
 
 TAIL="$(esc "$(tail -40 "$LOG" || true)")" || true
 
+# O que a rodada do banco contou de si mesma — três campos PLANOS, com os nomes
+# que a rota lê (`disputa_de_banco`, `retentativas_do_banco`, `passada_do_banco`).
+# Vazio = não medido: os três chegam ausentes e a tela se cala, em vez de afirmar
+# zero. O corpo é montado em pedaços porque campo ausente não vira `null` nem
+# vírgula solta no fim.
+RODADA_DO_BANCO="$(ler_rodada_do_banco 2>/dev/null || true)"
+BODY="{\"kind\":\"run_result\",\"run_id\":\"${RUN_ID}\",\"status\":\"${STATUS}\",\"log_tail\":\"${TAIL}\""
+[ -z "$RODADA_DO_BANCO" ] || BODY="${BODY},${RODADA_DO_BANCO}"
+BODY="${BODY}}"
+
 # O app acabou de reiniciar: insiste por ~2 min antes de desistir.
 for _ in $(seq 1 12); do
-  OUT="$(post "{\"kind\":\"run_result\",\"run_id\":\"${RUN_ID}\",\"status\":\"${STATUS}\",\"log_tail\":\"${TAIL}\"}")"
+  OUT="$(post "$BODY")"
   [ -n "$OUT" ] && break
   sleep 10
 done

@@ -1,4 +1,5 @@
 import type { Lead } from "@/lib/types/leads";
+import { cardTemMarcador } from "@/lib/kanban/marcadores-do-card";
 
 /**
  * Prefixo que marca um dono AGENTE no filtro (0070). O param de URL continua
@@ -80,7 +81,10 @@ export function applyFilters(leads: Lead[], f: LeadFilters): Lead[] {
       }
     }
     if (f.status && f.status !== "all" && l.status !== f.status) return false;
-    if (f.tag && !l.tags.includes(f.tag)) return false;
+    // As TRÊS caixas de marcador (negócio, contato, conversa) — ver
+    // lib/kanban/marcadores-do-card.ts. Só `l.tags` deixava o marcador escrito
+    // no contato ou na conversa sem casar card nenhum.
+    if (f.tag && !cardTemMarcador(l, f.tag)) return false;
     if (
       search &&
       !`${l.title} ${l.description ?? ""}`.toLowerCase().includes(search)

@@ -14,9 +14,10 @@ import * as Sentry from "@sentry/nextjs";
 
 import { NEUTROS_DE_SAIDA, type MarcaDeSaida } from "@/lib/branding/saida";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { sendEmail } from "@/lib/email/resend";
+import { sendEmail } from "@/lib/email/roteador";
 import { audit } from "@/lib/audit";
 import { env } from "@/lib/env";
+import { valorDaInstalacao } from "@/lib/instalacao/config";
 import type { LgpdRequest } from "./types";
 
 export type AlarmThreshold = "data_request_d5" | "redact_d10";
@@ -104,7 +105,8 @@ export async function triggerSlaAlarm(
   // ──────────────────────────────────────────────────────────────────────────
   // 4. Email DPO
   // ──────────────────────────────────────────────────────────────────────────
-  const recipientEmail = organizationDpoEmail || env.LGPD_DPO_EMAIL;
+  const recipientEmail =
+    organizationDpoEmail || (await valorDaInstalacao("LGPD_DPO_EMAIL")).valor;
   let emailOk = false;
 
   if (!recipientEmail) {

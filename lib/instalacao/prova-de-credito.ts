@@ -21,6 +21,7 @@
 import { normalizarErro } from "@/lib/agent-engine/edge/llm/run-model-call";
 import {
   cabecalhosDeAtribuicaoOpenRouter,
+  DEEPSEEK_ENDPOINT,
   OPENROUTER_ENDPOINT,
 } from "@/lib/agent-engine/edge/llm/providers";
 
@@ -89,6 +90,14 @@ export function montarRequisicaoDeProva(
           "content-type": "application/json",
           ...cabecalhosDeAtribuicaoOpenRouter(),
         },
+        body: { model: modelo, max_tokens: 1, messages: msg },
+      };
+    case "deepseek":
+      // OpenAI-compatível. `max_tokens: 1` atravessa a cobrança; o corpo é uma
+      // GERAÇÃO, não a listagem `GET /models` (que o validador de chave já usa).
+      return {
+        url: `${baseUrl ?? DEEPSEEK_ENDPOINT}/chat/completions`,
+        headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
         body: { model: modelo, max_tokens: 1, messages: msg },
       };
     case "google":

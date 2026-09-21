@@ -248,9 +248,10 @@ test("fontes e destino entre duas contas, somente leitura e ocupação imediatam
     status: "confirmed",
     transparency: "opaque",
   });
+  expect(externalId, "o evento externo da fixture não ganhou id").toBeTruthy();
   await page.goto("/app/agenda");
   await irParaASemanaDoCompromisso(page, start);
-  const card = page.getByTestId(`agendamento-${externalId}`);
+  const card = page.locator('[data-origem="google_sync"]');
   await card.scrollIntoViewIfNeeded();
   await expect(card).toBeVisible();
   await expect(block).toBeDisabled();
@@ -272,9 +273,20 @@ test("fontes e destino entre duas contas, somente leitura e ocupação imediatam
   const occupiedUrl = `/api/v1/agenda/agendamentos?de=${encodeURIComponent(start)}&ate=${encodeURIComponent(end)}&owner_user_id=${f.user}`;
   const before = await page.request.get(occupiedUrl);
   expect(before.ok()).toBe(true);
-  expect((await before.json()).data.some((item: { id: string }) => item.id === externalId)).toBe(
-    true,
-  );
+  // A OCUPAÇÃO SE RECONHECE PELA ORIGEM, não pelo id do evento.
+  //
+  // A resposta não devolve mais o id do evento externo: desde que a leitura
+  // virou `fn_agenda_ocupacao_google_do_dono`, o `id` de um bloco de ocupação é
+  // DERIVADO (dono + fatia visível) — a função entrega ocupação, sem identidade
+  // do compromisso. `origem` é discriminador exato AQUI: `AgendamentoListado`
+  // não a declara, e esta rota a estampa só nos blocos externos.
+  const ocupacaoDoGoogle = (corpo: { data: Array<{ origem?: string }> }) =>
+    corpo.data.some((item) => item.origem === "google_sync");
+
+  expect(
+    ocupacaoDoGoogle(await before.json()),
+    "a ocupação do Google não veio na lista da agenda",
+  ).toBe(true);
   await page.goto("/app/settings/tenant/agenda");
   const section = page.getByRole("region", { name: "Suas agendas Google" });
   await expect(section.getByText("Principal local", { exact: true })).toBeVisible();
@@ -306,9 +318,16 @@ test("fontes e destino entre duas contas, somente leitura e ocupação imediatam
     `/api/v1/agenda/agendamentos?de=${encodeURIComponent(start)}&ate=${encodeURIComponent(end)}&owner_user_id=${f.user}`,
   );
   expect(occupied.ok()).toBe(true);
-  expect((await occupied.json()).data.some((item: { id: string }) => item.id === externalId)).toBe(
-    false,
-  );
+  // ⚠️ Esta era a asserção que PASSAVA PELO MOTIVO ERRADO. Comparando id com
+  // `externalId`, ela ficava falsa para qualquer resposta — inclusive para uma
+  // que ainda trouxesse a ocupação — porque o id devolvido nunca é mais o do
+  // evento. Verde afirmando o que deixou de medir. Pela origem, ela volta a
+  // medir o que o caso quer: a agenda saiu das lidas, a ocupação dela sai da
+  // lista.
+  expect(
+    ocupacaoDoGoogle(await occupied.json()),
+    "a agenda deixou de ser lida e a ocupação dela continua na lista",
+  ).toBe(false);
   const cache = await db.from("calendar_external_events").select("id").eq("organization_id", f.org);
   expect(cache.data).toHaveLength(1);
   await evidence(page, info, "selecao", "section[aria-label='Suas agendas Google']");

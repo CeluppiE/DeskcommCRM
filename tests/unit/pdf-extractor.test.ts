@@ -15,6 +15,7 @@
 // As fixtures são PDFs 1.4 escritos à mão (texto puro, `cat`-áveis), sem compressão
 // e sem gerador — determinísticas byte a byte.
 
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -112,5 +113,120 @@ describe("extractPdfText", () => {
     const todas = { ...pkg.dependencies, ...pkg.devDependencies };
     expect(Object.keys(todas)).not.toContain("pdf-parse");
     expect(Object.keys(todas)).not.toContain("@types/pdf-parse");
+  });
+});
+
+/**
+ * A SEGUNDA ESTRATÉGIA É A MESMA ENGINE NOUTRO PROCESSO.
+ *
+ * Medido na imagem `deskcomm-worker:1.27.1`: sob `tsx`, extrair a fixture de
+ * 1 KB custa 117 MB de heap (o tsx transforma `pdf.mjs` + `pdf.worker.mjs`
+ * inteiros); em `node` puro, 19 MB. Um PDF real de 18 KB passava dos 227 MB e
+ * matava o worker (`heap limit`) — 313 reinícios em 2026-09-15.
+ *
+ * O que se prende aqui: (1) o texto é IDÊNTICO nas duas estratégias, byte a
+ * byte, em todas as fixtures — é o que vigia a duplicação do laço de páginas
+ * dentro do script do filho; (2) o filho que morre vira `PdfExtractError`
+ * comum, e o processo pai sobrevive — é o isolamento que o worker não tinha;
+ * (3) sob o `tsx` de verdade a estratégia padrão é a do filho, e o heap do pai
+ * fica longe do que era.
+ */
+describe("extractPdfText — estratégia `processo-a-parte`", () => {
+  const A_PARTE = { estrategia: "processo-a-parte" as const };
+
+  it.each(["sample-text.pdf", "sample-acentos.pdf", "sample-multipagina.pdf"])(
+    "devolve o MESMO texto que a extração em processo: %s",
+    async (nome) => {
+      const { extractPdfText } = await import("@/lib/ai/rag/extractors/pdf");
+      const emProcesso = await extractPdfText(fixture(nome), { estrategia: "em-processo" });
+      const aParte = await extractPdfText(fixture(nome), A_PARTE);
+      expect(aParte).toBe(emProcesso);
+    },
+  );
+
+  it("PDF sem texto e PDF corrompido falham com PdfExtractError, como em processo", async () => {
+    const { extractPdfText, PdfExtractError } = await import("@/lib/ai/rag/extractors/pdf");
+    await expect(extractPdfText(fixture("sample-sem-texto.pdf"), A_PARTE)).rejects.toThrow(
+      /image-only/,
+    );
+    await expect(extractPdfText(fixture("sample-corrompido.pdf"), A_PARTE)).rejects.toBeInstanceOf(
+      PdfExtractError,
+    );
+    await expect(extractPdfText(Buffer.from("isto não é um pdf"), A_PARTE)).rejects.toBeInstanceOf(
+      PdfExtractError,
+    );
+  });
+
+  it("o filho que estoura o heap vira um erro comum, e o pai sobrevive", async () => {
+    // Um teto de 4 MB não abre nem o pdfjs. Antes, isto era o worker inteiro
+    // caindo com `FATAL ERROR: Reached heap limit`; agora é um `PdfExtractError`
+    // que o handler devolve como erro, e o dreno conta a tentativa.
+    const { extractPdfText, PdfExtractError } = await import("@/lib/ai/rag/extractors/pdf");
+    const erro = await extractPdfText(fixture("sample-multipagina.pdf"), {
+      ...A_PARTE,
+      heapMb: 4,
+    }).catch((e: unknown) => e);
+    expect(erro).toBeInstanceOf(PdfExtractError);
+    // A frase diz COMO morreu e com QUE teto — é o `last_error` que distingue
+    // PDF grande demais de PDF corrompido.
+    expect((erro as Error).message).toMatch(/sem responder/);
+    expect((erro as Error).message).toMatch(/teto de heap 4 MB/);
+    // O pai continua vivo e extraindo.
+    expect(await extractPdfText(fixture("sample-text.pdf"), A_PARTE)).toBe("DeskcommCRM RAG fixture");
+  });
+
+  it("o filho que não responde a tempo é morto e vira PdfExtractError", async () => {
+    const { extractPdfText } = await import("@/lib/ai/rag/extractors/pdf");
+    await expect(
+      extractPdfText(fixture("sample-multipagina.pdf"), { ...A_PARTE, timeoutMs: 1 }),
+    ).rejects.toThrow(/excedeu 1 ms/);
+  });
+
+  it("a estratégia padrão é a do filho SÓ sob o tsx", async () => {
+    const { estrategiaPadrao } = await import("@/lib/ai/rag/extractors/pdf");
+    // O que `process.execArgv` traz dentro da imagem do worker, medido.
+    expect(
+      estrategiaPadrao([
+        "--require",
+        "/app/node_modules/.pnpm/tsx@4.23.13/node_modules/tsx/dist/preflight.cjs",
+        "--import",
+        "file:///app/node_modules/.pnpm/tsx@4.23.13/node_modules/tsx/dist/loader.mjs",
+      ]),
+    ).toBe("processo-a-parte");
+    // App Next, vitest, node puro: nada muda.
+    expect(estrategiaPadrao([])).toBe("em-processo");
+    expect(estrategiaPadrao(["--max-old-space-size=256"])).toBe("em-processo");
+  });
+
+  it("sob o tsx DE VERDADE, o pai extrai sem carregar o pdfjs no próprio heap", () => {
+    // Este é o único caso que exercita o caminho que o worker de produção
+    // percorre: o `tsx` real, não um `execArgv` de mentira. Sob ele, a extração
+    // em processo custava 117 MB de heap (medido na imagem 1.27.1); com o filho,
+    // o que fica no pai é o custo de um `spawn`. O limite de 60 MB tem margem
+    // dos dois lados.
+    const script = `
+      const fs = require("node:fs");
+      import("@/lib/ai/rag/extractors/pdf").then(async (m) => {
+        const texto = await m.extractPdfText(fs.readFileSync("tests/fixtures/sample-multipagina.pdf"));
+        process.stdout.write(JSON.stringify({
+          estrategia: m.estrategiaPadrao(),
+          texto,
+          heapMb: Math.round(process.memoryUsage().heapUsed / 1048576),
+        }));
+      }).catch((e) => { console.error(String(e && e.stack || e)); process.exit(1); });
+    `;
+    const saida = execFileSync(process.execPath, ["node_modules/tsx/dist/cli.mjs", "--eval", script], {
+      cwd: raiz,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 60_000,
+      env: { ...process.env, NODE_NO_WARNINGS: "1" },
+    });
+    const r = JSON.parse(saida) as { estrategia: string; texto: string; heapMb: number };
+    expect(r.estrategia).toBe("processo-a-parte");
+    expect(r.texto).toBe(
+      "Pagina um linha um\nPagina um linha dois\n\nPagina dois linha um\nPagina dois linha dois",
+    );
+    expect(r.heapMb, `heap do pai sob tsx: ${r.heapMb} MB`).toBeLessThan(60);
   });
 });

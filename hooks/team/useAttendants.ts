@@ -16,10 +16,23 @@ export interface AttendantAvailability {
   /** null = atendente ainda sem linha de availability (nunca configurado). */
   capacity: number | null;
   schedule: AvailabilitySchedule;
-  last_heartbeat_at: string | null;
   updated_at: string | null;
   /** Conversas abertas atribuídas (G5-04): a mesma carga que o router usa. */
   current_load: number;
+  /**
+   * Carimbo do último sinal de presença do navegador (issue #996). `null` =
+   * nunca abriu nenhuma tela logado. Vem do emissor
+   * (`hooks/atendimento/useSinalDePresenca`), NÃO do botão de plantão.
+   */
+  last_heartbeat_at: string | null;
+  /**
+   * Tem sinal de presença válido agora. Derivado no SERVIDOR com o prazo de
+   * `lib/atendimento/presenca.ts` — a tela lê, não recalcula.
+   *
+   * Presença é informação, nunca permissão: quem está de plantão continua sendo
+   * `is_available` + jornada (`estaDePlantao`), e nada aqui desliga a chave.
+   */
+  present: boolean;
 }
 
 const ATTENDANTS_KEY = ["team", "attendants"] as const;

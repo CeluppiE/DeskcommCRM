@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -40,13 +40,49 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
  * que gate nenhum, porque parece cobertura.
  *
  * O repositório abaixo REPRODUZ a forma do #472 em vez de depender de ela ter
- * acontecido: dois fragmentos, um branch de release que os apaga assinado pelo
- * bot, um PR concorrente que acrescenta um terceiro no meio, e o merge com dois
- * pais. Roda igual em qualquer clone, raso ou completo.
+ * acontecido: dois fragmentos, um branch de release que os apaga, um PR
+ * concorrente que acrescenta um terceiro no meio, e o merge com dois pais. Roda
+ * igual em qualquer clone, raso ou completo.
+ *
+ * ⚠️ Desde a issue #478 a guarda NÃO olha o nome do autor do commit: ela
+ * pergunta à API quem abriu o PR de origem. O `gh` daqui é um stub no PATH (ver
+ * `montarStub`) e a resposta da API é escolhida por caso — sem ele, todo caso
+ * morreria no passo que recusa por falta de prova.
  */
 
 const RAIZ = process.cwd();
+
+/**
+ * O nome de autor que o ato 1 do release.yml grava no git: literal, e por isso
+ * forjável. A guarda antiga procurava exatamente esta string; a nova confere a
+ * identidade pelo PR de origem.
+ */
 const BOT = "deskcomm-release[bot]";
+
+/** O login com que a API apresenta o App — o e-mail do corte real confirma o slug. */
+const LOGIN_DO_APP = "deskcommcrm-release[bot]";
+const REPO_DE_CIMA = "melgarafael/DeskcommCRM";
+
+/** Uma linha no formato que o `--jq` da guarda produz: cinco campos por TAB. */
+function linhaDaApi(login: string, tipo: string, ref: string, repo: string, numero: number): string {
+  return [login, tipo, ref, repo, String(numero)].join("\t");
+}
+
+/**
+ * As duas respostas REAIS medidas em 2026-09-18 nesta `main`, com o head
+ * ajustado para os branches do repositório sintético:
+ *
+ *   corte do App  3a4df3cb  PR #1160  deskcommcrm-release[bot] (Bot)  head release/1.34.0 deste repositório
+ *   PR de gente   d73c32cc  PR #1112  deskcommopp4s-cmd (User)       head fix/EPIC-13-… de um fork
+ */
+const RESPOSTA_DO_APP = linhaDaApi(LOGIN_DO_APP, "Bot", "release/9.9.9", REPO_DE_CIMA, 1160);
+const RESPOSTA_DE_GENTE = linhaDaApi(
+  "deskcommopp4s-cmd",
+  "User",
+  "fix/EPIC-13-credencial-editavel",
+  "deskcommopp4s-cmd/deskcomm-fixes",
+  1112,
+);
 
 /** O bloco `run:` do passo que decide se este push foi um corte. */
 function bashDaGuarda(): string {
@@ -67,6 +103,25 @@ function bashDaGuarda(): string {
 }
 
 let repo: string;
+let stub: string;
+
+/**
+ * O `gh` de mentira, no PATH antes do de verdade.
+ *
+ * A guarda pergunta à API quem abriu o PR de origem do commit — e num teste
+ * essa pergunta não pode sair para a rede: o resultado dependeria do que a
+ * internet diz no minuto do run, e no CI o `gh` existe e está autenticado. Este
+ * stub imprime o que a API responderia; quem escolhe a resposta é o caso, em
+ * `GH_RESPOSTA`.
+ */
+function montarStub(dir: string) {
+  const caminho = join(dir, "gh");
+  writeFileSync(
+    caminho,
+    ['#!/usr/bin/env bash', '[ -n "${GH_RESPOSTA}" ] && printf \'%s\\n\' "${GH_RESPOSTA}"', "exit 0", ""].join("\n"),
+  );
+  chmodSync(caminho, 0o755);
+}
 
 function git(args: string[], opts: { autor?: string } = {}): string {
   const env = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
@@ -101,7 +156,7 @@ function commit(mensagem: string, autor = "Alguém do time") {
  * `HEAD^2` primeiro, depois `HEAD^`, depois `HEAD`: a ordem importa, senão
  * `HEAD^2` viraria `<sha>^2` só pela metade.
  */
-function decisaoPara(sha: string): string {
+function decisaoPara(sha: string, respostaDaApi: string = RESPOSTA_DO_APP): string {
   const original = bashDaGuarda();
 
   // A versão vem do CHANGELOG por um script de TS que não existe no repo
@@ -143,7 +198,17 @@ function decisaoPara(sha: string): string {
     const saida = execFileSync("bash", ["-c", script], {
       cwd: repo,
       encoding: "utf8",
-      env: { ...process.env, GITHUB_OUTPUT: saidaDoGithub },
+      // `PATH` com o stub na frente é o que impede a pergunta à API de sair
+      // para a rede; o resto é o ambiente que o passo do workflow tem.
+      env: {
+        ...process.env,
+        PATH: `${stub}:${process.env.PATH}`,
+        GH_RESPOSTA: respostaDaApi,
+        GITHUB_OUTPUT: saidaDoGithub,
+        GITHUB_REPOSITORY: REPO_DE_CIMA,
+        GITHUB_SHA: sha,
+        APP_SLUG: "deskcommcrm-release",
+      },
       stdio: ["ignore", "pipe", "pipe"],
     });
     const escrito = readFileSync(saidaDoGithub, "utf8");
@@ -172,9 +237,9 @@ function decisaoPara(sha: string): string {
  * falhavam. Um teste que aceita qualquer falha não distingue a guarda
  * funcionando da guarda quebrada.
  */
-function recusaPara(sha: string): { status: number; saida: string } {
+function recusaPara(sha: string, respostaDaApi: string = RESPOSTA_DO_APP): { status: number; saida: string } {
   try {
-    decisaoPara(sha);
+    decisaoPara(sha, respostaDaApi);
   } catch (err) {
     const m = /exit=(\d+)/.exec(String((err as Error).message));
     return { status: Number(m?.[1] ?? -1), saida: String((err as Error).message) };
@@ -187,6 +252,8 @@ let mergeDePrComum = "";
 let commitDeFeature = "";
 
 beforeAll(() => {
+  stub = mkdtempSync(join(tmpdir(), "gh-de-mentira-"));
+  montarStub(stub);
   repo = mkdtempSync(join(tmpdir(), "guarda-release-"));
   git(["init", "-q", "-b", "main"]);
   git(["config", "user.name", "Alguém do time"]);
@@ -228,6 +295,7 @@ beforeAll(() => {
 
 afterAll(() => {
   if (repo) rmSync(repo, { recursive: true, force: true });
+  if (stub) rmSync(stub, { recursive: true, force: true });
 });
 
 describe("a guarda reconhece o corte pela forma dele", () => {
@@ -314,22 +382,26 @@ describe("o que SOBRA da release também decide — e foi um cético que achou i
 });
 
 describe("a guarda recusa ALTO, e não em silêncio, quem apaga fragmento sem ser o App", () => {
-  it("apagar fragmento à mão, num commit não assinado pelo App, derruba o passo", () => {
+  it("apagar fragmento à mão, num PR que não é do App, derruba o passo", () => {
     // A forja que a guarda antiga DEIXAVA passar: escrever a seção no CHANGELOG
-    // e esvaziar o diretório criava a tag. Agora não basta apagar — é preciso a
-    // identidade do App, que vive em secrets.
+    // e esvaziar o diretório criava a tag. Hoje não basta apagar nem basta
+    // assinar: quem responde é a API, sobre o PR de origem (issue #478) — o
+    // nome de autor deste commit é de gente, e a guarda nem o menciona.
     git(["checkout", "-q", "main"]);
     rmSync(join(repo, ".changes/c.md"));
     writeFileSync(join(repo, "CHANGELOG.md"), "# Changelog\n\n## [999.999.999]\n");
-    const forjado = commit("feat: parece uma release e não é", "Fulano de Tal");
+    const manual = commit("feat: parece uma release e não é", "Fulano de Tal");
 
-    const r = recusaPara(forjado);
+    const r = recusaPara(manual, RESPOSTA_DE_GENTE);
     expect(r.status, "a guarda tem de sair com 1, e não morrer por outro motivo").toBe(1);
-    expect(r.saida).toMatch(/não foi assinado pelo App/);
-    expect(r.saida).toMatch(/Fulano de Tal/);
+    expect(r.saida).toMatch(/não foi aberto pelo App da release/);
+    // O dado de fora do git aparece na recusa…
+    expect(r.saida).toMatch(/deskcommopp4s-cmd/);
+    // …e o nome de autor não aparece em lugar nenhum dela.
+    expect(r.saida).not.toMatch(/Fulano de Tal/);
   });
 
-  it("o mesmo apagar, ASSINADO pelo App, corta (controle positivo)", () => {
+  it("o mesmo apagar, com o PR de origem do App, corta (controle positivo)", () => {
     // Sem este, "derruba sempre" satisfaria o caso acima.
     fragmento("d.md");
     commit("feat: mais um fragmento");

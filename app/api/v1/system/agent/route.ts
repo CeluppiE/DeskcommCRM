@@ -56,9 +56,56 @@ const runResult = z.object({
   run_id: z.string().uuid(),
   status: z.enum(["success", "failed", "failed_rolled_back"]),
   log_tail: z.string().max(16_000),
+  // O que a rodada do banco contou de si mesma: se a base estava ocupada, quantas
+  // retentativas custou e em qual passada fechou. Ausente quando o kit não mediu
+  // (rodada que não passou pelo banco) — e aí a tela fica calada, não afirma zero.
+  disputa_de_banco: z.boolean().optional(),
+  retentativas_do_banco: z.number().int().min(0).optional(),
+  passada_do_banco: z.number().int().min(1).optional(),
 });
 
 const body = z.discriminatedUnion("kind", [heartbeat, runProgress, runResult]);
+
+/**
+ * As três colunas da rodada do banco, numa escrita própria e best-effort.
+ *
+ * Não devolve nada e nunca lança: quem decide o desfecho da atualização é a
+ * escrita de `status` logo depois, e uma coluna de frase não pode impedir o run
+ * de fechar (o `post` do agente recebe vazio a cada 500 e o run ficaria preso em
+ * `dispatched` para sempre). Ausente no payload = nada é escrito: `null` é "não
+ * medido", e a tela distingue isso de zero.
+ */
+async function gravarRodadaDoBanco(
+  db: ReturnType<typeof createAdminClient>,
+  payload: {
+    run_id: string;
+    disputa_de_banco?: boolean;
+    retentativas_do_banco?: number;
+    passada_do_banco?: number;
+  },
+): Promise<void> {
+  const mediu =
+    payload.disputa_de_banco !== undefined ||
+    payload.retentativas_do_banco !== undefined ||
+    payload.passada_do_banco !== undefined;
+  if (!mediu) return;
+
+  const { error } = await db
+    .from("system_update_runs")
+    .update({
+      disputa_de_banco: payload.disputa_de_banco ?? null,
+      retentativas_do_banco: payload.retentativas_do_banco ?? null,
+      passada_do_banco: payload.passada_do_banco ?? null,
+    })
+    .eq("id", payload.run_id);
+
+  if (error) {
+    logger.warn("[system/agent] a rodada do banco não foi gravada — o run fecha assim mesmo", {
+      error: error.message,
+      runId: payload.run_id,
+    });
+  }
+}
 
 function secretMatches(provided: string): boolean {
   const accepted = [env.INTERNAL_CRON_SECRET, env.INTERNAL_SECRET].filter(Boolean);
@@ -176,14 +223,28 @@ export async function POST(req: NextRequest): Promise<Response> {
     return fail("invalid_state_transition", "Esta atualização já terminou.", 409);
   }
 
-  // Finaliza o run PRIMEIRO. Se essa escrita falhar, nada mais acontece: sobra
-  // um run "dispatched" (estado real, o índice único da migration 0090 impede
-  // ambiguidade) em vez de um pedido limpo com um run que nunca fechou — essa
-  // ordem falha para o lado detectável e auto-curável (o próximo heartbeat
-  // ainda vê o pedido e o run em aberto), nunca para o órfão invisível.
+  // As três colunas da RODADA DO BANCO saem numa escrita PRÓPRIA e best-effort,
+  // antes da que fecha o run: elas são cosméticas (viram uma frase na tela) e não
+  // podem derrubar o desfecho. Na escrita única de antes, qualquer erro ali —
+  // `42703` num banco anterior à migration da rodada, ou a CHECK recusando um
+  // número — virava 500, o `post` do agente voltava vazio e o run ficava preso em
+  // `dispatched` para sempre: o desfecho que ninguém detecta. Aqui, falha a
+  // rodada e o run fecha; falha o run, o agente tenta de novo.
+  await gravarRodadaDoBanco(db, payload);
+
+  // A escrita que FECHA o run é a última, e é a única fatal. Se ela falhar, nada
+  // mais acontece: sobra um run "dispatched" (estado real, o índice único da
+  // migration 0090 impede ambiguidade) em vez de um pedido limpo com um run que
+  // nunca fechou — essa ordem falha para o lado detectável e auto-curável (o
+  // próximo heartbeat ainda vê o pedido e o run em aberto), nunca para o órfão
+  // invisível.
   const { error: runUpdateError } = await db
     .from("system_update_runs")
-    .update({ status: payload.status, log_tail: payload.log_tail, finished_at: new Date().toISOString() })
+    .update({
+      status: payload.status,
+      log_tail: payload.log_tail,
+      finished_at: new Date().toISOString(),
+    })
     .eq("id", payload.run_id);
 
   if (runUpdateError) {

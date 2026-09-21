@@ -102,7 +102,7 @@ export function AgentRowMenu({ agent }: Props) {
           </DropdownMenuItem>
           {isPaused ? (
             <DropdownMenuItem
-              disabled={isArchived || agent.kind === "mcp_agent"}
+              disabled={isArchived}
               onSelect={() => run(t("Agent reativado."), () => unpauseAgentAction(agent.id))}
             >
               <Play size={14} aria-hidden className="mr-2" /> {t("Despausar")}

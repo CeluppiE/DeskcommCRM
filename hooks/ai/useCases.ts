@@ -18,7 +18,17 @@ export type CaseEventKind =
   | "lead_unresponsive"
   | "resolved"
   | "escalated"
-  | "cancelled";
+  | "cancelled"
+  // ⚠️ ESTE ESPELHO FICOU UM VALOR ATRÁS DO BANCO POR 192 MIGRATIONS:
+  // `agent_noted` existe no CHECK desde a 0100 e em `CaseEventKind`
+  // (`lib/agent-engine/agent/human-cases.ts`) desde então, e aqui não estava.
+  // O sintoma é mudo: a linha do tempo mostra o rótulo genérico para o evento
+  // que o agente escreveu, e `EVENT_LABEL` (que é tipado a partir DESTE union)
+  // compilava sem ele. Entra junto de `alert_sent` (migration 0292), que é o
+  // valor novo — corrigir os dois na mesma mudança é o que impede a terceira
+  // divergência.
+  | "agent_noted"
+  | "alert_sent";
 
 export type CaseActorKind = "agent" | "human" | "system" | "lead";
 

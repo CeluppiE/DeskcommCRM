@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { EntradaDeMensagem } from "@/lib/channels/pos-entrada";
 import { acelerarPipelineDeEventos } from "@/lib/dev/kick-local-pipeline";
+import { palavraDeSaida } from "@/lib/prospecting/rodape-de-saida";
 
 /**
  * OS EFEITOS QUE TRANSFORMAM UMA MENSAGEM EM TRABALHO.
@@ -47,8 +48,23 @@ vi.mock("@/lib/dev/kick-local-pipeline", () => ({
 let sequencia: string[] = [];
 let updateErro: { message: string } | null = null;
 let rpcErro: { message: string } | null = null;
+/**
+ * O histórico de ENTRADA de quem escreveu, do ponto de vista da guarda de
+ * "primeira mensagem". O padrão é o caso honesto e mais comum: a mensagem que
+ * esta ingestão está processando é a primeira do contato.
+ */
+let historicoDoContato: { id: string | null; count: number } = { id: "msg-1", count: 1 };
+let historicoErro: { message: string } | null = null;
 let ultimoUpdate: Record<string, unknown> | null = null;
 let ultimaRpc: Record<string, unknown> | null = null;
+/** TODAS as chamadas de RPC, na ordem, com o NOME da função. */
+let rpcChamadas: Array<{ nome: string; args: Record<string, unknown> }> = [];
+/**
+ * Os `.eq()` da leitura de `messages`, na ordem em que chegam. Sem eles, trocar
+ * a organização e o contato no call site (dois `string` lado a lado, que o
+ * tipo não distingue) passava verde: o fake respondia igual a qualquer filtro.
+ */
+let filtrosDeMessages: Array<[string, unknown]> = [];
 
 /** Imita o builder do PostgREST: encadeável, o efeito acontece no `await`. */
 function cadeia(rotulo: string): Record<string, unknown> {
@@ -75,9 +91,39 @@ const admin = {
         ultimoUpdate = payload;
         return cadeia(`update:${tabela}`);
       },
+      /**
+       * Só `messages` responde. As outras tabelas continuam devolvendo `null`,
+       * como antes desta guarda existir: o teste mede o passo da origem, e uma
+       * resposta inventada para as vizinhas mudaria o que os outros casos veem.
+       */
+      select(_colunas: string, _opcoes?: unknown) {
+        const consulta = {
+          eq(coluna: string, valor: unknown) {
+            if (tabela === "messages") filtrosDeMessages.push([coluna, valor]);
+            return consulta;
+          },
+          order(_coluna: string, _opcoes?: unknown) {
+            return consulta;
+          },
+          limit(_n: number) {
+            return consulta;
+          },
+          async maybeSingle() {
+            if (tabela !== "messages") return { data: null, count: null, error: null };
+            sequencia.push("select:messages");
+            return {
+              data: historicoDoContato.id ? { id: historicoDoContato.id } : null,
+              count: historicoDoContato.count,
+              error: historicoErro,
+            };
+          },
+        };
+        return consulta;
+      },
     };
   },
   async rpc(nome: string, args: Record<string, unknown>) {
+    rpcChamadas.push({ nome, args });
     ultimaRpc = args;
     sequencia.push(`rpc:${args.p_event_type ?? nome}`);
     return { error: rpcErro };
@@ -105,8 +151,12 @@ beforeEach(() => {
   sequencia = [];
   updateErro = null;
   rpcErro = null;
+  historicoDoContato = { id: "msg-1", count: 1 };
+  historicoErro = null;
   ultimoUpdate = null;
   ultimaRpc = null;
+  rpcChamadas = [];
+  filtrosDeMessages = [];
   audit.mockClear();
   garantirLeadDaConversa.mockClear();
   garantirLeadDaConversa.mockResolvedValue({ criado: true, leadId: "lead-1" } as never);
@@ -152,6 +202,25 @@ describe("opt-out", () => {
   it("bloqueia o contato quando a mensagem pede para sair", async () => {
     await rodar({ texto: "quero PARAR de receber" });
     expect(ultimoUpdate).toMatchObject({ is_blocked: true, blocked_reason: "stop_keyword" });
+  });
+
+  it("a palavra que a abordagem fria PROMETE é a que bloqueia aqui — a volta do laço", async () => {
+    // A ida (a mensagem oferece a saída) mora em
+    // `prospeccao-oferece-saida-e-a-saida-funciona`. Este é o outro lado, e os
+    // dois puxam da MESMA fonte: se alguém trocar a palavra do rodapé por uma
+    // que a ingestão não reconhece, um dos dois arquivos fica vermelho.
+    //
+    // Sem esta ligação, cada metade passava sozinha e a pessoa pedia para sair
+    // sem sair — que é pior que nunca ter prometido, porque ela responde, nada
+    // acontece, e conclui que foi ignorada.
+    for (const locale of ["pt-BR", "es-AR", "en-US"]) {
+      ultimoUpdate = null;
+      await rodar({ texto: palavraDeSaida(locale) });
+      expect(
+        ultimoUpdate,
+        `o rodapé de ${locale} promete "${palavraDeSaida(locale)}" e a ingestão não bloqueou`,
+      ).toMatchObject({ is_blocked: true, blocked_reason: "stop_keyword" });
+    }
   });
 
   it("NÃO bloqueia quem só escreveu uma palavra parecida", async () => {
@@ -340,5 +409,142 @@ describe("os dois canais usam o mesmo passo", () => {
     expect(ingestao, "a ingestão voltou a ter regra própria de opt-out").not.toMatch(
       /STOP\|PARAR\|SAIR\|UNSUBSCRIBE/,
     );
+  });
+});
+
+
+/**
+ * ─── A ORIGEM DA PÁGINA, NA CHEGADA PELO WHATSAPP (#924) ───────────────────
+ *
+ * Quem clica num anúncio e cai numa landing page chega ao WhatsApp com o texto
+ * pré-preenchido do `wa.me`. Quem clica num anúncio que vai direto para o
+ * WhatsApp chega com "Quero saber mais sobre X" -- e esse caso já tem atribuição
+ * (a plataforma e o id do anúncio vêm no contexto do canal).
+ *
+ * A origem de SITE não tem esse transporte: o `wa.me` abre o app pelo sistema
+ * operacional, sem cookie, sem referrer e sem sessão. A única coisa que
+ * atravessa a fronteira é o TEXTO da primeira mensagem. Antes deste passo as
+ * UTMs morriam na página, e a atribuição de quem veio do site ficava em branco.
+ *
+ * ─── Por que a POSIÇÃO do passo é vigiada aqui ──────────────────────────────
+ *
+ * O card COPIA a origem do contato no nascimento. Estampar depois do passo do
+ * lead deixaria o card com a origem de sempre e o dado só no contato — que é
+ * justamente onde ninguém olha. Opt-out continua em PRIMEIRO (LGPD: quem pediu
+ * para sair tem de estar bloqueado antes de virar oportunidade).
+ *
+ * ─── O que este passo NÃO faz ────────────────────────────────────────────────
+ *
+ * Não sobrescreve primeiro toque (a guarda é da
+ * `fn_estampar_atribuicao_de_anuncio`, no banco, e não é re-medida aqui), não
+ * autoriza IA e não abre demanda. Falha para dentro, como os outros.
+ */
+describe("a origem da página que veio no texto", () => {
+  /**
+   * O contrato `[dk1:<base64url(JSON)>]` escrito AQUI de forma independente, com
+   * o Buffer do Node. Se o codificador do lib divergir deste formato, este
+   * arquivo continua medindo o que importa: o que a ingestão aceita.
+   */
+  const marcador = (utm: Record<string, string>) =>
+    `[dk1:${Buffer.from(JSON.stringify(utm), "utf8").toString("base64url")}]`;
+
+  const CODIGO = marcador({
+    utm_source: "instagram",
+    utm_medium: "social",
+    utm_campaign: "pesquisa-preco",
+    gclid: "Cj0KCQjw",
+  });
+
+  const nomesDeRpc = () => rpcChamadas.map((c) => c.nome);
+  const indiceDoRpc = (nome: string) => rpcChamadas.findIndex((c) => c.nome === nome);
+
+  it("estampa a origem no contato ANTES do card nascer", async () => {
+    garantirLeadDaConversa.mockImplementationOnce(async () => {
+      sequencia.push("lead:nascimento");
+      return { criado: true, leadId: "lead-1" } as never;
+    });
+
+    await rodar({ texto: `oi! vi voces no site ${CODIGO}` });
+
+    const i = indiceDoRpc("fn_estampar_atribuicao_de_anuncio");
+    expect(i, "a origem da página não foi estampada no contato").toBeGreaterThanOrEqual(0);
+    expect(
+      sequencia.indexOf("lead:nascimento"),
+      "o card nasceu antes da origem ser gravada",
+    ).toBeGreaterThan(sequencia.indexOf("rpc:fn_estampar_atribuicao_de_anuncio"));
+    expect(rpcChamadas[i]?.args).toMatchObject({
+      p_contact: "contato-1",
+      p_platform: "site",
+      p_metadata: { ad_platform: "site", utm_source: "instagram", gclid: "Cj0KCQjw" },
+    });
+  });
+
+  it("sem código no texto, nada é estampado", async () => {
+    await rodar({ texto: "oi, tudo bem?" });
+    expect(nomesDeRpc()).not.toContain("fn_estampar_atribuicao_de_anuncio");
+  });
+
+  it("marcador ilegível não estampa e não impede o card", async () => {
+    await rodar({ texto: "oi [dk1:%%%%nao-e-carga%%%%]" });
+    expect(nomesDeRpc()).not.toContain("fn_estampar_atribuicao_de_anuncio");
+    expect(garantirLeadDaConversa).toHaveBeenCalled();
+  });
+
+  it("se o banco recusar a estampagem, os outros efeitos seguem", async () => {
+    rpcErro = { message: "permission denied" };
+    await rodar({ texto: `oi ${CODIGO}` });
+    expect(nomesDeRpc()).toContain("fn_estampar_atribuicao_de_anuncio");
+    expect(garantirLeadDaConversa).toHaveBeenCalled();
+    expect(vi.mocked(acelerarPipelineDeEventos)).toHaveBeenCalled();
+  });
+
+  it("na SEGUNDA mensagem do contato o código NÃO estampa", async () => {
+    // O link encaminhado adiante não é atribuição de quem o recebeu. O contato
+    // já tinha uma mensagem de entrada antes desta — então esta não é a
+    // primeira, e a origem não entra.
+    historicoDoContato = { id: "msg-0", count: 2 };
+    await rodar({ texto: `oi! vi voces no site ${CODIGO}`, messageId: "msg-1" });
+    expect(nomesDeRpc()).not.toContain("fn_estampar_atribuicao_de_anuncio");
+    expect(garantirLeadDaConversa).toHaveBeenCalled();
+  });
+
+  it("o histórico lido é o DESTE contato, nesta organização — cada uuid na sua coluna", async () => {
+    // `ehAPrimeiraMensagemDoContato(admin, organizationId, contactId, …)`: dois
+    // uuid seguidos, do mesmo tipo. Trocados no call site, a consulta procura
+    // o contato na coluna da organização, não acha nada, e a origem nunca
+    // estampa — sem erro, só silêncio (continuação da correção do #1213).
+    await rodar({ texto: `oi ${CODIGO}` });
+    expect(filtrosDeMessages).toContainEqual(["organization_id", ENTRADA.organizationId]);
+    expect(filtrosDeMessages).toContainEqual(["contact_id", ENTRADA.contactId]);
+  });
+
+  it("olha o histórico ANTES de escrever no contato", async () => {
+    // A ordem é a garantia: se a leitura do histórico viesse depois, uma falha
+    // nela deixaria a origem gravada e sem primeiro toque confirmado.
+    await rodar({ texto: `oi ${CODIGO}` });
+    const leitura = sequencia.indexOf("select:messages");
+    expect(leitura).toBeGreaterThanOrEqual(0);
+    expect(leitura).toBeLessThan(sequencia.indexOf("rpc:fn_estampar_atribuicao_de_anuncio"));
+  });
+
+  it("reentrega estampa só quando o contato tem UMA mensagem de entrada", async () => {
+    // Sem id de mensagem nova (reentrega) não dá para perguntar "é esta linha?".
+    // Com mais de uma mensagem no histórico, não se grava; com exatamente uma,
+    // não há dúvida de qual linha é.
+    historicoDoContato = { id: "msg-1", count: 3 };
+    await rodar({ texto: `oi ${CODIGO}`, messageId: null });
+    expect(nomesDeRpc()).not.toContain("fn_estampar_atribuicao_de_anuncio");
+
+    historicoDoContato = { id: "msg-1", count: 1 };
+    await rodar({ texto: `oi ${CODIGO}`, messageId: null });
+    expect(nomesDeRpc()).toContain("fn_estampar_atribuicao_de_anuncio");
+  });
+
+  it("falha ao ler o histórico NÃO grava origem e não derruba a ingestão", async () => {
+    historicoErro = { message: "banco fora do ar" };
+    await expect(rodar({ texto: `oi ${CODIGO}` })).resolves.toBeUndefined();
+    expect(nomesDeRpc()).not.toContain("fn_estampar_atribuicao_de_anuncio");
+    expect(garantirLeadDaConversa).toHaveBeenCalled();
+    expect(vi.mocked(acelerarPipelineDeEventos)).toHaveBeenCalled();
   });
 });

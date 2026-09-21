@@ -116,7 +116,14 @@ function envolver(ui: ReactNode) {
 
 /** O que a rota devolveria, montado pelo caminho de produção. */
 async function corpoDaRota(): Promise<{ cases: ChamadoDaLista[]; open_count: number }> {
-  const { chamados, abertos } = await listarChamados(clienteFake(), ORG, { estado: "abertos" });
+  // `visiveisPara: "todas"` porque a sonda daqui é sobre a PROJEÇÃO (o assunto
+  // atravessa consulta → `achatarContato` → tela), não sobre visibilidade —
+  // recortar aqui esvaziaria a lista e mediria outra coisa. Quem mede o recorte
+  // é `tests/unit/chamados-visibilidade.test.ts`.
+  const { chamados, abertos } = await listarChamados(clienteFake(), ORG, {
+    estado: "abertos",
+    visiveisPara: "todas",
+  });
   return { cases: chamados, open_count: abertos };
 }
 

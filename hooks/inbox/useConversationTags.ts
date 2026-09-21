@@ -25,6 +25,10 @@ export function useUpdateConversationTags() {
     onSuccess: (_data, args) => {
       qc.invalidateQueries({ queryKey: ["conversations"] });
       qc.invalidateQueries({ queryKey: ["conversation", args.conversation_id] });
+      // Gravar tag é o que ALIMENTA o vocabulário (`staleTime` de 5 min): sem
+      // reler, o marcador recém-criado não aparece no filtro do Inbox nem nas
+      // sugestões até a página recarregar. O lado do contato já relia (#852).
+      qc.invalidateQueries({ queryKey: ["conversation-tag-vocabulary"] });
     },
   });
 }

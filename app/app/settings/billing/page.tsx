@@ -21,7 +21,7 @@ export default async function BillingPage() {
   if (!activeOrg || ROLE_RANK[activeOrg.role] < ROLE_RANK.admin) {
     redirect("/403");
   }
-  const suporte = emailDeSuporte();
+  const suporte = await emailDeSuporte();
   const idioma = user.idioma;
   return (
     <div className="flex h-full flex-col gap-6 p-6">

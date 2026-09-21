@@ -25,6 +25,8 @@ import { describe, expect, it, vi } from "vitest";
  * DEVOLVIDO seja o do arquivo guardado — devolver o original mandaria o canal
  * buscar um `webm` que já não existe, que é o mesmo defeito um passo adiante.
  */
+import { extFromMime } from "@/lib/messaging/media/types";
+import { validateOutboundMedia } from "@/lib/messaging/media/upload-validation";
 import {
   VOICE_MIME,
   precisaTranscodificar,
@@ -103,8 +105,19 @@ describe("a conversão", () => {
     expect(r.convertido).toBe(false);
   });
 
-  it("o destino é o mime que a plataforma aceita", () => {
-    expect(VOICE_MIME).toBe("audio/ogg");
+  it("o destino é o mime que a plataforma aceita — COM o codec", () => {
+    // `base audio/ogg not supported` está na doc do canal oficial. Sem o
+    // `codecs=opus` o Storage serve o Content-Type que a plataforma recusa, e o
+    // 131053 volta — só que agora culpando um arquivo que está certo.
+    expect(VOICE_MIME).toBe("audio/ogg;codecs=opus");
+  });
+
+  it("o mime de destino continua rendendo a extensão e a categoria certas", () => {
+    // O `;codecs=opus` passa por dois pontos que cortam no `;`. Se um deles
+    // deixar de cortar, o arquivo vira `.bin` no bucket ou perde a categoria
+    // `audio` — e a nota de voz sai como documento.
+    expect(extFromMime(VOICE_MIME)).toBe("ogg");
+    expect(validateOutboundMedia(VOICE_MIME, 1024)).toEqual({ ok: true, kind: "audio" });
   });
 });
 

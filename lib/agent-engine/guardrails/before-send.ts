@@ -74,6 +74,8 @@ import { detectarVazamentoInterno, renderVetoDeVazamento } from './vazamento-int
 import { capabilitiesOf, DEFAULT_CHANNEL_PROVIDER } from '@/lib/channels/capabilities';
 import { isWindowOpen } from './messaging-window';
 import type { ChannelProvider } from '@/lib/channels/capabilities';
+import { aplicarAjustesDeEstilo, lerAjustesDeEstiloDaOrg } from './ajustes-de-estilo-da-org';
+import type { AjusteDeEstilo, LeituraDosAjustes } from './ajustes-de-estilo-da-org';
 
 /** O que os gates enxergam — carregado UMA vez sob o lock, por tentativa de envio. */
 export interface GateContext {
@@ -178,11 +180,11 @@ export interface GateContext {
   openedCaseThisTurn: boolean;
   /**
    * Nome(s) próprio(s) que o PROMPT do tenant usa para a retaguarda humana (ex.:
-   * "Fernando"), somados ao vocabulário genérico do `casePromiseGate`
+   * "Fulano"), somados ao vocabulário genérico do `casePromiseGate`
    * (`detectHumanPromise`/`human-promise.ts`). Ausente/vazio = só os cargos
    * genéricos (comportamento anterior, retrocompatível). Sem isto, um agente cujo
    * prompt nomeia a pessoa em vez do cargo escapa 100% do detector — medido em
-   * produção, tenant YADEA: dezenas de promessas nomeando "Fernando", 1 só
+   * produção, num tenant: dezenas de promessas nomeando o gerente pelo nome, 1 só
    * detecção em 3 dias.
    */
   humanPromiseExtraTargets?: readonly string[];
@@ -245,14 +247,16 @@ export interface GateContext {
    * Esse agente tem `crm_find_free_slots`, promete "vou verificar e te aviso" do mesmo
    * jeito, e ficava sem a única cura determinística que existe para isso.
    *
-   * `podeMarcar` não arma nem desarma: ele decide o TEXTO do veto. Mandar um agente que
-   * só consulta "chamar crm_book_appointment" é ensinar uma ferramenta que ele não tem —
-   * o modelo tenta, falha, e a correção vira um segundo defeito.
+   * `ferramentas` não arma nem desarma: é o TEXTO do veto — as ferramentas de agenda que
+   * ESTE agente tem, e só elas. Mandar um agente que só consulta "chamar
+   * crm_book_appointment", ou o que só tem a conjunta chamar a avulsa, é ensinar uma
+   * ferramenta que ele não tem — o modelo tenta, falha, e a correção vira um segundo
+   * defeito. Já foi um booleano (`podeMarcar`), e um booleano não diz QUAL.
    *
    * `toolCalledThisTurn` é se alguma delas já foi chamada neste turno (rastreado no call
    * site, que é quem monta as tools).
    */
-  agenda?: { active: boolean; podeMarcar: boolean; toolCalledThisTurn: boolean };
+  agenda?: { active: boolean; ferramentas: readonly string[]; toolCalledThisTurn: boolean };
 }
 
 /**
@@ -446,13 +450,70 @@ export const internalVocabularyGate: Gate = {
  * Padrão determinístico de "prometi verificar/confirmar agenda sem checar" — verbo de
  * intenção (vou/estou/iremos) + verbo de checagem (verificar/confirmar/consultar) perto
  * (≤80 chars) de um substantivo de agenda. Curto de propósito: cobre as frases MEDIDAS em
- * produção (2026-08-29, tenant YADEA/gpt-5.6-terra) — "vou verificar as opções de horário
+ * produção (2026-08-29, gpt-5.6-terra) — "vou verificar as opções de horário
  * [...] e te passo assim que tiver a confirmação", "estou confirmando com a equipe os
  * horários disponíveis" — não uma gramática geral de intenção, que erraria para o lado do
  * falso positivo em texto livre de WhatsApp.
+ *
+ * ─── #1019: o SERVIÇO também é substantivo de agenda, e "organizar" é checagem ──
+ *
+ * Medido no relato: com as três capacidades de agenda ligadas, o agente chamou
+ * `crm_list_event_types` 7× (todas com sucesso no `api_audit_log`) e zero vezes
+ * `crm_find_free_slots`; o texto que saiu foi "vou verificar/organizar seu atendimento".
+ * O gate estava armado e passou batido — duas faltas na lista, uma por frase:
+ *
+ *   - SUBSTANTIVO: "atendimento" não estava lá, e é a palavra que este produto usa para
+ *     o serviço que se agenda — o rótulo da capacidade é literalmente "Marcar consulta ou
+ *     sessão". Quem marca é `crm_book_appointment`; quem tem agenda marcada é o serviço,
+ *     com o nome que a TELA dá a ele. `consulta` e `sess[aã]?o` entram pelo mesmo motivo
+ *     (e `sess[aã]?o` aceita a forma sem acento porque o corpo chega normalizado).
+ *   - VERBO: "organizar" não estava na lista. O modelo não prometeu verificar — prometeu
+ *     ORGANIZAR, que é a mesma promessa vazia vista de outro ângulo.
+ *
+ * O falso positivo que se abre com isto é texto de conversa comum ("o atendimento de vocês
+ * é ótimo") — que NÃO casa, porque o padrão continua exigindo as três partes na ordem
+ * (intenção + checagem + substantivo, a ≤80 chars). O preço aceito é o outro lado: com
+ * agenda ativa e sem ferramenta chamada, "vou organizar seu atendimento" não tem versão
+ * aceitável — o agente tem como checar antes de prometer.
+ *
+ * ─── #1038 (item A): o substantivo do SERVIÇO colado ao verbo de checagem ──────
+ *
+ * O recorte da #1019 VETAVA DEMAIS, e isso foi MEDIDO, não suposto: extraído o literal
+ * deste arquivo e rodado contra nove frases, SEIS casavam no head e não casavam na main.
+ * A classe atingida é a de dois dos nichos centrais do produto — clínica e suporte:
+ *
+ *   "Vou confirmar se o plano cobre a consulta"
+ *   "Vou verificar o valor da sessão de fisioterapia"
+ *   "Vou consultar o resultado da sua consulta com o médico"
+ *   "Estou verificando o histórico do seu atendimento anterior"
+ *   "Vou verificar o status do seu pedido e já retorno sobre o atendimento"
+ *   "Vou organizar as informações do seu atendimento"
+ *
+ * Em todas, o substantivo do serviço aparece LONGE do verbo, como ASSUNTO (plano, valor,
+ * resultado, histórico, status, informações) — e o `[^.!?\n]{0,80}` casava assim mesmo.
+ * Com a agenda armada e sem ferramenta chamada no turno, cada uma dessas respostas era
+ * vetada: conteúdo legítimo sobre cobertura de plano, preço e histórico descartado por um
+ * substantivo que estava ali de passagem.
+ *
+ * O recorte estreitado (a "opção 1" do mantenedor): só para os substantivos do SERVIÇO
+ * (`atendimento`, `consulta`, `sess[aã]?o`) o casamento passa a exigir OBJETO DIRETO
+ * COLADO — verbo de checagem, artigo/possessivo OPCIONAL ("o", "a", "seu", "sua",
+ * "nosso"…) e o substantivo, sem nada entre eles. Daí: "vou verificar seu atendimento"
+ * casa (é a promessa do relato #1019, com ou sem artigo), "vou verificar o valor da
+ * sessão" não casa. Os substantivos de AGENDA (`horário`, `agenda`, `disponibilidade`,
+ * `agendamento`, `marcação`, `encaixe`, `vaga`) mantêm a folga de 80 chars: são eles que
+ * carregam as duas frases medidas do incidente original, em que o substantivo vem
+ * QUALIFICADO ("as opções de horário", "os horários disponíveis") e nunca colado.
+ *
+ * Preço declarado: com a agenda armada e sem ferramenta chamada, uma promessa em que o
+ * serviço aparece só como assunto deixa de ser vetada — é o que se paga para parar de
+ * vetar as seis. O que guarda esta fronteira é `tests/unit/gate-agenda-stall.test.ts`
+ * (as SEIS como controle NEGATIVO, ao lado dos controles que continuam vetando e do que
+ * continua passando). Nada aqui foi medido em produção; o custo real de um veto indevido
+ * segue não medido neste repo.
  */
 const AGENDA_STALL_PATTERN =
-  /\b(vou|estou|iremos|vamos)\b[^.!?\n]{0,10}\b(verificando|verificar|confirmando|confirmar|consultando|consultar)\b[^.!?\n]{0,80}\b(hor[aá]rios?|agenda|disponibilidade|agendamento|marca[çc][aã]o|encaixe|vagas?)\b/i;
+  /\b(vou|estou|iremos|vamos)\b[^.!?\n]{0,10}\b(verificando|verificar|confirmando|confirmar|consultando|consultar|organizando|organizar)\b(?:[^.!?\n]{0,80}\b(?:hor[aá]rios?|agenda|disponibilidade|agendamento|marca[çc][aã]o|encaixe|vagas?)\b|\s+(?:[oa]s?\s+)?(?:meu\s+|minha\s+|seu\s+|sua\s+|nosso\s+|nossa\s+|teu\s+|tua\s+)?(?:atendimento|consulta|sess[aã]?o)\b)/i;
 
 /**
  * Padrão irmão do `AGENDA_STALL_PATTERN`, mas para a outra metade do mesmo defeito: não
@@ -460,7 +521,7 @@ const AGENDA_STALL_PATTERN =
  * ("está confirmado/agendado/marcado/certinho") — o texto exato do incidente original
  * que deu origem a este gate ("Seu agendamento está confirmado para amanhã às 9h",
  * "Confirmando: seu agendamento está certinho para amanhã às 9h"), medido em produção
- * 2026-08-29 (tenant YADEA) ANTES de o `AGENDA_STALL_PATTERN` existir. O padrão de
+ * 2026-08-29 ANTES de o `AGENDA_STALL_PATTERN` existir. O padrão de
  * promessa sozinho não cobre essa frase (não há "vou/estou" + verbo de checagem nela),
  * então uma confirmação categórica sem chamada de ferramenta passava batido mesmo com o
  * gate armado. Mesma disciplina: substantivo de agenda perto de "está/ficou/fica" perto
@@ -486,13 +547,24 @@ function semAcento(texto: string): string {
 }
 
 /**
+ * Nomes de ferramenta como o modelo os lê num texto de ensino: "`a`", "`a` ou `b`",
+ * "`a`, `b` ou `c`". Usado pelo veto de agenda e pelo bloco residente de agenda
+ * (`inbound-turn.ts`), que precisam nomear as MESMAS ferramentas do mesmo jeito.
+ */
+export function nomesDasFerramentas(nomes: readonly string[]): string {
+  const marcados = nomes.map((n) => `\`${n}\``);
+  if (marcados.length <= 1) return marcados.join('');
+  return `${marcados.slice(0, -1).join(', ')} ou ${marcados[marcados.length - 1]}`;
+}
+
+/**
  * Gate de AGENDA SEM CHECAR — a garantia DURA de que "vou verificar/confirmar horário" (ou
  * "está confirmado/agendado") só sai depois de a ferramenta (`crm_find_free_slots`/
  * `crm_book_appointment`/`crm_reschedule_appointment`) ter sido de fato CHAMADA neste turno.
  * Desarmado (`agenda` ausente ou `active` false) = no-op — mesmo default seguro de
  * `internalVocabularyEnforced` (caller que não conhece o campo não arma nada).
  *
- * Por que existe apesar do `AGENDA_SYSTEM_BLOCK` (instrução em texto, `inbound-turn.ts`) já
+ * Por que existe apesar do `agendaSystemBlock` (instrução em texto, `inbound-turn.ts`) já
  * dizer a mesma regra: medido em produção (2026-08-29, mesmo tenant) que o modelo
  * (`openai/gpt-5.6-terra`) ignora a instrução e ainda assim promete verificar sem chamar a
  * ferramenta — a instrução sozinha não é garantia, só ensino. Este gate é a cura
@@ -516,11 +588,17 @@ export const agendaStallGate: Gate = {
     return {
       pass: false,
       code: 'agenda_stall_sem_ferramenta',
-      // As ferramentas nomeadas são as que ESTE agente tem. Ver `podeMarcar`.
+      // O veto nomeia as ferramentas de agenda que ESTE agente tem, e só elas.
+      //
+      // ⚠️ Já nomeou uma lista fixa: `crm_find_free_slots, crm_book_appointment ou
+      // crm_reschedule_appointment` para todo agente que marca — e, desde a #831,
+      // há agente que tem SÓ `crm_find_and_book_appointment`, a quem o veto
+      // mandava chamar três ferramentas que ele não tem e nunca a que ele tem.
       reason: (() => {
-        const ferramentas = ctx.agenda.podeMarcar
-          ? 'crm_find_free_slots, crm_book_appointment ou crm_reschedule_appointment'
-          : 'crm_find_free_slots';
+        const ferramentas =
+          ctx.agenda.ferramentas.length > 0
+            ? nomesDasFerramentas(ctx.agenda.ferramentas)
+            : 'a ferramenta de agenda';
         return confirmedSemChecar
           ? `Você afirmou que um horário está confirmado/agendado sem ter chamado ${ferramentas} ` +
             'NESTE turno. Nunca diga que está confirmado sem a ferramenta ter registrado de fato — ' +
@@ -681,7 +759,7 @@ const spinningGate: Gate = {
  * que já existia — muda o TRACE, e passa a medir o vazamento onde há modelo para ensinar.
  * v7 = insere `agendaStallGate` entre `internal_vocabulary` e `disclosure` — a garantia
  * DETERMINÍSTICA de que "vou verificar/confirmar horário" só sai depois de a ferramenta de
- * agenda ter sido chamada neste turno (medido em produção, 2026-08-29: o `AGENDA_SYSTEM_BLOCK`
+ * agenda ter sido chamada neste turno (medido em produção, 2026-08-29: o `agendaSystemBlock`
  * em texto, sozinho, não bastou — o modelo prometeu checar sem chamar a ferramenta mesmo com
  * a instrução presente e por último no prompt). Nasce DESARMADO por default (ver
  * `GateContext.agenda`): só o caminho do agente o arma quando o agente publicado tem
@@ -841,6 +919,13 @@ export interface RunBeforeSendArgs {
    */
   agenda?: GateContext['agenda'];
   /**
+   * Pausa humana do turno, paga ANTES de o guardrail tomar conexão/transação
+   * (issue #654) — o porquê está no corpo de `runBeforeSend`. Ausente (default)
+   * = nenhuma pausa: todo caller que não é o turno de ENTRADA
+   * (`followup-turn.ts`, drain, testes) segue bit a bit como antes.
+   */
+  esperaForaDoLock?: () => Promise<void>;
+  /**
    * Enviado SÓ se TODOS os gates passarem — ChannelAdapter (própria tx/idempotência). Recebe o
    * corpo FINAL (o disclosureGate F4-05 pode emendá-lo via `amendBody`): quem monta o send DEVE
    * enviar este `body`, não o corpo original capturado antes da cadeia.
@@ -895,17 +980,83 @@ export function evaluateBeforeSend(
   return { body: ctx.body, trace, veto, throttleWaitMs };
 }
 
+/**
+ * A linha de trace da reescrita de estilo (#378 / PR #1139).
+ *
+ * Três desfechos, e os três precisam ser distinguíveis numa auditoria:
+ *   * `aplicado`       — o texto do modelo mudou, e diz qual ajuste estava ligado;
+ *   * `sem_mudanca`    — a organização tem ajuste ligado e o texto não tinha o que trocar;
+ *   * `leitura_falhou` — não deu para perguntar à organização, e o default (desligado)
+ *                        valeu. Sem esta linha, "a organização desligou" e "não
+ *                        consegui perguntar" teriam exatamente a mesma cara.
+ * Corpo nunca entra aqui — só rótulos e o número de caracteres de diferença.
+ */
+function rastroDoEstilo(
+  estilo: LeituraDosAjustes | null,
+  antes: string,
+  depois: string,
+): GateTraceEntry[] {
+  if (estilo === null) return [];
+  if (estilo.leituraFalhou)
+    return [{ gate: 'ajustes_de_estilo', verdict: 'skipped', code: 'leitura_falhou' }];
+  const ligados = (Object.keys(estilo.ajustes) as AjusteDeEstilo[]).filter(
+    (ajuste) => estilo.ajustes[ajuste],
+  );
+  if (ligados.length === 0)
+    return [{ gate: 'ajustes_de_estilo', verdict: 'skipped', code: 'desligado' }];
+  if (antes === depois)
+    return [
+      {
+        gate: 'ajustes_de_estilo',
+        verdict: 'skipped',
+        code: 'sem_mudanca',
+        detail: { ligados: ligados.join(',') },
+      },
+    ];
+  return [
+    {
+      gate: 'ajustes_de_estilo',
+      verdict: 'pass',
+      code: 'aplicado',
+      detail: { ligados: ligados.join(','), delta: depois.length - antes.length },
+    },
+  ];
+}
+
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Roda a cadeia before_send para UMA tentativa de envio. Curto-circuita no 1º veto
  * (o resto da cadeia é registrado como 'skipped'); só chama `send()` se todos passam.
  * Serializa o read-then-act por número via advisory xact lock (ver cabeçalho).
+ *
+ * A pausa humana do turno é paga AQUI, ANTES de qualquer contato com o banco (#654).
+ * Antes ela era paga dentro do `send` (via `antesDaPrimeira` do `sendInBubbles`), e o
+ * `send` só é chamado com o `pg_advisory_xact_lock` do NÚMERO na mão: cada turno
+ * segurava a fila do número por 1,2s–7,5s além do necessário (+0–2s do throttle
+ * anti-ban, que dorme no mesmo ponto), e o efeito é o de fora — dois atendentes no
+ * MESMO WhatsApp entram em fila, e a fila ficou mais longa.
+ *
+ * O que NÃO muda de ordem: a cadeia continua julgando (e o estado sob o lock sendo
+ * lido) exatamente quando julgava, o `send` continua acontecendo sob o lock, uma vez
+ * por re-run, e o `finalBody` pós-disclosure continua sendo o que vai ao canal. A
+ * espera é a única coisa que sai da janela da transação.
  */
 export async function runBeforeSend(args: RunBeforeSendArgs): Promise<BeforeSendResult> {
   const gates = args.gates ?? BEFORE_SEND_GATES;
+  // Fora do lock (nem conexão tomada): aqui não existe transação aberta para segurar.
+  if (args.esperaForaDoLock) await args.esperaForaDoLock();
   const client = await args.pool.connect();
   try {
+    // ANTES do `begin`, de propósito: preferência de estilo não precisa do lock,
+    // e uma consulta que falha DENTRO da transação a deixa abortada — a próxima
+    // morreria com 25P02, longe daqui e com outro nome. Aqui, uma falha custa o
+    // default (desligado) e uma linha no trace, não o envio.
+    const estilo =
+      args.enforceInternalVocabulary !== undefined
+        ? await lerAjustesDeEstiloDaOrg(client, args.tenantId)
+        : null;
+
     await client.query('begin');
     // Serialização por número: dois workers no MESMO channel_session esperam a vez.
     await client.query('select pg_advisory_xact_lock(hashtext($1))', [args.channelSessionId]);
@@ -941,6 +1092,15 @@ export async function runBeforeSend(args: RunBeforeSendArgs): Promise<BeforeSend
         replyPolicy?.body !== args.body)
     )
       throw new Error('reply_scope_mismatch');
+
+    // O campo `enforceInternalVocabulary` tem três estados no seam: AUSENTE nos
+    // envios determinísticos/humanos, `true` no texto normal do modelo e `false`
+    // somente no re-run do fail-safe do próprio modelo. A PRESENÇA, portanto, é
+    // o marcador estável de "este corpo foi escrito pela IA" sem fazer template,
+    // resposta aprovada ou aviso de código passarem por uma preferência de estilo.
+    const bodyDoModelo =
+      estilo !== null ? aplicarAjustesDeEstilo(args.body, estilo.ajustes) : args.body;
+
     const optedOut =
       args.optedOutThisTurn ||
       (await readStopFlags(
@@ -974,10 +1134,11 @@ export async function runBeforeSend(args: RunBeforeSendArgs): Promise<BeforeSend
     );
     // org de fonte confiável (RunBeforeSendArgs.tenantId = organization_id do row do job) — regra dura nº 1.
     const promise = await loadPromiseTable(client, args.tenantId);
-    // Camada semântica (F4-02): a chamada de modelo (async) roda AQUI, sob o lock, e o
-    // veredito entra no ctx para o `semanticPromiseGate` (sync) ler. Ausente = camada off.
+    // Camada semântica (F4-02): recebe o MESMO corpo final de estilo que os gates
+    // determinísticos receberão. Se classificasse `args.body`, a cadeia julgaria
+    // uma frase diferente da que efetivamente pode chegar ao cliente.
     const semanticPromise = args.classifyPromiseSemantic
-      ? await args.classifyPromiseSemantic(args.body)
+      ? await args.classifyPromiseSemantic(bodyDoModelo)
       : null;
     // Disclosure (F4-05): template por ponteiro da org + detecção de 1º outbound via
     // send_ledger (só conta se há template — sem template o gate é no-op de qualquer forma).
@@ -998,7 +1159,7 @@ export async function runBeforeSend(args: RunBeforeSendArgs): Promise<BeforeSend
 
     const ctx: GateContext = {
       now: args.now,
-      body: args.body,
+      body: bodyDoModelo,
       optedOut,
       provider,
       messagingWindow: { lastInboundAt, ...(args.isTemplate === true ? { isTemplate: true } : {}) },
@@ -1032,7 +1193,11 @@ export async function runBeforeSend(args: RunBeforeSendArgs): Promise<BeforeSend
       ...(args.agenda !== undefined ? { agenda: args.agenda } : {}),
     };
 
-    const { body: evaluatedBody, trace, veto, throttleWaitMs } = evaluateBeforeSend(ctx, gates);
+    const { body: evaluatedBody, trace: traceDaCadeia, veto, throttleWaitMs } = evaluateBeforeSend(ctx, gates);
+    // Reescrever o texto do modelo sem deixar rastro é mudar o que o cliente lê
+    // sem ninguém poder auditar depois. A linha entra ANTES da cadeia porque a
+    // reescrita acontece antes dela, e leva só rótulos — nunca o corpo (sem PII).
+    const trace: GateTraceEntry[] = [...rastroDoEstilo(estilo, args.body, bodyDoModelo), ...traceDaCadeia];
     ctx.body = evaluatedBody;
     emitTrace(args.log, args.channelSessionId, trace);
     // Auditoria DURÁVEL por run (F4-08 acceptance 3): escrita autônoma (pool, fora da tx

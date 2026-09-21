@@ -49,6 +49,7 @@ export {
   List,
   Bell,
   BellSlash,
+  EnvelopeSimple,
   PaperPlaneTilt,
   Smiley,
   Check,
@@ -88,6 +89,9 @@ export {
   MonitorPlay,
   // conversation
   ChatCircle,
+  WhatsappLogo,
+  InstagramLogo,
+  MessengerLogo,
   Phone,
   PhoneIncoming,
   PhoneOutgoing,

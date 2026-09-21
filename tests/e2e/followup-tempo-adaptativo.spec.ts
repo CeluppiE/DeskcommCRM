@@ -48,6 +48,8 @@ import * as path from "node:path";
 
 import { test, expect, type Page } from "@playwright/test";
 
+import { zoomAte } from "./utils/canvas-do-fluxo";
+
 const CREDS_PATH = path.join(process.cwd(), ".e2e-creds.json");
 // evidence/ é versionado; e2e-artifacts/ está no .gitignore e evidência citada
 // que não entra no repo é evidência que ninguém consegue conferir depois.
@@ -175,8 +177,7 @@ test.describe("nó de espera — o modo Adaptativo tem de decidir de verdade", (
     await page.getByTestId("palette-add-action").click();
     await page.getByTestId("palette-add-end").click();
 
-    const zoomOut = page.locator(".react-flow__controls-zoomout");
-    for (let i = 0; i < 5; i++) await zoomOut.click();
+    await zoomAte(page, 0.85);
 
     const triggerId = await page.locator('.react-flow__node[data-id^="trigger-"]').getAttribute("data-id");
     const waitId = await page.locator('.react-flow__node[data-id^="wait-"]').getAttribute("data-id");

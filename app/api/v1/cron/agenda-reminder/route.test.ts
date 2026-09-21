@@ -116,6 +116,38 @@ describe("montarLembrete", () => {
     });
     expect(texto).not.toContain("Endereço");
   });
+
+  it("molde próprio interpola nome, dia e hora, e deixa chave desconhecida no texto", () => {
+    const texto = montarLembrete({
+      nomeDoContato: "Ian Couto",
+      titulo: "Atendimento",
+      quando,
+      timezone: "America/Sao_Paulo",
+      local: "Sala 2",
+      molde: "Oi {{primeiro_nome}}! {{titulo}} {{dia}} às {{hora}} em {{endereco}}. {{foo}}",
+      tipoNome: "Consulta",
+    });
+    expect(texto).toBe("Oi Ian! Atendimento segunda-feira, 31/08 às 09:45 em Sala 2. {{foo}}");
+  });
+
+  it("molde em branco cai na frase padrão", () => {
+    const comMolde = montarLembrete({
+      nomeDoContato: "Ana",
+      titulo: "Retirada",
+      quando,
+      timezone: "America/Sao_Paulo",
+      local: null,
+      molde: "   ",
+    });
+    const semMolde = montarLembrete({
+      nomeDoContato: "Ana",
+      titulo: "Retirada",
+      quando,
+      timezone: "America/Sao_Paulo",
+      local: null,
+    });
+    expect(comMolde).toBe(semMolde);
+  });
 });
 
 describe("isolamento entre organizações (estrutural)", () => {
@@ -206,5 +238,11 @@ describe("o cron NÃO pode filtrar por reminder_sent_at", () => {
     const fonte = readFileSync(join(__dirname, "route.ts"), "utf8").replace(/--[^\n]*|\/\/[^\n]*/g, "");
     expect(fonte).not.toMatch(/\.is\(\s*["']reminder_sent_at["']/);
     expect(fonte).toMatch(/reminder_sent_offsets_minutes/);
+  });
+
+  it("lê o texto POR degrau — senão extra sai com a frase do principal", () => {
+    const fonte = readFileSync(join(__dirname, "route.ts"), "utf8");
+    expect(fonte).toMatch(/reminder_bodies/);
+    expect(fonte).toMatch(/moldeDoDegrau/);
   });
 });

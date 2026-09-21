@@ -140,6 +140,17 @@ export function InteligenciaDele({ inicial }: { inicial: EstadoDaChave }) {
           </div>
         </div>
 
+        {/*
+          A escolha vale para a EMPRESA, não só para este atendente — e quem lê
+          a tela precisa saber disso antes de escolher, não depois. É a mesma
+          decisão que o passo grava em `organizations.settings.llm`.
+        */}
+        <p className="text-xs text-muted-foreground">
+          {t(
+            "Esta escolha passa a valer para a empresa inteira: é esta inteligência que atende seus clientes.",
+          )}
+        </p>
+
         <div className="flex items-center gap-3">
           <Button
             type="button"
@@ -152,7 +163,7 @@ export function InteligenciaDele({ inicial }: { inicial: EstadoDaChave }) {
               fd.set("api_key", apiKey);
               const r = await salvarChaveDaIa(fd);
               setSalvando(false);
-              if (!r.ok) return toast.error(r.erro);
+              if (!r.ok) return toast.error(t(r.erro));
               // A chave sai da memória da tela no mesmo instante em que é aceita.
               setApiKey("");
               setChave({
@@ -161,7 +172,26 @@ export function InteligenciaDele({ inicial }: { inicial: EstadoDaChave }) {
                 rotulo: PROVEDORES.find((p) => p.id === provedor)?.rotulo ?? provedor,
                 final: r.final,
               });
-              toast.success(t("Chave guardada. Agora ele pode pensar."));
+              // A escolha acima passa a valer para a empresa inteira; quando ela
+              // NÃO passou a valer, a tela diz por quê. Dar "Chave guardada" e
+              // ficar calado sobre o padrão faria a pessoa acreditar que a IA da
+              // empresa mudou quando não mudou — e o sintoma só apareceria na
+              // hora de publicar.
+              if (r.aviso === "sem_modelo_no_catalogo") {
+                toast.warning(
+                  t(
+                    "A chave foi guardada. A lista de modelos desta empresa de IA ainda não chegou nesta instalação — por enquanto a IA da empresa continua a anterior. Não precisa colar a chave de novo.",
+                  ),
+                );
+              } else if (r.aviso) {
+                toast.warning(
+                  t(
+                    "A chave foi guardada, mas não consegui mudar a IA da empresa agora. Dá para trocar em IA › Provedores.",
+                  ),
+                );
+              } else {
+                toast.success(t("Chave guardada. Agora ele pode pensar."));
+              }
             }}
           >
             {salvando ? t("Guardando...") : t("Guardar a chave")}

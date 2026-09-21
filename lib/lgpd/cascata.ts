@@ -55,7 +55,15 @@ export const PAYLOAD_REDIGIDO: Record<string, unknown> = { redacted: true };
  * deixar régua viva para trás: `completed`, `cancelled` e `dead` são terminais,
  * e é a ausência deles nesta lista que torna o passo idempotente.
  */
-export const STATUS_DA_REGUA_VIVA = ["active", "waiting_reply", "paused_handoff", "paused_manual"] as const;
+export const STATUS_DA_REGUA_VIVA = [
+  "active",
+  "waiting_reply",
+  // Dorme, mas corre: tem hora marcada para voltar a falar. Deixá-lo de fora
+  // faria o expurgo passar ao largo de uma régua que acorda meses depois.
+  "dormente",
+  "paused_handoff",
+  "paused_manual",
+] as const;
 
 /**
  * O motivo gravado em `cancel_reason` — curto, sem PII, e greppável na

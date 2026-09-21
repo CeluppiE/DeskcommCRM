@@ -38,6 +38,14 @@ export interface AtritoRaw {
     esperas_caladas: number;
     esperas_medidas: number;
     espera_resposta_p90_s: number | null;
+    /**
+     * O LAÇO DE RETORNO DA PASSAGEM (migration 0294). Numerador e denominador
+     * SEPARADOS, e não uma razão pronta: só assim a borda consegue distinguir
+     * "ninguém repetiu" (0 de 10) de "ninguém voltou a falar" (0 de 0, que é
+     * ausência de dado e sai como `—`).
+     */
+    repeticao_pos_passagem: number;
+    passagens_medidas: number;
   };
   empresa: {
     intervencoes_por_demanda: number | null;
@@ -47,6 +55,13 @@ export interface AtritoRaw {
     vetos: number;
     execucoes_medidas: number;
     envios_por_ia: number;
+    /**
+     * Envios de REGRA (automação, follow-up fixo, lembrete de agenda): saíram
+     * sozinhos, mas ninguém os escreveu. É o número que a #652 acrescentou ao
+     * painel para a queda do "por IA" não ser lida como o agente encolhendo.
+     */
+    envios_por_automacao: number;
+    envios_por_integracao: number;
     envios_humano_no_sistema: number;
     envios_humano_fora: number;
     demandas_sem_proximo_passo: number;
@@ -108,10 +123,15 @@ export function razao(numerador: number, denominador: number): number | null {
 }
 
 /**
- * Quanto das respostas saiu do agente, sobre TODAS as saídas (IA + humano no
- * sistema + humano fora dele). Incluir o `external_device` no denominador é o
- * que impede a automação de parecer alta numa org onde o time responde pelo
- * celular: ali a IA não absorveu, ela apenas não foi usada.
+ * Quanto das respostas saiu do agente, sobre as saídas que TÊM dono entre o
+ * agente e uma pessoa (IA + humano no sistema + humano fora). Incluir o
+ * `external_device` no denominador é o que impede a automação de parecer alta
+ * numa org onde o time responde pelo celular: ali a IA não absorveu, ela apenas
+ * não foi usada.
+ *
+ * As linhas de AUTOMAÇÃO (#652) ficam de fora das duas pontas: nem o agente nem
+ * uma pessoa as escreveu, e misturá-las aqui faria o número do agente subir por
+ * mensagem que ele não escreveu. Elas aparecem no número próprio, no painel.
  */
 export function taxaDeAutomacao(e: AtritoRaw["empresa"]): number | null {
   return razao(e.envios_por_ia, e.envios_por_ia + e.envios_humano_no_sistema + e.envios_humano_fora);
@@ -254,6 +274,22 @@ export function montarPares(
           unidade: "razao",
           nota: t("O time respondeu pelo celular, contornando a ferramenta."),
         },
+        // ─── O LAÇO DE RETORNO DA PASSAGEM (invariante 7) ─────────────────
+        // Encostada em `pedidos_de_humano` de propósito: aquela medida conta
+        // QUANTAS vezes a IA desistiu; esta diz se a desistência custou caro à
+        // pessoa do outro lado. A pergunta que ela responde é a única que mede
+        // se o cartão da passagem serviu para alguma coisa — se o briefing
+        // chegou a quem assumiu, a repetição cai; se não chegou, ela não muda.
+        {
+          chave: "repeticao_pos_passagem",
+          rotulo: t("Clientes que repetiram depois da passagem"),
+          valor: razao(cliente.repeticao_pos_passagem, cliente.passagens_medidas),
+          unidade: "razao",
+          // A régua viaja com o número (doutrina §3.4 regra 4), e junto vai a
+          // ressalva de escopo: `fn_atrito_metrics` é SECURITY INVOKER, então
+          // dois papéis veem números diferentes de boa-fé.
+          nota: `${cliente.repeticao_pos_passagem} ${t("de")} ${cliente.passagens_medidas} ${t("passagens em que o cliente voltou a falar: ele teve de repetir o que já tinha dito.")} ${t("Limiar de 0,7 e janela de 24h. Quem atende em `visibility_mode='own'` vê só as conversas dele.")}`,
+        },
         // O agente respondeu — e a pessoa teve de perguntar de novo. É o dano
         // direto da automação: responder não é resolver.
         {
@@ -344,6 +380,31 @@ export function montarPares(
           valor: vetosPorExecucao(empresa),
           unidade: "media",
           nota: t("Quanto o sistema precisou ser contido de si mesmo antes de falar."),
+        },
+        // O número da #652. Ele existe porque o contrário dele mente: quando o
+        // carimbo da automação saiu de `'ai'`, o "por IA" CAIU para quem usa
+        // regra — sem este número, a queda apareceria como o agente encolhendo.
+        // O irmão do número acima, pela decisão da #866: o envio por TOKEN DE
+        // SERVIDOR também não é a IA — mas chamá-lo de "automação" seria mentir
+        // no rótulo, porque quem manda é um sistema de fora, não uma regra desta
+        // instalação. Número próprio, e os dois somados aos que já existiam.
+        {
+          chave: "envios_por_integracao",
+          rotulo: t("Mensagens enviadas por integração"),
+          valor: empresa.envios_por_integracao,
+          unidade: "contagem",
+          nota: t(
+            "Envios feitos por um sistema de fora com token de servidor. Como a automação, não entram no número do agente — e é por isso que ele cai onde há integração.",
+          ),
+        },
+        {
+          chave: "envios_por_automacao",
+          rotulo: t("Mensagens enviadas por automação"),
+          valor: empresa.envios_por_automacao,
+          unidade: "contagem",
+          nota: t(
+            "Regra de automação, texto fixo do follow-up e lembrete de agenda: saiu sozinho e ninguém escreveu. Não entra no número do agente — é por isso que ele cai onde há automação.",
+          ),
         },
       ],
     },

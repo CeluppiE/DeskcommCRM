@@ -28,7 +28,7 @@ import { beforeAll, describe, expect, it } from "vitest";
  *
  * 1. Controle positivo: quem é da organização lê a agenda dela. Sem isto, o
  *    jeito trivial de deixar o arquivo verde é quebrar a feature inteira.
- * 2. Isolamento: zero linhas do vizinho, nas SEIS tabelas.
+ * 2. Isolamento: zero linhas do vizinho, nas tabelas da agenda.
  * 3. Gate de papel em `calendar_connections`: um `viewer` que não é dono da
  *    conexão lê ZERO, e o `manager` lê. É o caso que distingue esta tabela das
  *    outras cinco — ela guarda token OAuth, e o PostgREST serve a tabela com a
@@ -93,7 +93,7 @@ const VIEWER_A = "ca1e0da2-1111-4000-8000-00000000000c";
 const MANAGER_A = "ca1e0da2-1111-4000-8000-00000000000d";
 const AGENT_B = "ca1e0da2-1111-4000-8000-00000000000b";
 
-/** As seis tabelas da agenda, todas tenant-aware. */
+/** As tabelas tenant-aware da agenda. */
 const TABELAS_DA_AGENDA = [
   "calendar_event_types",
   "calendar_appointments",
@@ -101,6 +101,7 @@ const TABELAS_DA_AGENDA = [
   "calendar_connections",
   "calendar_connection_calendars",
   "calendar_external_events",
+  "calendar_locations",
 ] as const;
 
 beforeAll(() => {
@@ -189,13 +190,18 @@ beforeAll(() => {
        and not exists (
          select 1 from public.calendar_external_events x where x.connection_id = c.id
        );
+
+    insert into public.calendar_locations (organization_id, address)
+    select v.org, 'Sala do invariante'
+      from (values ('${ORG_A}'::uuid), ('${ORG_B}'::uuid)) as v(org)
+     where not exists (select 1 from public.calendar_locations l where l.organization_id = v.org);
   `);
 });
 
 describe("agenda — isolamento entre organizações", () => {
   // O controle positivo vem PRIMEIRO de propósito: sem ele, quebrar a feature
   // inteira deixaria as asserções de isolamento verdes por ausência de dado.
-  it.each(["calendar_event_types", "calendar_appointments", "calendar_availability_exceptions", "calendar_connection_calendars", "calendar_external_events"])(
+  it.each(["calendar_event_types", "calendar_appointments", "calendar_availability_exceptions", "calendar_connection_calendars", "calendar_external_events", "calendar_locations"])(
     "o agent da org A lê a própria org em %s (controle positivo)",
     (tabela) => {
       const proprias = countAs(

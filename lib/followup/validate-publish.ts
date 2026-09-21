@@ -1,10 +1,13 @@
 import type { FlowGraph, FlowEdge, FlowNode } from './graph-schema';
 import { branchIdForCondition, nodeBranches } from './graph-schema';
 import { rotuloDoRamo } from './rotulo-do-ramo';
+import type { NomesDeValor } from './vocabulario';
 
 /**
  * Structural publish validator for follow-up flow graphs.
  * Checks are purely structural (reachability, coverage, cycles) — no DB access.
+ * What only the database knows (which stages exist) arrives injected through
+ * `ContextoDoPublish`, so this stays a pure function.
  */
 
 export const PUBLISH_ERROR_CODES = [
@@ -16,8 +19,13 @@ export const PUBLISH_ERROR_CODES = [
   'missing_branch_edge',
   'missing_no_reply_edge',
   'missing_always_fallback',
+  'empty_check_value',
+  'check_value_not_number',
+  'check_stage_not_found',
+  'check_stage_archived',
   'grace_too_short',
   'long_wait_needs_template',
+  'immune_wait_too_short',
   'cycle_without_wait',
   'max_steps_exceeded',
 ] as const;
@@ -34,6 +42,15 @@ export type PublishValidationError = {
 export type PublishValidationResult =
   | { ok: true }
   | { ok: false; errors: PublishValidationError[] };
+
+/**
+ * O que só o banco sabe, lido por quem chama (a rota de publish). Ausente, a
+ * conferência que depende dele não roda — nunca adivinha.
+ */
+export interface ContextoDoPublish {
+  /** Etapas da organização por `stage_id`, com o nome como a tela mostra («Etapa · Funil»). */
+  etapas?: ReadonlyMap<string, { nome: string; arquivada: boolean }>;
+}
 
 const LONG_WAIT_THRESHOLD_MS = 86_400_000; // 24h
 const MIN_CYCLE_WAIT_MS = 300_000; // 5min
@@ -246,7 +263,8 @@ function byId(a: { id: string }, b: { id: string }): number {
 function cobrirRamos(
   node: FlowNode,
   outgoing: FlowEdge[],
-  errors: PublishValidationError[]
+  errors: PublishValidationError[],
+  nomes: NomesDeValor
 ): void {
   for (const branch of nodeBranches(node)) {
     if (outgoing.some((e) => branchIdForCondition(node, e.condition) === branch.id)) continue;
@@ -263,14 +281,88 @@ function cobrirRamos(
       node_id: node.id,
       code: 'missing_branch_edge',
       branch_id: branch.id,
-      message: `Nó "${node.id}": a saída "${rotuloDoRamo(branch)}" não está ligada a nada.`,
+      message: `Nó "${node.id}": a saída "${rotuloDoRamo(branch, nomes)}" não está ligada a nada.`,
     });
   }
 }
 
-export function validateFlowForPublish(graph: FlowGraph): PublishValidationResult {
+/**
+ * Uma regra de condição que não pode decidir nada. O rascunho aceita todas estas
+ * formas — trabalho pela metade precisa salvar —, mas publicada cada uma é uma
+ * saída que nunca é tomada ou que é tomada sempre, com cara de regra pronta:
+ * - valor vazio: `eq` nunca casa e `neq` sempre casa;
+ * - passos que não é número: maior/menor nunca é verdadeiro;
+ * - etapa que não é `stage_id` de etapa ativa: o motor compara o id, então o
+ *   nome digitado ("PAGO", fluxo anterior ao seletor) nunca casa, e etapa
+ *   arquivada não tem negócio nenhum dentro.
+ * Vale nos DOIS modos do nó: nenhuma destas formas funciona em fluxo antigo
+ * também, então recusá-las não reprova nada que esteja decidindo de verdade.
+ */
+function conferirRegras(
+  node: Extract<FlowNode, { type: 'condition' }>,
+  contexto: ContextoDoPublish,
+  errors: PublishValidationError[]
+): void {
+  node.config.checks.forEach((check, i) => {
+    const regra = `Regra ${i + 1}`;
+    const ancora = {
+      node_id: node.id,
+      ...(node.config.branching === 'per_check' && check.id !== undefined ? { branch_id: check.id } : {}),
+    };
+    const valor = String(check.value).trim();
+
+    if (valor === '') {
+      errors.push({ ...ancora, code: 'empty_check_value', message: `${regra} sem valor: preencha ou remova a regra.` });
+      return;
+    }
+    // A pergunta é "o motor consegue comparar isto?", não "é inteiro?": ele
+    // compara passos como número, e um valor que vira número (inclusive escrito
+    // como texto) decide de verdade. Recusar 2.5 seria recusar o que funciona.
+    if (check.field === 'steps_taken' && !Number.isFinite(Number(valor))) {
+      errors.push({
+        ...ancora,
+        code: 'check_value_not_number',
+        message: `${regra}: “${valor}” não é um número de passos.`,
+      });
+      return;
+    }
+    if (check.field !== 'lead_stage' || contexto.etapas === undefined) return;
+
+    const etapa = contexto.etapas.get(valor);
+    if (etapa === undefined) {
+      errors.push({
+        ...ancora,
+        code: 'check_stage_not_found',
+        // Id que não existe mais não vira texto de tela; o nome digitado à mão,
+        // sim — é a única pista de qual regra a pessoa escreveu.
+        message: UUID_RX.test(valor)
+          ? `${regra}: a etapa escolhida não existe mais — escolha a etapa na lista.`
+          : `${regra}: “${valor}” não é uma etapa do funil — escolha a etapa na lista.`,
+      });
+      return;
+    }
+    if (etapa.arquivada) {
+      errors.push({
+        ...ancora,
+        code: 'check_stage_archived',
+        // "está arquivada" é o que o banco disse; "nenhum negócio fica nela" era
+        // afirmação que o produto NÃO garante (mover um lead de volta não é barrado).
+        message: `${regra}: a etapa “${etapa.nome}” foi arquivada e não está mais no quadro — escolha uma etapa ativa.`,
+      });
+    }
+  });
+}
+
+const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function validateFlowForPublish(
+  graph: FlowGraph,
+  contexto: ContextoDoPublish = {}
+): PublishValidationResult {
   const { nodes, edges } = graph;
   const errors: PublishValidationError[] = [];
+  const etapas = contexto.etapas;
+  const nomes: NomesDeValor = etapas ? { etapa: (id) => etapas.get(id)?.nome ?? null } : {};
   const nodesById = new Map(nodes.map((n) => [n.id, n]));
   const outEdges = buildOutEdges(edges);
   const inEdges = buildOutEdges(edges.map((e) => ({ ...e, source: e.target, target: e.source })));
@@ -340,6 +432,23 @@ export function validateFlowForPublish(graph: FlowGraph): PublishValidationResul
     }
   }
 
+  // Espera imune é para cadência LONGA. Uma imune de dez minutos prende um lead
+  // no meio da conversa: ele responde, e nada no motor encurta a espera — que é
+  // exatamente o que a imunidade promete, e exatamente o que ninguém quer num
+  // intervalo curto. O piso é o mesmo 24h que já separa espera curta de longa.
+  for (const node of [...nodes].sort(byId)) {
+    if (node.type !== 'wait') continue;
+    const cfg = node.config;
+    if (cfg.mode !== 'fixed' || cfg.immune_to_reply !== true) continue;
+    if (cfg.duration_ms < LONG_WAIT_THRESHOLD_MS) {
+      errors.push({
+        node_id: node.id,
+        code: 'immune_wait_too_short',
+        message: `Nó "${node.id}" é imune à resposta e precisa de pelo menos 24h de espera.`,
+      });
+    }
+  }
+
   // Cobertura por ramo — SÓ no modo 'per_check'. É deliberado que o modo
   // combinado fique de fora: hoje nenhuma regra exige aresta por resultado num
   // nó de condição, e passar a exigir reprovaria no publish fluxos v1 que estão
@@ -348,7 +457,11 @@ export function validateFlowForPublish(graph: FlowGraph): PublishValidationResul
     if (node.type !== 'condition' || node.config.branching !== 'per_check') continue;
     const outgoing = outEdges.get(node.id) ?? [];
 
-    cobrirRamos(node, outgoing, errors);
+    cobrirRamos(node, outgoing, errors, nomes);
+  }
+
+  for (const node of [...nodes].sort(byId)) {
+    if (node.type === 'condition') conferirRegras(node, contexto, errors);
   }
 
   for (const node of [...nodes].sort(byId)) {
@@ -356,7 +469,7 @@ export function validateFlowForPublish(graph: FlowGraph): PublishValidationResul
     const outgoing = outEdges.get(node.id) ?? [];
 
     if (node.type === 'match_reply' || node.type === 'repeat' || node.config.branches !== undefined) {
-      cobrirRamos(node, outgoing, errors);
+      cobrirRamos(node, outgoing, errors, nomes);
       if (node.type === 'repeat') continue;
       if (node.config.grace_timeout_ms < 900_000) {
         errors.push({

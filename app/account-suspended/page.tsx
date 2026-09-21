@@ -19,7 +19,7 @@ export const metadata = {
  * seria o defeito de volta, com o agravante de parecer resolvido.
  */
 export default async function AccountSuspendedPage() {
-  const suporte = emailDeSuporte();
+  const suporte = await emailDeSuporte();
   // Rota fora da árvore de `app/app/layout.tsx` — sem `IdiomaProvider`, então
   // resolve o idioma direto, como `admin/forbidden/page.tsx`. Quem chega aqui
   // normalmente tem sessão do Supabase Auth (a suspensão é regra do produto,

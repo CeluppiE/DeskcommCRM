@@ -87,6 +87,84 @@ export const RETENCAO_CAPTACAO_DIAS_PADRAO = 365;
  */
 export const RETENCAO_CAPTACAO_DIAS_PISO = 30;
 
+/**
+ * 365 dias para a CONVERSA DO CASO (`agent_case_chat_messages`, migration 0281).
+ *
+ * Um ano fiscal de deliberação. Depois disso, "por que decidimos assim" é
+ * respondido pelos EVENTOS do caso — que são o registro da decisão —, não pela
+ * conversa que a precedeu. Guardar a deliberação para sempre seria manter
+ * indefinidamente texto sobre uma pessoa identificável cuja utilidade acabou.
+ */
+export const RETENCAO_CONVERSA_DO_CASO_DIAS_PADRAO = 365;
+/**
+ * Piso da conversa do caso: 90 dias, o MESMO da auditoria e pela mesma razão.
+ *
+ * O knob nunca vira apagador de deliberação recente — a pergunta "quem decidiu
+ * o quê, e com base em quê" ainda se faz três meses depois. O piso mora DENTRO
+ * de `fn_expurgar_conversa_do_caso_vencida` (`greatest(...)` no corpo), o que o
+ * faz valer para qualquer chamador, inclusive um `psql` na mão; a cópia aqui
+ * serve para o operador ver no log que o valor dele foi elevado, em vez de
+ * descobrir pela ausência de efeito.
+ */
+export const RETENCAO_CONVERSA_DO_CASO_DIAS_PISO = 90;
+
+/**
+ * 1825 dias (5 anos) para a PASSAGEM para uma pessoa
+ * (`passagens_de_atendimento`, migration 0291).
+ *
+ * O mesmo horizonte da auditoria, e pela mesma razão: a passagem é rastro de
+ * ATENDIMENTO — quem assumiu a conversa de quem, quando, por quê e quanto tempo
+ * a pessoa esperou. É a linha que responde a uma reclamação de dois anos atrás,
+ * e é de onde sai a medida de repetição que diz se o briefing serviu para
+ * alguma coisa.
+ */
+export const RETENCAO_PASSAGEM_DIAS_PADRAO = 1825;
+/**
+ * Piso da passagem: 90 dias, o mesmo da auditoria.
+ *
+ * O knob nunca vira apagador de rastro recente. O piso mora DENTRO de
+ * `fn_expurgar_passagens_vencidas` (`greatest(...)` no corpo), o que o faz valer
+ * para qualquer chamador, inclusive um `psql` na mão; a cópia aqui serve para o
+ * operador ver no log que o valor dele foi elevado, em vez de descobrir pela
+ * ausência de efeito.
+ *
+ * ⚠️ O piso NÃO é a única proteção desta tabela, e a outra é mais forte: a
+ * função só apaga linha com `reconhecido_em is not null`. Passagem aberta é
+ * demanda viva — alguém do outro lado está esperando e ninguém assumiu — e
+ * apagá-la por idade seria o expurgo virando esquecedor de pendência.
+ */
+export const RETENCAO_PASSAGEM_DIAS_PISO = 90;
+
+/**
+ * 180 dias para o REGISTRO DE ENTREGA do aviso de caso
+ * (`entregas_de_aviso_de_caso`, migration 0292).
+ *
+ * Bem mais curto que a passagem e que a auditoria, e o motivo é a pergunta: a
+ * única que esta tabela responde — "o aviso daquele caso saiu?" — é de semanas,
+ * não de anos. Depois de seis meses o caso já foi resolvido ou abandonado, e o
+ * que sobrou dele está nos EVENTOS do caso, que são o registro da decisão.
+ *
+ * A linha não guarda texto nenhum (só `corpo_hash`), então o que se poda aqui é
+ * volume de operação, não relato de pessoa.
+ */
+export const RETENCAO_AVISO_DE_CASO_DIAS_PADRAO = 180;
+/**
+ * Piso do aviso: 30 dias — o mais baixo dos pisos com dono no SQL, e de
+ * propósito.
+ *
+ * Os 90 dias da auditoria existem para o knob não virar apagador de RASTRO
+ * LEGAL. Aqui o rastro é operacional, e o que o piso protege é outra coisa: o
+ * incidente que ainda está sendo apurado. "Por que a equipe não foi avisada na
+ * semana passada?" é uma pergunta de dias, não de trimestres — e um mês é o
+ * mínimo em que ela ainda tem chance de ser feita.
+ *
+ * O piso mora DENTRO de `fn_expurgar_avisos_de_caso_vencidos`
+ * (`greatest(...)` no corpo), o que o faz valer para qualquer chamador,
+ * inclusive um `psql` na mão; a cópia aqui serve para o operador ver no log que
+ * o valor dele foi elevado, em vez de descobrir pela ausência de efeito.
+ */
+export const RETENCAO_AVISO_DE_CASO_DIAS_PISO = 30;
+
 export interface RetencaoInterpretada {
   /** Dias a pedir ao banco. Nunca abaixo do piso, nunca `NaN`. */
   readonly dias: number;

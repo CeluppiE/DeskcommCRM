@@ -203,7 +203,7 @@ export function createSupabaseSilenceSweepDb(admin: SupabaseClient): SilenceSwee
       // que encerrou a conversa não deveria ver um follow-up automático chegar
       // depois. Sem isto, o sweep contava `last_inbound_at` de QUALQUER
       // conversa, inclusive uma que um humano já fechou de propósito — medido
-      // ao desenhar o primeiro fluxo de silêncio real (tenant YADEA): o gatilho
+      // ao desenhar o primeiro fluxo de silêncio real (num tenant de produção): o gatilho
       // só faz sentido enquanto "o fluxo da conversa ainda está ativo".
       const { data, error } = await admin
         .from("conversations")

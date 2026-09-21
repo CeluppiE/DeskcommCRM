@@ -20,6 +20,7 @@ import { mediaPersistHandler } from "@/workers/media-persist-worker.handler";
 import { mediaDeriveHandler } from "@/workers/media-derive-worker.handler";
 import { webPushInboundHandler } from "@/lib/notifications/push.handler";
 import { conversaoDeVendaHandler } from "@/lib/conversoes/envio.handler";
+import { avisoDeCasoAoSuporteHandler } from "@/lib/escalacao/aviso-ao-suporte.handler";
 import { registerHandler } from "@/lib/event-log/dispatcher";
 
 let _registered = false;
@@ -42,6 +43,12 @@ export function ensureHandlersRegistered(): void {
   registerHandler(mediaPersistHandler);
   registerHandler(mediaDeriveHandler);
   registerHandler(webPushInboundHandler);
+  // Penúltimo, pelo MESMO critério do último: o aviso ao suporte sai por rede de
+  // terceiro (o transporte de WhatsApp) e nunca pode atrasar quem escreve no
+  // banco — inclusive o `followupGatilhoCasoHandler`, que consome o MESMO evento
+  // e cuja falha custa um follow-up perdido. Ele também é o único handler que
+  // adia a si mesmo quando o dreno está rodando dentro de uma requisição.
+  registerHandler(avisoDeCasoAoSuporteHandler);
   // Por último: reportar a venda ao anúncio é o consumidor mais externo do
   // fechamento — depende de rede de terceiro e não pode atrasar quem escreve
   // no banco. Falha dele nunca segura os handlers acima.

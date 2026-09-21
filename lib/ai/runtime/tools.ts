@@ -181,12 +181,28 @@ function wrapMcpTool(
           input.handoffSignal.urgency = String(argsRecord.urgency ?? "normal");
         }
 
+        // "Não achei" NÃO é sucesso (#484).
+        //
+        // A tool declara (`motivoDoVazio`) quando a resposta é um vazio: a busca
+        // de produtos que não achou nada terminava bem e era auditada com
+        // `success: true`, então o painel de capacidades contava `falhas: 0` —
+        // "nenhuma falha" — enquanto o agente nunca achava um produto. O número
+        // não mentia; ele não existia. Aqui o vazio declarado vira
+        // `success: false` e o motivo sobe em `metadata.desfecho`/`metadata.motivo`,
+        // que é o que separa "não achei" de "quebrou" no dado gravado.
+        //
+        // Só quem declara é afetado: sem `motivoDoVazio` nada muda.
+        const motivoDoVazio = def.motivoDoVazio?.(result) ?? null;
+
         void auditMcpToolCall({
           ctx: input.ctx,
           toolName: def.name,
           args: argsRecord,
           durationMs: Date.now() - startedAt,
-          success: true,
+          success: motivoDoVazio === null,
+          ...(motivoDoVazio === null
+            ? {}
+            : { desfecho: "sem_resultado" as const, motivo: motivoDoVazio }),
         });
         return result;
       } catch (err) {

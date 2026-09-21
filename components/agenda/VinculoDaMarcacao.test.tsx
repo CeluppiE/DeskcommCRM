@@ -63,7 +63,7 @@ describe("VinculoDaMarcacao", () => {
     const user = userEvent.setup();
     envolver(<VinculoDaMarcacao contactId="" conversationId="" onChange={vi.fn()} />);
 
-    await user.type(screen.getByLabelText(/Buscar cliente/i), "Joana");
+    await user.type(screen.getByLabelText(/Quem será atendido/i), "Joana");
 
     await waitFor(() => expect(screen.getByRole("button", { name: /Criar/i })).toBeInTheDocument());
     expect(screen.getByRole("button", { name: /Joana/ })).toBeInTheDocument();
@@ -74,7 +74,7 @@ describe("VinculoDaMarcacao", () => {
     const user = userEvent.setup();
     envolver(<VinculoDaMarcacao contactId="" conversationId="" onChange={vi.fn()} />);
 
-    await user.type(screen.getByLabelText(/Buscar cliente/i), "Joana");
+    await user.type(screen.getByLabelText(/Quem será atendido/i), "Joana");
 
     await waitFor(() => expect(screen.getByRole("option", { name: "Joana Prado" })).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: /Criar/i })).not.toBeInTheDocument();
@@ -86,7 +86,7 @@ describe("VinculoDaMarcacao", () => {
     const user = userEvent.setup();
     envolver(<VinculoDaMarcacao contactId="" conversationId="" onChange={onChange} />);
 
-    await user.type(screen.getByLabelText(/Buscar cliente/i), "Joana");
+    await user.type(screen.getByLabelText(/Quem será atendido/i), "Joana");
     await waitFor(() => expect(screen.getByRole("button", { name: /Criar/i })).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: /Criar/i }));
 
@@ -103,7 +103,26 @@ describe("VinculoDaMarcacao", () => {
     responderCom([]);
     envolver(<VinculoDaMarcacao contactId="" conversationId="" onChange={vi.fn()} />);
 
-    await waitFor(() => expect(get).toHaveBeenCalled());
     expect(screen.queryByRole("button", { name: /Criar/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Buscar cliente/i)).not.toBeInTheDocument();
+  });
+
+  it("o rótulo aponta para o input que carrega o id do contato", () => {
+    responderCom([]);
+    envolver(<VinculoDaMarcacao contactId="c-1" conversationId="" onChange={vi.fn()} />);
+    expect(screen.getByLabelText(/Quem será atendido/i)).toHaveAttribute("data-contact-id", "c-1");
+  });
+
+  it("escolher na lista vincula o contato", async () => {
+    responderCom([{ id: "c-1", name: "Joana Prado" }]);
+    const onChange = vi.fn();
+    const user = userEvent.setup();
+    envolver(<VinculoDaMarcacao contactId="" conversationId="" onChange={onChange} />);
+
+    await user.type(screen.getByLabelText(/Quem será atendido/i), "Joana");
+    await waitFor(() => expect(screen.getByRole("option", { name: "Joana Prado" })).toBeInTheDocument());
+    await user.click(screen.getByRole("option", { name: "Joana Prado" }));
+
+    expect(onChange).toHaveBeenCalledWith("c-1", "");
   });
 });

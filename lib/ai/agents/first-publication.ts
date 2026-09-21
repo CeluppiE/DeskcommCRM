@@ -19,7 +19,19 @@ export type PublishOutcome =
    * da organização, nem chave da instalação no ambiente. Publicar assim entrega
    * um funcionário que morre em toda mensagem.
    */
-  | { published: false; reason: "sem_chave"; provider: string }
+  | {
+      published: false;
+      reason: "sem_chave";
+      provider: string;
+      /**
+       * A chave que a pessoa colou ainda não foi confirmada pelo provedor
+       * (`validated_at` nulo). Sem isto a tela só sabia dizer "não achei chave
+       * de X" — e para quem acabou de colar uma chave esse diagnóstico é falso:
+       * a chave existe, está gravada, e o que falta é o provedor confirmar. A
+       * #1007 é exatamente esse conselho errado, com o provedor errado.
+       */
+      chaveEmVerificacao?: string;
+    }
   | {
       published: false;
       reason: "no_model";
@@ -35,14 +47,16 @@ export type PublishOutcome =
   | { published: false; reason: "failed"; message: string };
 
 /**
- * O provedor de IA que a instalação escolheu.
+ * O provedor de IA que a ORGANIZAÇÃO escolheu.
  *
- * O instalador pergunta "qual inteligência artificial vai atender seus
- * clientes?" e grava a resposta em `organizations.settings.llm.provider`. Este
- * passo publicava `"anthropic"` literal, e como o provider da VERSÃO vence o da
- * organização em `resolveOrgLlmConfig`, quem escolheu outro terminava o wizard
- * com um agente "Publicado" que morre em toda mensagem pedindo uma chave que
- * ele nunca teve.
+ * Duas portas gravam a resposta de "qual inteligência artificial vai atender
+ * seus clientes?" `organizations.settings.llm.provider`: o instalador, no menu
+ * do kit, e o passo da chave do onboarding, quando a pessoa cola a chave de
+ * outro provedor (`app/actions/onboarding/chaveDaIa.ts` →
+ * `lib/ai/pontos/padrao-da-organizacao.ts`). Este passo publicava `"anthropic"`
+ * literal, e como o provider da VERSÃO vence o da organização em
+ * `resolveOrgLlmConfig`, quem escolheu outro terminava o wizard com um agente
+ * "Publicado" que morre em toda mensagem pedindo uma chave que ele nunca teve.
  *
  * `settings` é jsonb livre: leitura defensiva, igual à do agent-engine.
  */
@@ -109,7 +123,81 @@ export async function publishFirstVersion(
     .maybeSingle();
   if (orgErr) return { published: false, reason: "failed", message: orgErr.message };
 
+  // Só LEITURA daqui para baixo: depois da decisão da #1007, a escolha do
+  // onboarding é gravada na EMPRESA (no passo da chave, `chaveDaIa.ts`) e a
+  // publicação não move mais o provedor — o que ela escolhe é por onde publica,
+  // e por isso `const` (o `let` era de quando este passo adotava outra chave).
   const provider = selection?.provider ?? provedorDaInstalacao(org?.settings);
+
+  /*
+   * ⚠️ QUAL CHAVE ESTA VERSÃO USA — e por que o provedor NÃO muda mais aqui.
+   *
+   * As duas origens de chave continuam valendo: credencial validada da
+   * organização vence; na falta dela, `credential_id: null` significa "a chave
+   * da instalação", que é o caso mais comum do kit.
+   *
+   * O terceiro caso era o da #1007, e ele caía entre os dois: a chave que a
+   * pessoa colou no passo "Configurar IA" sendo de OUTRO provedor que não o da
+   * empresa. A publicação partia do provedor da empresa, não achava a chave que
+   * estava ali, e o onboarding terminava com o atendente em rascunho pedindo
+   * uma chave de outro provedor.
+   *
+   * A primeira versão deste PR resolvia isso AQUI, adotando a credencial
+   * validada mais recente da organização, de qualquer provedor. A decisão do
+   * dono do produto mudou o lugar da resposta: quem cola a chave no wizard
+   * escolhe o provedor da EMPRESA, e a escolha se grava em
+   * `organizations.settings.llm` no passo em que a chave é guardada
+   * (`lib/ai/pontos/padrao-da-organizacao.ts`). Publicar por adoção seria uma
+   * segunda semântica, e pior: poria o ATENDENTE num provedor em que a EMPRESA
+   * não está — e é o provedor da versão que vence o da organização em
+   * `resolveOrgLlmConfig`. O ponto de IA mais visível do produto apontaria para
+   * um provedor que ninguém escolheu, que é exatamente o que a decisão proíbe.
+   *
+   * Então aqui só se LÊ o provedor da organização. Provedor e modelo continuam
+   * saindo da mesma origem, e a leitura do catálogo abaixo é a do provedor lido.
+   */
+  let credentialId: string | null = selection ? selection.credentialId : null;
+  /** Provedor cuja credencial colada ainda não foi confirmada pelo provedor. */
+  let chaveEmVerificacao: string | undefined;
+
+  if (!selection) {
+    const { data: credencialDoProvedor } = await admin
+      .from("ai_provider_credentials")
+      .select("id")
+      .eq("organization_id", orgId)
+      .eq("provider", provider)
+      .eq("is_active", true)
+      // `validated_at` não nulo é exigência de `loadCredential`, não capricho:
+      // uma credencial que o provedor ainda não confirmou não é utilizável no
+      // turno — publicar com ela entrega um agente que erra em toda mensagem.
+      .not("validated_at", "is", null)
+      .limit(1)
+      .maybeSingle();
+
+    credentialId = (credencialDoProvedor?.id as string | undefined) ?? null;
+
+    if (!credentialId && !chaveDePlataforma(provider)) {
+      // Nada utilizável — mas pode haver uma chave colada esperando o provedor
+      // confirmar. Nomear isso é o que separa "cole a chave" de "espere um
+      // instante": são causas e conselhos diferentes, e sem o nome do provedor
+      // a tela dizia "não achei chave de X" para quem tinha acabado de colar
+      // uma. A busca é do provedor DA ORGANIZAÇÃO porque, depois da decisão, é
+      // esse o provedor da chave colada no wizard: um passo que grava
+      // `settings.llm` antes de publicar.
+      const { data: pendente } = await admin
+        .from("ai_provider_credentials")
+        .select("provider")
+        .eq("organization_id", orgId)
+        .eq("provider", provider)
+        .eq("is_active", true)
+        .is("validated_at", null)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (pendente?.provider) chaveEmVerificacao = pendente.provider as string;
+    }
+  }
+
 
   // O modelo daquele provedor. Não existe fallback literal: um id de outro
   // provedor (ou inventado) produz o pior desfecho do produto — o agente
@@ -154,31 +242,23 @@ export async function publishFirstVersion(
     .maybeSingle();
   const pipelineIds = !selection && funil?.id ? [funil.id as string] : [];
 
-  // QUAL CHAVE ESTA VERSÃO USA — e as duas origens são legítimas.
+  // Sem chave NENHUMA (nem da organização, nem da instalação) não se publica:
+  // o agente responderia erro em toda mensagem e o dono só descobriria com o
+  // primeiro cliente. A chave já foi resolvida lá em cima, no provedor da
+  // ORGANIZAÇÃO — que é o que a decisão do dono manda ler aqui; aqui só resta o
+  // veredito.
   //
-  // Credencial validada da organização vence (quem colou a chave no wizard, ou
-  // cadastrou pela tela); na falta dela, `credential_id: null` significa "a chave
-  // da instalação", que é o caso mais comum do kit. Sem NENHUMA das duas, não se
-  // publica: o agente responderia erro em toda mensagem e o dono só descobriria
-  // com o primeiro cliente.
-  //
-  // `validated_at` não nulo é exigência de `loadCredential`, não capricho: uma
-  // credencial que o provedor ainda não confirmou não é utilizável pelo turno.
-  const { data: credencial } = await admin
-    .from("ai_provider_credentials")
-    .select("id")
-    .eq("organization_id", orgId)
-    .eq("provider", provider)
-    .eq("is_active", true)
-    .not("validated_at", "is", null)
-    .limit(1)
-    .maybeSingle();
-
-  const credentialId = selection
-    ? selection.credentialId
-    : ((credencial?.id as string | undefined) ?? null);
+  // E ele continua DEPOIS da escolha do modelo de propósito: catálogo sem
+  // nenhum modelo utilizável é defeito de instalação que se resolve antes da
+  // chave, e inverter isso mudaria a causa que a tela recebe para quem tem os
+  // dois problemas — sem necessidade nenhuma para a #1007.
   if (!credentialId && !chaveDePlataforma(provider)) {
-    return { published: false, reason: "sem_chave", provider };
+    return {
+      published: false,
+      reason: "sem_chave",
+      provider,
+      ...(chaveEmVerificacao ? { chaveEmVerificacao } : {}),
+    };
   }
 
   const { data: version, error: versionErr } = await admin

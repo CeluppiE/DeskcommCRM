@@ -10,6 +10,7 @@ import {
   type NoDoDossie,
 } from "./eventos-legiveis";
 import type { FlowNode } from "./graph-schema";
+import { EVENTO_ACAO_ADIADA } from "./node-handlers";
 
 const espera: FlowNode = {
   id: "wait-1",
@@ -134,6 +135,25 @@ describe("descreveEvento", () => {
     expect(descreveEvento(evento({ event_type: "reactivity_replied" }), nos, "pt-BR").autor).toBe("cliente");
   });
 
+  it("adiar por janela fechada é lido como ESPERA, não como defeito — e com a data", () => {
+    // Sem esta linha, o passo mais longo do dossiê (horas, às vezes dias) cai no
+    // `default` e aparece como "código: action_deferred". Quem abre o dossiê para
+    // entender por que o cliente não recebeu lê defeito onde houve obediência ao
+    // horário que ele mesmo configurou.
+    const r = descreveEvento(
+      evento({
+        node_id: "action-1",
+        event_type: EVENTO_ACAO_ADIADA,
+        payload: { until: "2026-08-11T12:00:00.000Z", reason: "outside_window" },
+      }),
+      nos,
+      "pt-BR",
+    );
+    expect(r.titulo).toBe("Segurou o envio até o horário permitido");
+    expect(r.detalhe).toContain("envia em");
+    expect(r.autor).toBe("motor");
+  });
+
   it("tipo desconhecido não vira jargão disfarçado de frase, mas também não some", () => {
     const r = descreveEvento(evento({ event_type: "passo_que_ainda_nao_existe" }), nos, "pt-BR");
     expect(r.titulo).toBe("Passo registrado pelo motor");
@@ -183,6 +203,26 @@ describe("rotuloDoStatus", () => {
   it("as duas pausas NÃO se chamam igual — decisões diferentes dependem disso", () => {
     expect(rotuloDoStatus("paused_manual")).toBe("Pausado por uma pessoa");
     expect(rotuloDoStatus("paused_handoff")).toBe("Pausado (atendimento humano)");
+  });
+});
+
+describe("rotuloDaAresta — a saída de escape depende de quem a tem", () => {
+  const aresta = { id: "e", source: "a", target: "b", priority: 0, condition: { type: "always" as const } };
+
+  it("num nó de saída única é o caminho normal; num nó ramificado, o que sobra", () => {
+    expect(rotuloDaAresta(aresta, espera)).toBe("caminho normal");
+    const classify: FlowNode = {
+      id: "ac1",
+      type: "ai_classify",
+      label: "Interpreta",
+      position: { x: 0, y: 0 },
+      config: { classes: ["Interessado"], grace_timeout_ms: 900_000, target: "last_reply" },
+    };
+    expect(rotuloDaAresta(aresta, classify)).toBe("nos outros casos");
+  });
+
+  it("sem saber a origem, continua o caminho normal — não inventa ramificação", () => {
+    expect(rotuloDaAresta(aresta)).toBe("caminho normal");
   });
 });
 
@@ -254,6 +294,25 @@ describe("rotuloDaAresta — o ramo nomeado do grafo v2", () => {
     // vocabulário existe para impedir.
     expect(rotuloDaAresta(paraRamo("r-passos"), condicao)).not.toContain("r-passos");
     expect(rotuloDaAresta(paraRamo("r-passos"), condicao)).toMatch(/^quando /);
+  });
+
+  it("regra de etapa aparece pelo NOME da etapa — o id é o que o motor compara, não o que se lê", () => {
+    const ID_DA_ETAPA = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b";
+    const condicao: FlowNode = {
+      id: "c1",
+      type: "condition",
+      label: "Pagou?",
+      position: { x: 0, y: 0 },
+      config: {
+        branching: "per_check",
+        combinator: "and",
+        checks: [{ id: "regra-1", field: "lead_stage", op: "eq", value: ID_DA_ETAPA }],
+      },
+    };
+    const paraRegra = { id: "e", source: "c1", target: "x", priority: 0, condition: { type: "branch" as const, branch_id: "regra-1" } };
+    const nomes = { etapa: (id: string) => (id === ID_DA_ETAPA ? "Pago · Vendas" : null) };
+
+    expect(rotuloDaAresta(paraRegra, condicao, nomes)).toBe("quando o lead está na etapa “Pago · Vendas”");
   });
 
   it("os ramos reservados do contrato viram frase sem depender do nó", () => {

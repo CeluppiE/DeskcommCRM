@@ -1,9 +1,18 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { doEventoDoGoogle, type EventoDoGoogle } from "./evento";
 import { ehEventoNosso } from "./escrita";
+import { classificarErroDoGoogle } from "./erros";
 import { googleTransport, GoogleHttpError, type GoogleFetch } from "./transport";
 import { calendarSnapshotSchema, googleRpc, type CalendarFence } from "./sync-store";
 import { reconcileAppointment, tokenForConnection } from "./sync-executor";
+
+/** A frase persistida quando a leitura incremental do Google falha. */
+export function mensagemDaRecusaDeLeitura(erro: unknown): string {
+  if (erro instanceof GoogleHttpError) {
+    return classificarErroDoGoogle(erro, "sincronizar").mensagem;
+  }
+  return "A leitura não terminou. Tente sincronizar novamente nas configurações.";
+}
 
 export async function refreshCatalog(
   db: SupabaseClient,
@@ -124,13 +133,7 @@ export async function syncCalendar(
   } catch (e) {
     try {
       if (e instanceof GoogleHttpError && e.status === 410) await call("reset");
-      else
-        await call("error", {
-          message:
-            e instanceof GoogleHttpError
-              ? e.message
-              : "A leitura não terminou. Tente sincronizar novamente nas configurações.",
-        });
+      else await call("error", { message: mensagemDaRecusaDeLeitura(e) });
     } catch {
       /* fence vencido não grava diagnóstico tardio */
     }

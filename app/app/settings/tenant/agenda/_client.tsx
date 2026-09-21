@@ -1,9 +1,12 @@
 "use client";
 import { AgendasConectadas } from "@/components/agenda/AgendasConectadas";
 import { PrazosDePresenca } from "@/components/agenda/PrazosDePresenca";
+import { AgendaDosColegas } from "@/components/agenda/AgendaDosColegas";
+import { ClientePelaAgenda } from "@/components/agenda/ClientePelaAgenda";
 import { DiasBloqueados } from "@/components/agenda/DiasBloqueados";
 
 import { useT } from "@/hooks/i18n/useT";
+import { parseReaisToCents } from "@/lib/money";
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
@@ -12,6 +15,16 @@ import { toast } from "sonner";
 import { showApiError } from "@/components/feedback/ApiErrorToast";
 import { Button } from "@/components/ui/button";
 import { LOCAIS_DE_ATENDIMENTO } from "@/lib/agenda/locais";
+import {
+  TETO_DE_LEMBRETES_EXTRAS,
+  deMinutos,
+  desempacotarLembretes,
+  empacotarLembretes,
+  lerPassosDoFormulario,
+  minutosLivres,
+  paraMinutos,
+  type UnidadeDeAntecedencia,
+} from "@/lib/agenda/lembretes";
 import { apiClient } from "@/lib/api/client";
 
 export interface TipoRow {
@@ -29,6 +42,9 @@ export interface TipoRow {
   reminder_enabled: boolean;
   reminder_minutes_before: number;
   reminder_extra_offsets_minutes: number[] | null;
+  reminder_body: string | null;
+  reminder_bodies: Record<string, string> | null;
+  default_price_cents: number | null;
 }
 
 /**
@@ -77,102 +93,212 @@ const VAZIO: Rascunho = {
 };
 
 /**
- * O LEMBRETE DO COMPROMISSO — o par de controles que faltava.
+ * O LEMBRETE DO COMPROMISSO — a lista que faltava.
  *
- * O cron `agenda-reminder` lê `reminder_enabled` e `reminder_minutes_before`
- * desde o `99c33257`, e nenhum dos dois estava em rota ou tela: ligar era
- * impossível, então a varredura devolvia zero linhas em toda instalação. Isto é
- * a outra metade do par (invariante 6 do Sistema Vivo: configuração tem
- * superfície).
- *
- * ─── Componente próprio, e não mais dois campos no formulário ─────────────
- *
- * "Quantos minutos antes" só faz sentido com o aviso LIGADO, e um campo ativo
- * ao lado de uma caixa desmarcada é o controle decorativo desta casa: quem
- * digita 60 ali conclui que agendou alguma coisa. Isso exige estado, o resto do
- * formulário de edição é não-controlado (`FormData`), e o formulário nasce e
- * morre com o `editandoId` — então o estado inicial é sempre o que veio do
- * servidor, sem `useEffect` de sincronização.
+ * O cron `agenda-reminder` lê `reminder_enabled` e os degraus desde o
+ * `99c33257`, e a tela só deixava UM texto compartilhado e no máximo um extra
+ * (mais dois escondidos numa caixa de vírgulas). Cada aviso agora é um cartão:
+ * antecedência + mensagem. Quantos o operador quiser (teto de segurança no
+ * CHECK, não na operação).
  *
  * ⚠️ **CAMPO DESABILITADO NÃO ENTRA NO `FormData`, e isso é o desenho.** Com o
- * aviso desligado o `PATCH` manda `reminder_enabled: false` e OMITE os minutos:
- * a antecedência guardada fica intacta para quando alguém religar, em vez de
- * ser sobrescrita por um valor que a tela não deixou ninguém escolher.
+ * aviso desligado o `PATCH` manda `reminder_enabled: false` e OMITE os degraus:
+ * a lista guardada fica intacta para quando alguém religar, em vez de ser
+ * sobrescrita por um valor que a tela não deixou ninguém escolher.
  */
+type CartaoDeLembrete = {
+  id: string;
+  quantidade: number;
+  unidade: UnidadeDeAntecedencia;
+  body: string;
+};
+
 function LembreteDoCompromisso({ tipo }: { tipo: TipoRow }) {
   const t = useT();
   const [ligado, setLigado] = React.useState(tipo.reminder_enabled);
+  const [cartoes, setCartoes] = React.useState<CartaoDeLembrete[]>(() =>
+    desempacotarLembretes({
+      reminder_minutes_before: tipo.reminder_minutes_before,
+      reminder_extra_offsets_minutes: tipo.reminder_extra_offsets_minutes,
+      reminder_body: tipo.reminder_body,
+      reminder_bodies: tipo.reminder_bodies,
+    }).map((p, i) => {
+      const u = deMinutos(p.minutes);
+      return {
+        id: `r${i + 1}`,
+        quantidade: u.quantidade,
+        unidade: u.unidade,
+        body: p.body,
+      };
+    }),
+  );
+  // Semente = quantos cartões já nasceram. Passar o valor inicial não lê
+  // `.current` no render — é o que o lint recusa em `++seq.current` no
+  // inicializador do `useState`.
+  const seq = React.useRef(cartoes.length);
+
+  function minutosDe(c: CartaoDeLembrete) {
+    return paraMinutos(c.quantidade, c.unidade);
+  }
+
+  function atualizar(id: string, patch: Partial<CartaoDeLembrete>) {
+    setCartoes((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+  }
+
+  function mudarUnidade(id: string, unidade: UnidadeDeAntecedencia) {
+    setCartoes((cs) =>
+      cs.map((c) => {
+        if (c.id !== id) return c;
+        const minutos = minutosDe(c);
+        const quantidade =
+          unidade === "dias"
+            ? Math.max(1, Math.round(minutos / 1440))
+            : unidade === "horas"
+              ? Math.max(1, Math.round(minutos / 60))
+              : minutos;
+        return { ...c, unidade, quantidade };
+      }),
+    );
+  }
+
+  const teto = 1 + TETO_DE_LEMBRETES_EXTRAS;
+  const passos = cartoes.map((c) => ({ minutes: minutosDe(c), body: c.body }));
 
   return (
-    <>
-      <label className="flex items-center gap-2 text-xs text-text-muted sm:col-span-2">
+    <div className="grid gap-3 border-t border-border pt-3">
+      <label className="flex items-center gap-2 text-xs text-text-muted">
         <input
           type="checkbox"
           name="reminder_enabled"
           checked={ligado}
           data-testid={`editar-lembrete-${tipo.id}`}
           onChange={(e) => setLigado(e.target.checked)}
-          className="size-4 rounded-sm border-border accent-accent"
+          className="size-4 shrink-0 rounded-sm border-border accent-accent"
         />
         {t("Avisar o cliente antes do compromisso, pelo WhatsApp")}
       </label>
-      <label className="flex flex-col gap-1 text-xs text-text-muted">
-        {t("Quantos minutos antes")}
-        <input
-          name="reminder_minutes_before"
-          type="number"
-          // Os limites do `criarSchema` da rota, repetidos aqui para a recusa
-          // chegar no campo em vez de virar um toast vindo do servidor. Quem
-          // decide continua sendo a rota — a tela só evita a viagem.
-          min={15}
-          max={10080}
-          disabled={!ligado}
-          defaultValue={tipo.reminder_minutes_before}
-          data-testid={`editar-lembrete-minutos-${tipo.id}`}
-          className="rounded-md border border-border bg-surface-elevated p-2 text-sm text-text disabled:opacity-50"
-        />
-      </label>
-      <label className="flex flex-col gap-1 text-xs text-text-muted">
-        {t("E de novo, quantos minutos antes")}
-        <input
-          name="reminder_extra_offsets_minutes"
-          type="text"
-          inputMode="numeric"
-          disabled={!ligado}
-          placeholder="180"
-          defaultValue={(tipo.reminder_extra_offsets_minutes ?? []).join(", ")}
-          data-testid={`editar-lembrete-extras-${tipo.id}`}
-          className="rounded-md border border-border bg-surface-elevated p-2 text-sm text-text disabled:opacity-50"
-        />
-        <span className="text-[11px] text-text-muted">
-          {t("Opcional. Até 3, separados por vírgula. Ex.: 180 avisa de novo 3 horas antes.")}
-        </span>
-      </label>
-    </>
+      <input
+        type="hidden"
+        name="reminder_steps"
+        value={JSON.stringify(passos)}
+        disabled={!ligado}
+      />
+      <ul className="grid gap-3">
+        {cartoes.map((c, i) => {
+          const min =
+            c.unidade === "dias" ? 1 : c.unidade === "horas" ? 1 : 15;
+          const max =
+            c.unidade === "dias" ? 7 : c.unidade === "horas" ? 168 : 10080;
+          return (
+            <li
+              key={c.id}
+              className="grid gap-2 rounded-md border border-border bg-surface-elevated p-3"
+            >
+              <div className="flex flex-wrap items-end gap-2">
+                <label className="flex min-w-22 flex-col gap-1 text-xs text-text-muted">
+                  {t("Quanto antes")}
+                  <input
+                    type="number"
+                    min={min}
+                    max={max}
+                    disabled={!ligado}
+                    value={c.quantidade}
+                    onChange={(e) =>
+                      atualizar(c.id, { quantidade: Number(e.target.value) })
+                    }
+                    data-testid={
+                      i === 0
+                        ? `editar-lembrete-minutos-${tipo.id}`
+                        : `editar-lembrete-minutos-${tipo.id}-${i}`
+                    }
+                    className="rounded-md border border-border bg-surface p-2 text-sm text-text disabled:opacity-50"
+                  />
+                </label>
+                <label className="flex min-w-28 flex-col gap-1 text-xs text-text-muted">
+                  <span className="sr-only">{t("Unidade")}</span>
+                  <select
+                    disabled={!ligado}
+                    value={c.unidade}
+                    onChange={(e) =>
+                      mudarUnidade(c.id, e.target.value as UnidadeDeAntecedencia)
+                    }
+                    data-testid={
+                      i === 0
+                        ? `editar-lembrete-unidade-${tipo.id}`
+                        : `editar-lembrete-unidade-${tipo.id}-${i}`
+                    }
+                    className="rounded-md border border-border bg-surface p-2 text-sm text-text disabled:opacity-50"
+                  >
+                    <option value="minutos">{t("minutos")}</option>
+                    <option value="horas">{t("horas")}</option>
+                    <option value="dias">{t("dias")}</option>
+                  </select>
+                </label>
+                <span className="pb-2 text-xs text-text-muted">{t("antes")}</span>
+                {ligado && cartoes.length > 1 ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="ml-auto"
+                    data-testid={`editar-lembrete-remover-${tipo.id}-${i}`}
+                    onClick={() =>
+                      setCartoes((cs) => cs.filter((x) => x.id !== c.id))
+                    }
+                  >
+                    {t("Remover")}
+                  </Button>
+                ) : null}
+              </div>
+              <label className="flex flex-col gap-1 text-xs text-text-muted">
+                {t("Mensagem deste lembrete")}
+                <textarea
+                  rows={3}
+                  maxLength={1000}
+                  disabled={!ligado}
+                  value={c.body}
+                  onChange={(e) => atualizar(c.id, { body: e.target.value })}
+                  placeholder={t("Oi {{nome}}! Passando pra lembrar: {{titulo}}, {{dia}} às {{hora}}.")}
+                  data-testid={
+                    i === 0
+                      ? `editar-lembrete-texto-${tipo.id}`
+                      : `editar-lembrete-texto-${tipo.id}-${i}`
+                  }
+                  className="rounded-md border border-border bg-surface p-2 text-sm text-text disabled:opacity-50"
+                />
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+      {ligado && cartoes.length < teto ? (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="w-fit"
+          data-testid={`editar-lembrete-adicionar-${tipo.id}`}
+          onClick={() => {
+            const u = deMinutos(minutosLivres(cartoes.map(minutosDe)));
+            setCartoes((cs) => [
+              ...cs,
+              {
+                id: `r${++seq.current}`,
+                quantidade: u.quantidade,
+                unidade: u.unidade,
+                body: "",
+              },
+            ]);
+          }}
+        >
+          {t("Adicionar lembrete")}
+        </Button>
+      ) : null}
+      <p className="text-[11px] text-text-muted">
+        {t("Deixe a mensagem em branco para o texto padrão. Variáveis: {{nome}}, {{titulo}}, {{dia}}, {{hora}}, {{endereco}}.")}
+      </p>
+    </div>
   );
-}
-
-/**
- * "180, 60" → `[180, 60]`.
- *
- * Campo de texto porque a tela precisa alcançar os três degraus que a rota
- * aceita, e três caixas numéricas para um recurso opcional é mais formulário do
- * que o recurso merece.
- *
- * O que NÃO é número some em silêncio de propósito: a recusa com nome é da
- * rota, que fala sobre faixa e quantidade. Aqui a limpeza é só de pontuação —
- * vírgula sobrando, espaço, ponto-e-vírgula de quem copiou de outro lugar.
- */
-export function lerDegrausExtras(bruto: string | null): number[] {
-  if (!bruto) return [];
-  return [
-    ...new Set(
-      bruto
-        .split(/[,;]/)
-        .map((p) => Number(p.trim()))
-        .filter((n) => Number.isInteger(n) && n > 0),
-    ),
-  ].sort((a, b) => b - a);
 }
 
 export function TiposDeAgendamentoClient({
@@ -181,12 +307,22 @@ export function TiposDeAgendamentoClient({
   podeEditar,
   usuarioAtualId,
   podeConfigurarGoogle,
+  clientePelaAgendaLigado,
+  podeLigarClientePelaAgenda,
+  colegasPodemMexerNaAgendaLigado,
+  podeMudarAgendaDosColegas,
 }: {
   tiposIniciais: TipoRow[];
   pessoas: Array<{ id: string; papel: string; nome: string }>;
   podeEditar: boolean;
   usuarioAtualId: string;
   podeConfigurarGoogle: boolean;
+  /** `organizations.settings.crm.cliente_pela_agenda`, lido pela página. */
+  clientePelaAgendaLigado: boolean;
+  podeLigarClientePelaAgenda: boolean;
+  /** `organizations.settings.colegas_podem_mexer_na_agenda` (migration 0343). */
+  colegasPodemMexerNaAgendaLigado: boolean;
+  podeMudarAgendaDosColegas: boolean;
 }) {
   const t = useT();
   const router = useRouter();
@@ -236,6 +372,18 @@ export function TiposDeAgendamentoClient({
     <div className="flex min-h-0 flex-1 flex-col gap-4" data-testid="tipos-de-agendamento-config">
       {podeConfigurarGoogle && <AgendasConectadas />}
       <PrazosDePresenca podeEditar={podeEditar}/>
+      <ClientePelaAgenda
+        ligadoInicial={clientePelaAgendaLigado}
+        podeLigar={podeLigarClientePelaAgenda}
+      />
+      {/* A opção da issue #978 fica ao lado das outras regras de comportamento
+          da agenda: é a mesma pergunta ("como a agenda se comporta nesta
+          empresa?"), e separá-la noutra tela esconderia de quem configura que
+          ela existe. */}
+      <AgendaDosColegas
+        ligadoInicial={colegasPodemMexerNaAgendaLigado}
+        podeMudar={podeMudarAgendaDosColegas}
+      />
       <DiasBloqueados podeEditar={podeEditar}/>
       {podeEditar ? (
         <div>
@@ -422,6 +570,10 @@ export function TiposDeAgendamentoClient({
                     .sort((a, b) => b - a)
                     .join(", ")}{" "}
                   min {t("antes")}
+                  {tipo.reminder_body ||
+                  Object.keys(tipo.reminder_bodies ?? {}).length > 0
+                    ? ` · ${t("texto próprio")}`
+                    : ""}
                 </span>
               ) : null}
               {!tipo.is_active ? <span className="text-xs text-text-subtle">{t("desativado")}</span> : null}
@@ -481,7 +633,7 @@ export function TiposDeAgendamentoClient({
             {editandoId === tipo.id ? (
               <form
                 data-testid={`form-editar-${tipo.id}`}
-                className="mt-3 grid gap-3 border-t border-border pt-3 sm:grid-cols-3"
+                className="mt-3 flex flex-col gap-3 border-t border-border pt-3"
                 onSubmit={async (e) => {
                   e.preventDefault();
                   const dados = new FormData(e.currentTarget);
@@ -509,26 +661,33 @@ export function TiposDeAgendamentoClient({
                           String(dados.get("default_owner_user_id") ?? "") || null,
                         // Caixa desmarcada não aparece no `FormData` — daí a
                         // comparação, e não um `Boolean(...)` do valor ausente.
+                        // Vazio é uma ESCOLHA (voltar a digitar na hora), e
+                        // por isso vira `null` em vez de sumir do corpo: omitir
+                        // deixaria o preço antigo gravado e a tela mentindo.
+                        default_price_cents: (() => {
+                          const bruto = String(dados.get("default_price_cents") ?? "").trim();
+                          if (bruto === "") return null;
+                          const cents = parseReaisToCents(bruto);
+                          return cents === null ? null : cents;
+                        })(),
                         reminder_enabled: dados.get("reminder_enabled") === "on",
                         // O campo desabilitado também não aparece, e omitir é o
-                        // certo: desligar o aviso não pode apagar a antecedência
-                        // que alguém escolheu (ver `LembreteDoCompromisso`).
-                        // Mesmo desenho do campo de minutos: com o aviso
-                        // desligado o campo não entra no `FormData` e a lista
-                        // guardada fica intacta para quando alguém religar.
+                        // certo: desligar o aviso não pode apagar a lista que
+                        // alguém escolheu (ver `LembreteDoCompromisso`).
                         ...(dados.get("reminder_enabled") === "on"
-                          ? {
-                              reminder_extra_offsets_minutes: lerDegrausExtras(
-                                String(dados.get("reminder_extra_offsets_minutes") ?? ""),
-                              ),
-                            }
-                          : {}),
-                        ...(dados.get("reminder_minutes_before")
-                          ? {
-                              reminder_minutes_before: Number(
-                                dados.get("reminder_minutes_before"),
-                              ),
-                            }
+                          ? (() => {
+                              const emp = empacotarLembretes(
+                                lerPassosDoFormulario(
+                                  String(dados.get("reminder_steps") ?? ""),
+                                ),
+                              );
+                              return {
+                                reminder_minutes_before: emp.principal,
+                                reminder_extra_offsets_minutes: emp.extras,
+                                reminder_body: emp.corpoPrincipal,
+                                reminder_bodies: emp.corposExtras,
+                              };
+                            })()
                           : {}),
                       }),
                     "Tipo alterado.",
@@ -536,45 +695,64 @@ export function TiposDeAgendamentoClient({
                   if (feito) setEditandoId(null);
                 }}
               >
-                <label className="flex flex-col gap-1 text-xs text-text-muted">
-                  Nome
+                <div className="grid min-w-0 gap-3 sm:grid-cols-[minmax(0,1fr)_8rem_minmax(0,18rem)]">
+                  <label className="flex flex-col gap-1 text-xs text-text-muted">
+                    Nome
+                    <input
+                      name="name"
+                      defaultValue={tipo.name}
+                      data-testid={`editar-nome-${tipo.id}`}
+                      className="rounded-md border border-border bg-surface-elevated p-2 text-sm text-text"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs text-text-muted">
+                    {t("Duração")}
+                    <input
+                      name="duration_minutes"
+                      type="number"
+                      min={5}
+                      max={1440}
+                      defaultValue={tipo.duration_minutes}
+                      data-testid={`editar-duracao-${tipo.id}`}
+                      className="rounded-md border border-border bg-surface-elevated p-2 text-sm text-text"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs text-text-muted">
+                    {t("Quem atende")}
+                    <select
+                      name="default_owner_user_id"
+                      defaultValue={tipo.default_owner_user_id ?? ""}
+                      data-testid={`editar-dono-${tipo.id}`}
+                      className="rounded-md border border-border bg-surface-elevated p-2 text-sm text-text"
+                    >
+                      <option value="">{t("Sem responsável")}</option>
+                      {pessoas.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.nome}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs text-text-muted">
+                  {t("Preço padrão")}
                   <input
-                    name="name"
-                    defaultValue={tipo.name}
-                    data-testid={`editar-nome-${tipo.id}`}
+                    name="default_price_cents"
+                    type="text"
+                    inputMode="decimal"
+                    placeholder={t("digite na hora")}
+                    defaultValue={
+                      tipo.default_price_cents === null ? "" : (tipo.default_price_cents / 100).toFixed(2)
+                    }
+                    data-testid={`editar-preco-${tipo.id}`}
                     className="rounded-md border border-border bg-surface-elevated p-2 text-sm text-text"
                   />
-                </label>
-                <label className="flex flex-col gap-1 text-xs text-text-muted">
-                  {t("Duração")}
-                  <input
-                    name="duration_minutes"
-                    type="number"
-                    min={5}
-                    max={1440}
-                    defaultValue={tipo.duration_minutes}
-                    data-testid={`editar-duracao-${tipo.id}`}
-                    className="rounded-md border border-border bg-surface-elevated p-2 text-sm text-text"
-                  />
-                </label>
-                <label className="flex flex-col gap-1 text-xs text-text-muted">
-                  {t("Quem atende")}
-                  <select
-                    name="default_owner_user_id"
-                    defaultValue={tipo.default_owner_user_id ?? ""}
-                    data-testid={`editar-dono-${tipo.id}`}
-                    className="rounded-md border border-border bg-surface-elevated p-2 text-sm text-text"
-                  >
-                    <option value="">{t("Sem responsável")}</option>
-                    {pessoas.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.nome}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                  <span className="text-[11px] text-text-muted">
+                    {t("Opcional. Vira o valor sugerido na comanda, e pode ser mudado lá.")}
+                  </span>
+                  </label>
+                </div>
                 <LembreteDoCompromisso tipo={tipo} />
-                <div className="flex justify-end sm:col-span-3">
+                <div className="flex justify-end">
                   <Button type="submit" size="sm" data-testid={`salvar-${tipo.id}`} disabled={salvando}>
                     {salvando ? t("Salvando…") : t("Salvar")}
                   </Button>

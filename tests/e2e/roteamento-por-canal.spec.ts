@@ -312,7 +312,12 @@ test("configura responsáveis por canal e o cron distribui sem misturar números
       fullPage: true,
     });
     await notice.getByRole("link", { name: "Abrir conversa" }).click();
-    await expect(page).toHaveURL(new RegExp(`/app/inbox/${southConversation}$`));
+    // O link aponta para `/app/inbox/<id>`, e essa rota REDIRECIONA para
+    // `/app/inbox?id=<id>` (app/app/inbox/[id]/page.tsx). Conferir o endereço
+    // do meio casava só quando a leitura vinha antes de o redirect terminar —
+    // e reprovava PR alheio ao acaso, recebendo o endereço final. O que o dono
+    // vê é o final: é ele que se confere.
+    await expect(page).toHaveURL(new RegExp(`/app/inbox\\?(?:.*&)?id=${southConversation}(?:&|$)`));
     await expect(
       page.getByText("Mensagem de Cliente Canal Sul", { exact: true }).first(),
     ).toBeVisible();

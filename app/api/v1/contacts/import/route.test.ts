@@ -1,10 +1,13 @@
 // @vitest-environment node
 import { NextRequest } from "next/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { audit } from "@/lib/audit";
 import { requireRole } from "@/lib/auth/require-role";
+import { hashCpf } from "@/lib/contacts/cpf";
 import { requireSupportWrite } from "@/lib/impersonate/support";
+import type { PerfilDoPais } from "@/lib/legal/perfil-do-pais";
+import { PERFIS_DO_PAIS } from "@/lib/legal/perfil-do-pais";
 import { createClient } from "@/lib/supabase/server";
 import { POST } from "./route";
 
@@ -28,10 +31,22 @@ interface Resumo {
 function banco(opcoes: {
   existentes?: Array<{ phone_number?: string; email_normalized?: string }>;
   falhas?: Array<{ code: string; message: string } | null>;
+  /** O país declarado pela organização; ausente/`null` é o Brasil. */
+  pais?: string | null;
 } = {}) {
   const tentativas: Record<string, unknown>[] = [];
   const rpc = vi.fn().mockResolvedValue({ error: null });
   const from = vi.fn((tabela: string) => {
+    // A régua do documento vem do PAÍS da organização (issue #1033): a rota lê a
+    // organização UMA vez, na entrada. O dublê libera só essa leitura e segue
+    // fechando a porta para qualquer outra tabela.
+    if (tabela === "organizations") {
+      return {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn(async () => ({ data: { country: opcoes.pais ?? null }, error: null })),
+      };
+    }
     expect(tabela).toBe("contacts");
     const consulta = {
       select: vi.fn().mockReturnThis(),
@@ -180,5 +195,90 @@ describe("POST /api/v1/contacts/import — desfecho por linha", () => {
     expect(resumo).toEqual({ total_linhas: 2, imported: 1, skipped_duplicates: 1, errors: [] });
     expect(db.tentativas).toHaveLength(2);
     expect(db.rpc).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("POST /api/v1/contacts/import — a planilha segue o PAÍS da organização (issue #1033)", () => {
+  /**
+   * País sintético, e não um país de verdade: a issue #1033 proíbe publicar
+   * citação de lei não revisada, e o registro é mutável justamente para o teste
+   * provar o mecanismo sem publicar nada. Nada aqui é oferecido ao operador
+   * (`paisesOferecidos` exige `revisada`), que é o ponto.
+   */
+  const PERFIL_DO_XISTAO: PerfilDoPais = {
+    codigo: "XI",
+    nome: "Xistão",
+    documento: {
+      rotulo: "Bilhete",
+      exemplo: "123456789XI000",
+      regra: "forma — 9 dígitos, 2 letras e 3 dígitos; não confere dígito verificador",
+      mensagemInvalido: "Bilhete inválido",
+      confereDigito: false,
+      apelidosDoCabecalho: ["bilhete"],
+      valida: (valor) => /^\d{9}[A-Z]{2}\d{3}$/.test(valor),
+      normaliza: (valor) => valor.toUpperCase().replace(/[^0-9A-Z]/g, ""),
+    },
+    lei: { nome: "Lei do Xistão", numero: "Lei nº 1/2020", artigo: "Art. 5º", revisada: false },
+    calendario: { feriados: [], rotulo: "feriados do Xistão" },
+    padroesDePii: [],
+  };
+
+  beforeEach(() => {
+    PERFIS_DO_PAIS.XI = PERFIL_DO_XISTAO;
+  });
+
+  afterEach(() => {
+    delete PERFIS_DO_PAIS.XI;
+  });
+
+  async function importarCom(cabecalho: string, linhas: string[]) {
+    const form = new FormData();
+    form.set("file", new File(
+      [[cabecalho, ...linhas].join("\n")],
+      "contatos.csv",
+      { type: "text/csv" },
+    ));
+    const resposta = await POST(new NextRequest("http://localhost/api/v1/contacts/import", {
+      method: "POST",
+      body: form,
+    }));
+    return { status: resposta.status, corpo: await resposta.json() as { data?: Resumo } };
+  }
+
+  it("aceita o cabeçalho do documento do país e grava o valor como o país normaliza", async () => {
+    const db = banco({ pais: "XI" });
+    const { status, corpo } = await importarCom("nome,telefone,bilhete", [`Ana,${PHONE},123456789xi000`]);
+
+    expect(status).toBe(200);
+    expect(corpo.data).toEqual({ total_linhas: 1, imported: 1, skipped_duplicates: 0, errors: [] });
+    // O documento não é gravado em claro: o que prova o valor (e a normalização
+    // do país) é o hash — `hashCpf("123456789XI000")`, com o valor já em
+    // maiúsculas e sem o que não é dígito nem letra.
+    expect(db.tentativas[0]).toMatchObject({ cpf_hash: hashCpf("123456789XI000") });
+    expect(db.rpc).toHaveBeenCalledWith("emit_event", expect.objectContaining({
+      p_payload: expect.objectContaining({ has_cpf: true }),
+    }));
+  });
+
+  it("diz na mensagem a régua do país — sem prometer dígito verificado que não existe", async () => {
+    const db = banco({ pais: "XI" });
+    const { corpo } = await importarCom("nome,telefone,bilhete", [`Ana,${PHONE},123`]);
+
+    expect(corpo.data).toEqual({
+      total_linhas: 1,
+      imported: 0,
+      skipped_duplicates: 0,
+      errors: [{ linha: 2, motivo: expect.stringContaining("Bilhete inválido") }],
+    });
+    expect(corpo.data?.errors[0]?.motivo).not.toContain("CPF");
+    expect(db.tentativas).toHaveLength(0);
+  });
+
+  it("sem país declarado nada muda para quem já usa: o Brasil de sempre", async () => {
+    const db = banco();
+    const { corpo } = await importarCom("nome,telefone,cpf", [`Ana,${PHONE},111.111.111-11`]);
+
+    expect(corpo.data?.errors[0]?.motivo).toContain("CPF inválido");
+    expect(db.tentativas).toHaveLength(0);
   });
 });

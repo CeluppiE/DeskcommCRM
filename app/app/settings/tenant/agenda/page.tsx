@@ -4,6 +4,7 @@ import { requireAuth, resolveActiveOrg } from "@/lib/auth/server";
 import { traduzir } from "@/lib/i18n/dicionario";
 import { ROLE_RANK } from "@/lib/auth/types";
 import { createClient } from "@/lib/supabase/server";
+import { clientePelaAgendaLigado, colegasPodemMexerNaAgendaLigado } from "@/lib/schemas/settings";
 import { nomesDosAtendentes } from "@/lib/users/nome-do-atendente";
 
 import { TiposDeAgendamentoClient, type TipoRow } from "./_client";
@@ -42,11 +43,11 @@ export default async function TiposDeAgendamentoPage() {
   const podeEditar = (user.is_platform_admin && !user.support) || ROLE_RANK[activeOrg.role] >= ROLE_RANK.manager;
 
   const supabase = await createClient();
-  const [{ data: tipos }, { data: pessoas }] = await Promise.all([
+  const [{ data: tipos }, { data: pessoas }, { data: org }] = await Promise.all([
     supabase
       .from("calendar_event_types")
       .select(
-        "id, name, slug, description, category, duration_minutes, location_kind, location_details, default_owner_user_id, requires_confirmation, is_active, reminder_enabled, reminder_minutes_before, reminder_extra_offsets_minutes",
+        "id, name, slug, description, category, duration_minutes, location_kind, location_details, default_owner_user_id, requires_confirmation, is_active, reminder_enabled, reminder_minutes_before, reminder_extra_offsets_minutes, reminder_body, reminder_bodies, default_price_cents",
       )
       .eq("organization_id", activeOrg.orgId)
       .order("is_active", { ascending: false })
@@ -56,6 +57,10 @@ export default async function TiposDeAgendamentoPage() {
       .select("user_id, role")
       .eq("organization_id", activeOrg.orgId)
       .is("revoked_at", null),
+    // A regra "Clientes pela agenda" mora em `organizations.settings.crm`. LER
+    // pela sessão funciona (a policy de leitura é de membro); gravar é só pela
+    // RPC, que a action chama.
+    supabase.from("organizations").select("settings").eq("id", activeOrg.orgId).maybeSingle(),
   ]);
 
   // O NOME DE GENTE, e não o fragmento de UUID.
@@ -92,6 +97,17 @@ export default async function TiposDeAgendamentoPage() {
         usuarioAtualId={user.id}
         podeConfigurarGoogle={ROLE_RANK[activeOrg.role] >= ROLE_RANK.agent}
         podeEditar={podeEditar}
+        clientePelaAgendaLigado={clientePelaAgendaLigado(org?.settings)}
+        // A OPÇÃO DA AGENDA (migration 0343, issue #978): LIGADA por padrão, e a
+        // régua de "ligado" é a ausência da chave — quem já instalou está no
+        // padrão sem ter nada gravado. Mesma leitura do banco.
+        colegasPodemMexerNaAgendaLigado={colegasPodemMexerNaAgendaLigado(org?.settings)}
+        // `manager` aqui, e não o `admin` de clientes: esta é regra da AGENDA, a
+        // mesma tela dos prazos, e não reescreve dado nenhum. A RPC cobra de novo.
+        podeMudarAgendaDosColegas={ROLE_RANK[activeOrg.role] >= ROLE_RANK.manager}
+        // `admin`, e não `manager` como os prazos ao lado: ligar reescreve as
+        // etiquetas de todo contato com histórico. A RPC cobra de novo.
+        podeLigarClientePelaAgenda={ROLE_RANK[activeOrg.role] >= ROLE_RANK.admin}
       />
     </div>
   );

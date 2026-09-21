@@ -26,6 +26,7 @@ import { audit } from "@/lib/audit";
 import { traduzir } from "@/lib/i18n/dicionario";
 import { emitLeadActivity } from "@/lib/leads/activity-emitter";
 import { registraFalhaDeAtividade } from "@/lib/leads/activity-write-failure";
+import { recusaDeMotivoDaPerdaPeloBanco } from "@/lib/leads/motivo-da-perda";
 
 /** Como a demanda terminou. Não há terceira: encerrar é ganhar ou perder. */
 export type DesfechoDaDemanda = "won" | "lost";
@@ -35,6 +36,17 @@ export interface EncerraDemandaInput {
   desfecho: DesfechoDaDemanda;
   /** OBRIGATÓRIO em `lost` (P-03): perder sem motivo não ensina nada a ninguém. */
   motivo?: string | null;
+  /**
+   * A razão da linha na timeline, quando o desfecho padrão ("Ganho" /
+   * "Perdido — <motivo>") diria algo FALSO a quem lê. Hoje só a troca de funil a
+   * usa: a origem fecha como perda porque é o único desfecho que o schema oferece
+   * para "saiu daqui", e "Perdido — other" num negócio que foi levado para outro
+   * funil é uma perda que não aconteceu. O motivo continua gravado na coluna e
+   * no audit; só a frase da tela muda.
+   */
+  razaoNaTimeline?: string;
+  /** Acrescentado ao `payload` da linha (ex.: para onde o negócio foi). */
+  payloadNaTimeline?: Record<string, unknown>;
 }
 
 export interface DemandaEncerrada {
@@ -171,6 +183,17 @@ export async function encerraDemanda(
     .eq("organization_id", ctx.organization_id);
 
   if (updErr) {
+    // Rede de segurança (#917) — mesma dos outros três caminhos (arrasto, lote,
+    // agente): a recusa do banco por motivo da perda (fora do vocabulário do
+    // funil) vira recusa de negócio (422 lost_reason_invalid), nunca 500. Sem
+    // isto, TODO chamador desta função devolvia o erro cru do Postgres — e são
+    // cinco: `/lose` e `/win` (as rotas humanas), `/leads/[id]/clone` (encerra a
+    // origem), a automação (`create-or-move-lead.ts`) e a capacidade de
+    // encerramento da IA (`lib/mcp/tools/retencao.ts`).
+    const recusa = recusaDeMotivoDaPerdaPeloBanco(updErr, ctx.idioma);
+    if (recusa) {
+      throw new ApiError(422, recusa.codigo, undefined, ctx.requestId, recusa.mensagem);
+    }
     throw new ApiError(500, "internal_error", undefined, ctx.requestId, updErr.message);
   }
 
@@ -204,8 +227,11 @@ export async function encerraDemanda(
     // com a mesma frase duas vezes (ver `motivoLegivel` em retorno-crm.ts).
     // Canônico em português: quem traduz é a LEITURA (`t(item.reason)`). Ver o
     // bloco "vocabulario de dominio persistido" em `lib/i18n/dicionario.ts`.
-    reason: input.desfecho === "won" ? "Ganho" : `Perdido — ${input.motivo}`,
+    reason:
+      input.razaoNaTimeline ??
+      (input.desfecho === "won" ? "Ganho" : `Perdido — ${input.motivo}`),
     payload: {
+      ...(input.payloadNaTimeline ?? {}),
       desfecho: input.desfecho,
       from_stage_id: (lead as { stage_id: string }).stage_id,
       to_stage_id: (stage as { id: string }).id,

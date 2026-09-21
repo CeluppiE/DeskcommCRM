@@ -114,6 +114,15 @@ export async function GET(req: NextRequest): Promise<Response> {
       // botão: sem carimbo, uma tabela que falhou ao atualizar é visualmente
       // idêntica a uma que acabou de atualizar.
       lido_em: new Date().toISOString(),
+      /**
+       * Ressalvas da leitura, para a tabela poder explicar uma coluna vazia.
+       *
+       * Vazio (o caminho normal) = nada a avisar. Hoje só a repetição sem os
+       * campos do Connect rate escreve aqui — e a tabela usa isto no `title`
+       * do "—": sem a ressalva, número ausente e zero ficam idênticos na tela,
+       * que é o erro invisível que a repetição existe para não criar.
+       */
+      avisos: insights.aviso ? [insights.aviso] : [],
     },
     { requestId },
   );

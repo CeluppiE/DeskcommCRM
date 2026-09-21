@@ -137,6 +137,24 @@ export async function POST(req: NextRequest): Promise<Response> {
         { requestId },
       );
 
+    // Mesma chave, MESMO corpo, e a primeira execução ainda está em curso: a
+    // chave está reservada (migration 0321) e a resposta ainda não existe —
+    // não há o que devolver, e reexecutar duplicaria a criação. Código próprio
+    // e não `idempotency_conflict`: aqui a chave está CERTA, o pedido é o
+    // mesmo, e retentar depois resolve.
+    if (desfecho.tipo === "em_curso")
+      return fail(
+        "idempotency_in_progress",
+        t("A mesma requisição ainda está em curso. Tente de novo em instantes."),
+        409,
+        { requestId },
+      );
+
+    // 201, e não `desfecho.status`: o efeito desta rota termina sempre em 201
+    // (a criação do template) e é esse o número que o recibo guarda, então o
+    // replay responde 201 também. `ok()` só aceita os códigos de sucesso que
+    // declara — repassar o `number` do desfecho afrouxaria o tipo de TODAS as
+    // rotas por causa de uma.
     return ok(desfecho.resposta, { requestId, status: 201 });
   } catch {
     return fail("internal_error", "Erro ao criar template.", 500, { requestId });

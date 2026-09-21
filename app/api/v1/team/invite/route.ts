@@ -1,3 +1,4 @@
+import type { EmailDeliveryError } from "@/lib/email/roteador";
 import { requireSupportWrite } from "@/lib/impersonate/support";
 import { issueInvite } from "@/lib/auth/issue-invite";
 import { emitirConvite } from "@/lib/team/convites";
@@ -33,6 +34,8 @@ interface SentItem {
   invite_id: string;
   expires_at: string;
   email_dispatched: boolean;
+  /** Por que não saiu, quando não saiu. Vocabulário de `lib/email/roteador.ts`. */
+  email_error?: EmailDeliveryError;
   accept_url: string;
 }
 interface FailedItem {
@@ -95,7 +98,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
 
     if (admin) {
-      const { convite, accept_url, email_dispatched } = await emitirConvite(admin, {
+      const { convite, accept_url, email_dispatched, email_error } = await emitirConvite(admin, {
         email,
         role: inv.role,
         interfaceSettings: inv.interface_settings,
@@ -110,6 +113,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         invite_id: convite.id,
         expires_at: convite.expires_at,
         email_dispatched,
+        email_error,
         accept_url,
       });
     } else {

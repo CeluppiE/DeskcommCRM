@@ -20,6 +20,10 @@ import { assertServiceBoundarySupabase } from "@/lib/atendimento/origem";
  *   3. emit_event('ai.handoff_triggered') no event_log
  *   4. Realtime broadcast no channel 'org:<org>:queue' (event 'handoff_pending')
  *   5. api_audit_log action='ai.handoff_triggered'
+ *   5.5. passagens_de_atendimento INSERT — a linha de fato da passagem, montada
+ *        pela MESMA função pura do outro motor (lib/escalacao/briefing-da-passagem)
+ *   6. agent_inbox_items kind='handoff', ref_kind='conversation' — insere ou
+ *      ACRESCENTA no item aberto (a segunda passagem não é mais descartada)
  *
  * IMPORTANTE: nunca propaga exceção pro caller. O worker chamador segue feliz.
  *
@@ -32,7 +36,21 @@ import { moverLeadParaEtapaDeHandoff } from "@/lib/leads/handoff-stage-move";
 import { decidirElegibilidadeDaConversaViaSupabase } from "@/lib/ai/elegibilidade/consulta-supabase";
 import { ttlDaAutorizacaoMs } from "@/lib/ai/elegibilidade/gate";
 
-import { avisarLeadDoCrm } from "./aviso-ao-lead";
+import { avisarLeadDoCrm, type DesfechoDoAvisoDoCrm } from "./aviso-ao-lead";
+import {
+  checkpointDoBanco,
+  montarBriefingDaPassagem,
+  type CheckpointParaBriefing,
+} from "@/lib/escalacao/briefing-da-passagem";
+import {
+  corpoCurtoDoAviso,
+  registrarPassagem,
+  type DesfechoDoAvisoDaPassagem,
+  type MotivoDaPassagem,
+  type OrigemDaPassagem,
+} from "@/lib/escalacao/passagem";
+import { traduzir } from "@/lib/i18n/dicionario";
+import { normalizarIdioma, type Idioma } from "@/lib/i18n/idiomas";
 
 export type HandoffReason =
   | "requested_human"
@@ -57,6 +75,27 @@ export interface TriggerHandoffInput {
   conversationId: string;
   organizationId: string;
   reason: HandoffReason;
+  /**
+   * POR ONDE a passagem entrou. **Obrigatória**, e é escolha: são seis
+   * chamadores, todos nossos, e sem ela a linha de `passagens_de_atendimento`
+   * nasceria dizendo "motor B" e nada mais — o que não responde "que parte do
+   * sistema decidiu isto?" quando alguém duvida do número.
+   */
+  origem: OrigemDaPassagem;
+  /**
+   * O que quem acionou DECLAROU — só a ferramenta (nativa ou MCP) tem isto.
+   *
+   * Não é o briefing inteiro de propósito: o contexto acumulado (checkpoint
+   * durável + o que o cliente disse e ainda não foi respondido) este motor lê
+   * sozinho, para TODOS os seus chamadores. Enquanto cada call site montasse o
+   * seu, seis deles montariam nada — que é o estado de hoje.
+   */
+  declarado?: {
+    tentativas?: ReadonlyArray<{ o_que: string; desfecho?: string }>;
+    cliente_quer?: string | null;
+  };
+  /** Texto livre de quem acionou (o `reason` de um agente MCP, por exemplo). */
+  motivoTexto?: string | null;
   leadId?: string | null;
   metadata?: Record<string, unknown>;
 }
@@ -64,6 +103,68 @@ export interface TriggerHandoffInput {
 export interface TriggerHandoffResult {
   triggered: boolean;
   reason: string;
+  /**
+   * O desfecho REAL do aviso ao cliente. `null` quando não houve passagem.
+   *
+   * Sai daqui porque quem chama precisa dele para NÃO mandar o agente externo
+   * avisar de novo: a tool MCP dizia "avise o cliente" depois de o orquestrador
+   * já ter avisado, e o cliente recebia a mesma coisa duas vezes.
+   */
+  aviso?: DesfechoDoAvisoDoCrm | null;
+}
+
+/**
+ * `HandoffReason` é subconjunto de `MOTIVOS_DA_PASSAGEM` — os sete motivos deste
+ * motor estão todos lá, mais `suspected_optout` e `caso_escalado`, que são do
+ * outro. A função existe para que a inclusão seja checada por alguém (o
+ * compilador, aqui) em vez de por um `as`: se um motivo novo entrar em
+ * `HandoffReason` sem par no vocabulário do banco, o `satisfies` reprova ANTES
+ * de virar um `23514` num INSERT de caminho pouco exercitado.
+ */
+const MOTIVO_DA_PASSAGEM = {
+  requested_human: "requested_human",
+  low_sentiment: "low_sentiment",
+  low_confidence: "low_confidence",
+  critical_stage: "critical_stage",
+  legal_mention: "legal_mention",
+  refund_mention: "refund_mention",
+  orcamento_de_ia: "orcamento_de_ia",
+} satisfies Record<HandoffReason, MotivoDaPassagem>;
+
+function motivoDaPassagem(reason: HandoffReason): MotivoDaPassagem {
+  return MOTIVO_DA_PASSAGEM[reason];
+}
+
+/**
+ * O desfecho do aviso reduzido ao que a LINHA guarda: `porque` (o código técnico
+ * do erro de envio) fica no log, porque a coluna é lida por uma tela que traduz.
+ */
+function desfechoDaPassagem(aviso: DesfechoDoAvisoDoCrm): DesfechoDoAvisoDaPassagem {
+  if (aviso.avisado) return { avisado: true };
+  return {
+    avisado: false,
+    ...(aviso.motivoCodigo !== undefined ? { motivoCodigo: aviso.motivoCodigo } : {}),
+  };
+}
+
+/**
+ * O idioma da ORGANIZAÇÃO — ninguém está logado quando um worker escreve. Nunca
+ * lança: o corpo do aviso em português é infinitamente melhor que aviso nenhum.
+ */
+async function idiomaDaOrganizacao(
+  admin: ReturnType<typeof createAdminClient>,
+  organizationId: string,
+): Promise<Idioma> {
+  try {
+    const { data } = await admin
+      .from("organizations")
+      .select("locale")
+      .eq("id", organizationId)
+      .maybeSingle();
+    return normalizarIdioma((data as { locale?: string | null } | null)?.locale ?? null);
+  } catch {
+    return "pt-BR";
+  }
 }
 
 const IDEMPOTENCY_WINDOW_MS = 5_000;
@@ -88,7 +189,9 @@ export async function triggerHandoff(
     // paralelo. Skip silenciosamente.
     const { data: convNow } = await admin
       .from("conversations")
-      .select("id, organization_id, contact_id, last_handoff_at, last_handoff_reason")
+      .select(
+        "id, organization_id, contact_id, last_handoff_at, last_handoff_reason, last_outbound_at",
+      )
       .eq("id", input.conversationId)
       .eq("organization_id", input.organizationId)
       .maybeSingle();
@@ -294,55 +397,110 @@ export async function triggerHandoff(
       });
     }
 
-    // Step 6 — o aviso na CENTRAL, para uma pessoa de verdade puxar a conversa.
-    //
-    // Faltava, e a falta era grave: este motor devolvia a conversa à fila
-    // (`status='pending'`) e silenciava a IA, mas não abria item nenhum em
-    // `agent_inbox_items` — só `performHumanHandoff` abria. O resultado é o
+    // O AVISO na Central faltava neste motor, e a falta era grave: ele devolvia a
+    // conversa à fila (`status='pending'`) e silenciava a IA, mas não abria item
+    // nenhum em `agent_inbox_items` — só `performHumanHandoff` abria. O
     // invariante 4 do Sistema Vivo quebrado nos dois sentidos ao mesmo tempo: o
     // cliente sem resposta E o time sem sinal de que havia alguém esperando.
     //
-    // Dedup por episódio ABERTO, o mesmo padrão do irmão do motor: dois
-    // gatilhos disparando na mesma conversa (sentimento + termo jurídico, por
-    // exemplo) rendem UM item, não dois.
-    //
-    // A chave do dedup é a MESMA de `performHumanHandoff`
-    // (`kind='handoff'`, `ref_kind='contact'`, `ref_id=<contato>`, `status='open'`),
-    // de propósito: assim os DOIS motores deduplicam um contra o outro, e uma
-    // conversa escalada por sentimento e depois por pedido explícito não vira
-    // dois avisos para a mesma pessoa.
+    // A chave do dedup é a MESMA de `performHumanHandoff` — e as DUAS mudaram
+    // juntas nesta entrega: `ref_kind='conversation'`, `ref_id=<conversa>`,
+    // `status='open'`. Com `contact`, um cliente com duas conversas abertas
+    // rendia um aviso só, e a segunda ficava invisível; e o destino do aviso era
+    // a ficha do contato, não o lugar onde se responde.
     if (contactId !== null) {
+      const idiomaDaOrg = await idiomaDaOrganizacao(admin, input.organizationId);
+      // Step 5.5 — A LINHA DE FATO. Este motor abria o aviso da Central SEM
+      // resumo nenhum: quem assumia uma conversa escalada por sentimento
+      // recebia "Motivo: low_sentiment" e mais nada. Agora o contexto é uma
+      // linha de `passagens_de_atendimento`, montada pela MESMA função do outro
+      // motor — e é o que impede as duas telas de divergirem de novo.
+      //
+      // Dentro do `guard()` que já existe, como os efeitos acima.
+      await guard();
+      const briefing = montarBriefingDaPassagem({
+        checkpoint: await checkpointDuravel(admin, input.organizationId, contactId),
+        pendentesDoCliente: await falasPendentes(
+          admin,
+          input.organizationId,
+          input.conversationId,
+          (convNow as unknown as { last_outbound_at?: string | null }).last_outbound_at ?? null,
+        ),
+        ...(input.declarado !== undefined ? { declaradoPeloModelo: input.declarado } : {}),
+        motivo: {
+          codigo: motivoDaPassagem(input.reason),
+          texto: input.motivoTexto ?? null,
+        },
+      });
+      const gravou = await registrarPassagem(admin, {
+        organizationId: input.organizationId,
+        contactId,
+        conversationId: input.conversationId,
+        motor: "crm",
+        origem: input.origem,
+        motivoCodigo: motivoDaPassagem(input.reason),
+        briefing,
+        aviso: desfechoDaPassagem(aviso),
+      });
+      if (!gravou.gravada) {
+        logger.warn("[handoff-orchestrator] passagem não registrada", {
+          conversation_id: input.conversationId,
+          error: gravou.erro,
+        });
+      }
+
+      // Step 6 — o aviso na CENTRAL, para uma pessoa de verdade puxar a conversa.
+      //
+      // Dois consertos no mesmo bloco, os mesmos do motor A:
+      //   1. `ref_kind` é `conversation` — o dedup por CONTATO fazia um cliente
+      //      com duas conversas abertas render um aviso só;
+      //   2. a segunda passagem ENRIQUECE o item aberto em vez de ser descartada
+      //      em silêncio. É o defeito medido: o sentimento chegava primeiro (sem
+      //      contexto), o pedido explícito chegava depois e sumia.
+      //
+      // Continua sendo select-then-update/insert, com a corrida que o repo já
+      // declara: um índice único teria de incluir `status`, que é mutável, e
+      // isso quebraria reabrir item resolvido.
       try {
+        const corpo = corpoCurtoDoAviso(
+          {
+            motivoCodigo: motivoDaPassagem(input.reason),
+            aviso: desfechoDaPassagem(aviso),
+          },
+          (texto) => traduzir(texto, idiomaDaOrg),
+        );
         const { data: aberto } = await admin
           .from("agent_inbox_items")
-          .select("id")
+          .select("id, body")
           .eq("organization_id", input.organizationId)
           .eq("kind", "handoff")
-          .eq("ref_kind", "contact")
-          .eq("ref_id", contactId)
+          .eq("ref_kind", "conversation")
+          .eq("ref_id", input.conversationId)
           .eq("status", "open")
+          .order("created_at", { ascending: false })
           .limit(1)
           .maybeSingle();
-        if (!aberto) {
-          const { error: inboxErr } = await admin.from("agent_inbox_items").insert({
-            organization_id: input.organizationId,
-            kind: "handoff",
-            severity: "critical",
-            title: "Atendimento automático parou — assumir a conversa",
-            body:
-              `Motivo: ${input.reason}. ` +
-              (aviso.avisado
-                ? "O cliente JÁ FOI avisado de que uma pessoa vai assumir."
-                : `⚠️ O cliente NÃO foi avisado (${aviso.porque ?? "motivo desconhecido"}) — ele está esperando sem saber.`),
-            ref_kind: "contact",
-            ref_id: contactId,
-          });
-          if (inboxErr) {
-            logger.warn("[handoff-orchestrator] inbox item insert failed", {
-              conversation_id: input.conversationId,
-              error: inboxErr.message,
+        const alvo = aberto as { id: string; body: string | null } | null;
+        const { error: inboxErr } = alvo
+          ? await admin
+              .from("agent_inbox_items")
+              .update({ body: `${alvo.body ?? ""}\n\n${corpo}`, severity: "critical" })
+              .eq("organization_id", input.organizationId)
+              .eq("id", alvo.id)
+          : await admin.from("agent_inbox_items").insert({
+              organization_id: input.organizationId,
+              kind: "handoff",
+              severity: "critical",
+              title: "Atendimento automático parou — assumir a conversa",
+              body: corpo,
+              ref_kind: "conversation",
+              ref_id: input.conversationId,
             });
-          }
+        if (inboxErr) {
+          logger.warn("[handoff-orchestrator] inbox item insert failed", {
+            conversation_id: input.conversationId,
+            error: inboxErr.message,
+          });
         }
       } catch (err) {
         // Fire-and-forget como os passos 2..5: o aviso é o alerta, não a ação.
@@ -353,12 +511,72 @@ export async function triggerHandoff(
       }
     }
 
-    return { triggered: true, reason: input.reason };
+    return { triggered: true, reason: input.reason, aviso };
   } catch (err) {
     logger.warn("[handoff-orchestrator] unexpected error", {
       conversation_id: input.conversationId,
       error: err instanceof Error ? err.message : String(err),
     });
     return { triggered: false, reason: "orchestrator_error" };
+  }
+}
+
+/**
+ * O checkpoint durável do contato, do jeito que a montagem do briefing o lê.
+ *
+ * É a MESMA linha que o motor de conversa usa (`latestCheckpoint`), pela outra
+ * porta: aqui não há `pg.Pool`. Nunca lança — contexto a menos nunca pode virar
+ * passagem a menos.
+ */
+async function checkpointDuravel(
+  admin: ReturnType<typeof createAdminClient>,
+  organizationId: string,
+  contactId: string,
+): Promise<CheckpointParaBriefing | null> {
+  try {
+    const { data } = await admin
+      .from("lead_checkpoints")
+      .select("commitments, objections, next_action, rolling_summary, declaracao")
+      .eq("organization_id", organizationId)
+      .eq("contact_id", contactId)
+      .order("seq", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return checkpointDoBanco(data);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * O que o cliente escreveu e ainda não foi respondido — as palavras DELE.
+ *
+ * O recorte é "inbound depois do último outbound", que é a definição operacional
+ * de pendente sem precisar do estado do turno (este motor não tem turno). Teto
+ * de cinco: é citação para uma pessoa ler, não transcrição.
+ */
+async function falasPendentes(
+  admin: ReturnType<typeof createAdminClient>,
+  organizationId: string,
+  conversationId: string,
+  desde: string | null,
+): Promise<string[]> {
+  try {
+    let consulta = admin
+      .from("messages")
+      .select("body, created_at")
+      .eq("organization_id", organizationId)
+      .eq("conversation_id", conversationId)
+      .eq("direction", "inbound")
+      .order("created_at", { ascending: false })
+      .limit(5);
+    if (desde !== null) consulta = consulta.gt("created_at", desde);
+    const { data } = await consulta;
+    return ((data ?? []) as Array<{ body: string | null }>)
+      .map((m) => (m.body ?? "").trim())
+      .filter((b) => b !== "")
+      .reverse();
+  } catch {
+    return [];
   }
 }

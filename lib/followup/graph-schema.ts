@@ -88,6 +88,25 @@ export const waitConfigSchema = z
     z.strictObject({
       mode: z.literal('fixed'),
       duration_ms: z.number().int().min(300_000).max(7_776_000_000),
+      /**
+       * A espera NÃO é encurtada nem cancelada quando o contato manda mensagem.
+       *
+       * Existe para a cadência longa — o retorno de manutenção de 28 dias — em
+       * que o cliente falar hoje não é motivo para antecipar um toque de daqui a
+       * um mês. Sem isto, `lib/followup/reactivity.ts` ou cancela a inscrição
+       * (`cancel_on_reply`) ou grava `inbound_woke` e corta o timer: os dois
+       * desfechos matam a cadência, e era por isso que a regra de retorno vivia
+       * no prompt do agente chamando `crm_schedule_followup`.
+       *
+       * Só em `fixed`: `smart` é "a IA escolhe dentro de uma faixa", e faixa
+       * adaptativa com imunidade é combinação que ninguém pediu. O `strictObject`
+       * do outro membro já recusa a chave — vira teste, não código.
+       *
+       * Em runtime isto vira o status `dormente` da inscrição (quem projeta é o
+       * handler do nó, em `node-handlers.ts`), e é o status que tira a inscrição
+       * do alcance da reatividade e libera o slot único anti-spam.
+       */
+      immune_to_reply: z.boolean().optional(),
     }),
     z.strictObject({
       mode: z.literal('smart'),
@@ -531,7 +550,17 @@ export type FlowBranch = {
   condition: FlowEdgeCondition;
 };
 
+/** Nó de saída ÚNICA: a aresta sai por ali sempre, e é isso que o rótulo diz. */
 const FALLBACK_ALWAYS_LABEL = 'Sempre';
+/**
+ * Nó que JÁ tem saídas específicas. O motor só usa esta aresta quando nenhuma
+ * outra serve (`selectEdge`, node-handlers), e nunca manda o lead por duas ao
+ * mesmo tempo — "Sempre" ao lado de "Interessado" e "Sem resposta" prometia
+ * justamente isso, e quem montava o fluxo ligava aqui a mensagem que queria
+ * mandar a todo mundo.
+ */
+const FALLBACK_OTHERS_LABEL = 'Outros casos';
+/** O mesmo escape num nó cujas saídas são REGRAS: "o resto", dito com a palavra das regras. */
 const FALLBACK_NONE_LABEL = 'Nenhuma delas';
 const NO_REPLY_LABEL = 'Sem resposta';
 
@@ -585,7 +614,7 @@ export function nodeBranches(node: BranchableNode): FlowBranch[] {
           kind: 'match',
           condition: { type: 'cond_result', value: false },
         },
-        fallbackBranch(FALLBACK_ALWAYS_LABEL),
+        fallbackBranch(FALLBACK_OTHERS_LABEL),
       ];
     }
 
@@ -617,7 +646,7 @@ export function nodeBranches(node: BranchableNode): FlowBranch[] {
             ? { type: 'branch', branch_id: NO_REPLY_BRANCH_ID }
             : { type: 'class_match', value: NO_REPLY_BRANCH_ID },
         },
-        fallbackBranch(FALLBACK_ALWAYS_LABEL),
+        fallbackBranch(FALLBACK_OTHERS_LABEL),
       ];
     }
 
@@ -638,7 +667,7 @@ export function nodeBranches(node: BranchableNode): FlowBranch[] {
           kind: 'match',
           condition: { type: 'branch', branch_id: NO_REPLY_BRANCH_ID },
         },
-        fallbackBranch(FALLBACK_ALWAYS_LABEL),
+        fallbackBranch(FALLBACK_OTHERS_LABEL),
       ];
     }
 
@@ -658,7 +687,7 @@ export function nodeBranches(node: BranchableNode): FlowBranch[] {
           kind: 'match',
           condition: { type: 'branch', branch_id: REPEAT_DONE_BRANCH_ID },
         },
-        fallbackBranch(FALLBACK_ALWAYS_LABEL),
+        fallbackBranch(FALLBACK_OTHERS_LABEL),
       ];
 
     default:

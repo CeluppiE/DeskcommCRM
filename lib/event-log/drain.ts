@@ -68,7 +68,7 @@ function backoffAt(attempts: number): string {
  */
 async function avisarEventoMorto(
   admin: SupabaseClient,
-  row: EventRow,
+  row: Pick<EventRow, "id" | "organization_id" | "event_type" | "attempts">,
   motivo: string,
 ): Promise<void> {
   try {
@@ -157,15 +157,75 @@ export async function drainEventLog(
   // `trg_event_log_touch` (BEFORE UPDATE) o reescreve em toda atualização, então
   // a linha carrega o instante do CLAIM enquanto o handler não volta.
   const limiteDePresos = new Date(Date.now() - PROCESSING_STALE_MS).toISOString();
-  const { data: reclamados } = await admin
+  const { data: presos } = await admin
     .from("event_log")
-    .update({ status: "pending", updated_at: nowIso })
+    .select("id, organization_id, event_type, attempts")
     .eq("status", "processing")
-    .lt("updated_at", limiteDePresos)
-    .select("id");
-  if (reclamados?.length) {
+    .lt("updated_at", limiteDePresos);
+
+  // ─── E A VOLTA CONTA COMO TENTATIVA ────────────────────────────────────────
+  //
+  // Devolver o evento à fila com `attempts` intacto era o laço que derrubava o
+  // worker de produção 313 vezes em 2026-09-15: um PDF de 18 KB estourava o
+  // heap (`lib/ai/rag/extractors/pdf.ts` explica o custo), o processo morria
+  // ANTES de o handler devolver erro — e só handler que devolve erro
+  // incrementava `attempts`. O evento voltava a `pending` com `attempts=0`,
+  // era reclamado de novo, matava de novo. Um evento envenenado tinha
+  // tentativas infinitas, e o `MAX_ATTEMPTS` só valia para quem falhava
+  // educadamente.
+  //
+  // Um evento que ficou `processing` além da janela é uma tentativa que não
+  // voltou. Conta como as outras: mesmo `attempts + 1`, mesmo `dead` no limite,
+  // mesmo aviso na Central. O backoff importa tanto quanto a contagem — sem ele,
+  // o evento reclamado é o primeiro da fila do próximo tique, e o worker
+  // recém-reiniciado morre no mesmo minuto.
+  //
+  // MAS ele entra a partir da SEGUNDA volta, e a exceção tem dono: o invariante
+  // `tests/invariants/event-log-drain.test.ts`, caso 9, afirma que o órfão volta
+  // para a fila E É PROCESSADO NO MESMO TIQUE, com a razão escrita lá — o órfão
+  // legítimo (um deploy que reiniciou o worker no meio de um evento sadio) não
+  // deve pagar espera nenhuma, porque a espera é o defeito que aquele caso veio
+  // impedir. Cobrar backoff já na primeira volta trocaria o laço do evento
+  // envenenado por uma lentidão em todo deploy.
+  //
+  // O laço quebra igual: o envenenado volta UMA vez de graça, derruba o processo
+  // de novo, e da segunda em diante paga 2, 4, 8… minutos até `MAX_ATTEMPTS`.
+  // Uma tentativa a mais por evento envenenado é o preço de não tirar do órfão
+  // legítimo a volta imediata que ele sempre teve.
+  //
+  // Um por um, com o guarda `status = 'processing'`: duas instâncias do dreno
+  // (o laço do worker e o cron do app) podem ler a mesma linha presa, e só a
+  // primeira a tocar incrementa — a segunda encontra `pending` e não faz nada.
+  let reclamados = 0;
+  for (const preso of presos ?? []) {
+    const attempts = preso.attempts + 1;
+    const dead = attempts >= MAX_ATTEMPTS;
+    // `preso.attempts === 0` é a PRIMEIRA volta deste evento — ninguém o
+    // reclamou antes. Ele volta pronto para o mesmo tique (ver acima).
+    const primeiraVolta = preso.attempts === 0;
+    const motivo = `tentativa não voltou em ${PROCESSING_STALE_MS / 60_000} min (processo derrubado?)`;
+    const { data: tocado } = await admin
+      .from("event_log")
+      .update({
+        status: dead ? "dead" : "pending",
+        attempts,
+        last_error: motivo,
+        next_attempt_at: dead || primeiraVolta ? null : backoffAt(attempts),
+        updated_at: nowIso,
+      })
+      .eq("id", preso.id)
+      .eq("status", "processing")
+      .select("id");
+    if (!tocado?.length) continue;
+    reclamados += 1;
+    if (dead) {
+      summary.dead += 1;
+      await avisarEventoMorto(admin, preso, motivo);
+    }
+  }
+  if (reclamados) {
     logger.warn("[event-log.drain] eventos presos em processing devolvidos à fila", {
-      quantidade: reclamados.length,
+      quantidade: reclamados,
     });
   }
 

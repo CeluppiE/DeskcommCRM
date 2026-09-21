@@ -71,6 +71,53 @@ describe("resolveOrgLlmConfig — chave de plataforma por provider", () => {
 });
 
 /**
+ * DE QUEM É A CHAVE — a pergunta que decide para onde ela pode ir.
+ *
+ * A decisão 22-a do dono do produto proíbe a chave da INSTALAÇÃO de acompanhar
+ * um endereço que uma empresa escolheu. O seam do chat e o worker de mídia
+ * recusam essa combinação lendo `origemDaChave`; se o resolvedor rotular errado
+ * um degrau, a recusa falha aberta (chave sai) ou fechada (empresa com chave
+ * própria para de funcionar). Cada degrau da escada é conferido aqui.
+ */
+describe("resolveOrgLlmConfig — a origem da chave acompanha o degrau", () => {
+  it("credencial da organização → credencial_da_organizacao", async () => {
+    const out = await resolveOrgLlmConfig(
+      poolFake({ provider: "openrouter", default_model: "x" }, [
+        { api_key_encrypted: "x", api_key_iv: "y", api_key_tag: "z" },
+      ]),
+      { openrouterApiKey: "sk-or-plataforma" },
+      "org-1",
+    );
+    expect(out.apiKey).toBe("chave-byok-da-org");
+    expect(out.origemDaChave).toBe("credencial_da_organizacao");
+  });
+
+  it.each([
+    ["anthropic", { anthropicApiKey: "sk-ant-plataforma" }],
+    ["openai", { openaiApiKey: "sk-proj-plataforma" }],
+    ["openrouter", { openrouterApiKey: "sk-or-plataforma" }],
+  ] as const)("sem credencial da org, a chave de %s do .env → chave_da_instalacao", async (provider, cfg) => {
+    const out = await resolveOrgLlmConfig(poolFake({ provider }, SEM_BYOK), cfg, "org-1");
+    expect(out.origemDaChave).toBe("chave_da_instalacao");
+  });
+
+  it("credencial ESCOLHIDA e revogada cai no .env — e o rótulo diz que a chave é da instalação", async () => {
+    // O degrau menos óbvio: quem configurou escolheu uma credencial da empresa,
+    // e por isso acredita que a chave é dela. A linha deixou de estar ativa, a
+    // consulta volta vazia, e o resolvedor — que não lança por isso — entrega a
+    // chave do .env.
+    const out = await resolveOrgLlmConfig(
+      poolFake({ provider: "openrouter" }, SEM_BYOK),
+      { openrouterApiKey: "sk-or-plataforma" },
+      "org-1",
+      { provider: "openrouter", credentialId: "cred-revogada" },
+    );
+    expect(out.apiKey).toBe("sk-or-plataforma");
+    expect(out.origemDaChave).toBe("chave_da_instalacao");
+  });
+});
+
+/**
  * A ponte que faltava. Os testes acima provam que `resolveOrgLlmConfig` USA
  * `openaiApiKey` — e passavam. Só que nenhum caminho do agente PREENCHIA o campo:
  * `llmEdgeConfigFromEnv` montava apenas a chave da Anthropic, e o único lugar que

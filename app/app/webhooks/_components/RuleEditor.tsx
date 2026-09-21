@@ -22,6 +22,13 @@ import {
 import { Plus, Trash, CaretUp, CaretDown } from "@/lib/ui/icons";
 import { createAutomationRuleSchema, TRIGGER_EVENTS } from "@/lib/schemas/webhooks";
 import {
+  DIAS_MAX,
+  DIAS_MIN,
+  GATILHO_DE_DATA_DO_FUNIL,
+  configDoGatilhoDeData,
+} from "@/lib/automation/gatilho-de-data-do-funil";
+import { camposDoFunil } from "@/lib/leads/campos-do-funil";
+import {
   useCreateAutomationRule,
   useUpdateAutomationRule,
   type AutomationRuleRow,
@@ -50,14 +57,32 @@ interface CuratedField {
   label: string;
   op: Op;
   kind?: "stage";
+  /**
+   * O campo guarda uma LISTA (tags). Em lista, `contains` é pertinência — a tag
+   * inteira, sem diferenciar caixa (decisão do dono, #956) —, e chamar isso de
+   * "contém" na tela promete o que o motor não faz: quem lê "contém Google"
+   * espera pegar `Google Ads`. O rótulo vira "tem a tag" só nesses campos.
+   */
+  lista?: true;
 }
 
 const LEAD_FIELDS: CuratedField[] = [
   { value: "lead.title", label: "Nome do lead", op: "eq" },
-  { value: "lead.tags", label: "Tags do lead", op: "contains" },
+  { value: "lead.tags", label: "Tags do lead", op: "contains", lista: true },
   // utm_* entram pelo webhook em source_metadata (decisão da rota inbound),
   // não em custom_fields — o path aqui tem que apontar pra onde o dado mora.
   { value: "lead.source_metadata.utm_source", label: "Origem (utm_source)", op: "eq" },
+  // Os quatro níveis que a ficha do contato mostra, com as MESMAS palavras —
+  // dois vocabulários para o mesmo dado fariam o operador montar a regra sobre
+  // um campo e ler o resultado em outro.
+  { value: "lead.source_metadata.utm_campaign", label: "Campanha (utm_campaign)", op: "eq" },
+  { value: "lead.source_metadata.utm_adset", label: "Conjunto (utm_adset)", op: "eq" },
+  { value: "lead.source_metadata.utm_ad", label: "Anúncio (utm_ad)", op: "eq" },
+  {
+    value: "lead.source_metadata.utm_placement",
+    label: "Posicionamento (utm_placement)",
+    op: "eq",
+  },
 ];
 const STAGE_FIELD: CuratedField = {
   value: "event.to_stage_id",
@@ -67,16 +92,17 @@ const STAGE_FIELD: CuratedField = {
 };
 const MESSAGE_FIELDS: CuratedField[] = [
   { value: "event.body_preview", label: "Texto da mensagem", op: "contains" },
-  { value: "contact.tags", label: "Tags do contato", op: "contains" },
+  { value: "contact.tags", label: "Tags do contato", op: "contains", lista: true },
 ];
 const CONTACT_FIELDS: CuratedField[] = [
-  { value: "contact.tags", label: "Tags do contato", op: "contains" },
+  { value: "contact.tags", label: "Tags do contato", op: "contains", lista: true },
   { value: "contact.name", label: "Nome do contato", op: "contains" },
 ];
 const TAG_ADDED_FIELD: CuratedField = {
   value: "event.added_tags",
   label: "Tag adicionada",
   op: "contains",
+  lista: true,
 };
 
 /**
@@ -87,7 +113,7 @@ const TAG_ADDED_FIELD: CuratedField = {
  */
 const AGENDAMENTO_FIELDS: CuratedField[] = [
   { value: "event.event_type_name", label: "Tipo de atendimento", op: "contains" },
-  { value: "contact.tags", label: "Tags do contato", op: "contains" },
+  { value: "contact.tags", label: "Tags do contato", op: "contains", lista: true },
 ];
 
 // ponytail: etapa de destino usa o funil default (cobre o caso comum de 1
@@ -107,6 +133,11 @@ const CURATED_FIELDS: Record<TriggerEvent, CuratedField[]> = {
   // decidir é sobre QUEM faz aniversário, e não sobre a data. Por isso os campos
   // são os do contato — "só quem tem a tag cliente", tipicamente.
   "contact.birthday": CONTACT_FIELDS,
+  // A data do funil dispara sobre o NEGÓCIO, então as condições são as do lead:
+  // "só os que estão com a etiqueta vip", "só o que veio do Instagram". O
+  // campo de data em si NÃO entra como condição — quem o escolhe é a
+  // configuração do gatilho, logo acima.
+  "lead.date_field_due": LEAD_FIELDS,
 };
 
 const OP_LABELS: Record<Op, string> = { eq: "é", neq: "não é", contains: "contém" };
@@ -114,6 +145,20 @@ const OP_LABELS: Record<Op, string> = { eq: "é", neq: "não é", contains: "con
 function emptyCondition(): ConditionRow {
   return { field: "", op: "eq", value: "" };
 }
+
+/**
+ * O que a regra de data precisa guardar além do gatilho (#989). Os campos do
+ * funil são a CHAVE (`pipelines.settings.fields[].key`), não o rótulo: é a
+ * chave que endereça o valor em `crm_leads.custom_fields`, e é por ela que a
+ * varredura procura.
+ */
+interface ConfigDaData {
+  pipeline_id: string;
+  campo: string;
+  dias: string;
+}
+
+const DIAS_PADRAO = "7";
 
 export function RuleEditor({ open, onOpenChange, rule }: Props) {
   const t = useT();
@@ -123,6 +168,11 @@ export function RuleEditor({ open, onOpenChange, rule }: Props) {
   const [conditions, setConditions] = React.useState<ConditionRow[]>([]);
   const [advancedRows, setAdvancedRows] = React.useState<Record<number, boolean>>({});
   const [actions, setActions] = React.useState<ActionItem[]>([]);
+  const [configDaData, setConfigDaData] = React.useState<ConfigDaData>({
+    pipeline_id: "",
+    campo: "",
+    dias: DIAS_PADRAO,
+  });
 
   const create = useCreateAutomationRule();
   const update = useUpdateAutomationRule();
@@ -143,9 +193,26 @@ export function RuleEditor({ open, onOpenChange, rule }: Props) {
     );
     setAdvancedRows({});
     setActions((rule?.actions as ActionItem[] | undefined) ?? []);
+    // A configuração salva volta pelo MESMO leitor que a varredura usa: se ela
+    // não reconhece o que está guardado, a tela não inventa nada e o operador
+    // reescolhe — em vez de a tela mostrar um funil que o cron ignora.
+    const guardada = configDoGatilhoDeData(rule?.trigger_config);
+    setConfigDaData(
+      guardada
+        ? {
+            pipeline_id: guardada.pipeline_id,
+            campo: guardada.campo,
+            dias: String(guardada.dias),
+          }
+        : { pipeline_id: "", campo: "", dias: DIAS_PADRAO },
+    );
   }, [open, rule]);
 
   const curatedFields = triggerEvent ? CURATED_FIELDS[triggerEvent] : [];
+  const ehGatilhoDeData = triggerEvent === GATILHO_DE_DATA_DO_FUNIL;
+  const camposDeData = camposDoFunil(
+    (pipelinesRes?.data ?? []).find((p) => p.id === configDaData.pipeline_id)?.settings ?? null,
+  ).filter((campo) => campo.type === "date");
 
   const updateCondition = (idx: number, patch: Partial<ConditionRow>) => {
     setConditions((prev) => prev.map((c, i) => (i === idx ? { ...c, ...patch } : c)));
@@ -189,6 +256,16 @@ export function RuleEditor({ open, onOpenChange, rule }: Props) {
         .filter((c) => c.field.trim() && c.value.trim())
         .map((c) => ({ field: c.field.trim(), op: c.op, value: c.value.trim() })),
       actions,
+      // `Number("")` é 0 — o que gravaria "avisar no dia" para quem não
+      // digitou nada. O campo vazio vira `NaN`, que o schema recusa com a
+      // mensagem certa em vez de aceitar um zero silencioso.
+      trigger_config: ehGatilhoDeData
+        ? {
+            pipeline_id: configDaData.pipeline_id,
+            campo: configDaData.campo,
+            dias: configDaData.dias.trim() === "" ? Number.NaN : Number(configDaData.dias),
+          }
+        : undefined,
     };
     const parsed = createAutomationRuleSchema.safeParse(payload);
     if (!parsed.success) {
@@ -254,6 +331,87 @@ export function RuleEditor({ open, onOpenChange, rule }: Props) {
                 ))}
               </SelectContent>
             </Select>
+
+            {/* O gatilho de DATA só sabe onde olhar se a regra disser o funil e o
+                campo: o campo de data pertence a UM funil. Sem esta escolha a
+                regra é salva e nunca dispara — por isso o schema da API também
+                a recusa. */}
+            {ehGatilhoDeData ? (
+              <div className="space-y-3 rounded-sm border border-border p-3">
+                <p className="text-sm text-muted-foreground">
+                  {t(
+                    "O aviso sai no dia em que faltarem N dias para a data, uma vez por negócio. Para avisar DEPOIS da data, use N negativo — -60 confirma a entrega 60 dias após o casamento.",
+                  )}
+                </p>
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="flex-1 basis-52 space-y-1">
+                    <Label>{t("Funil do campo")}</Label>
+                    <Select
+                      value={configDaData.pipeline_id}
+                      onValueChange={(v) =>
+                        // Trocar de funil zera o campo: a chave de um funil não
+                        // existe no outro, e manter a antiga seria gravar uma
+                        // regra que não acha o valor.
+                        setConfigDaData((prev) => ({ ...prev, pipeline_id: v, campo: "" }))
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder={t("Escolha o funil")} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(pipelinesRes?.data ?? []).map((pipeline) => (
+                          <SelectItem key={pipeline.id} value={pipeline.id}>
+                            {pipeline.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="flex-1 basis-52 space-y-1">
+                    <Label>{t("Campo de data")}</Label>
+                    <Select
+                      value={configDaData.campo}
+                      onValueChange={(v) => setConfigDaData((prev) => ({ ...prev, campo: v }))}
+                      disabled={camposDeData.length === 0}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder={t("Escolha o campo")} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {camposDeData.map((campo) => (
+                          <SelectItem key={campo.key} value={campo.key}>
+                            {campo.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="w-40 space-y-1">
+                    <Label htmlFor="dias-da-data">{t("Faltam N dias")}</Label>
+                    <Input
+                      id="dias-da-data"
+                      type="number"
+                      inputMode="numeric"
+                      value={configDaData.dias}
+                      min={DIAS_MIN}
+                      max={DIAS_MAX}
+                      onChange={(e) =>
+                        setConfigDaData((prev) => ({ ...prev, dias: e.target.value }))
+                      }
+                    />
+                  </div>
+                </div>
+                {configDaData.pipeline_id && camposDeData.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t(
+                      "Este funil ainda não tem campo de data. Cadastre um em Funis → Campos personalizados para poder escolhê-lo aqui.",
+                    )}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
           </section>
 
           <section className="space-y-3">
@@ -306,7 +464,11 @@ export function RuleEditor({ open, onOpenChange, rule }: Props) {
                       <SelectContent>
                         {(Object.keys(OP_LABELS) as Op[]).map((op) => (
                           <SelectItem key={op} value={op}>
-                            {t(OP_LABELS[op])}
+                            {/* Em campo de lista, `contains` é pertinência: o
+                                rótulo diz o que o motor faz. No modo avançado
+                                (path digitado à mão) não há campo curado, então
+                                o rótulo genérico continua. */}
+                            {t(curated?.lista && op === "contains" ? "tem a tag" : OP_LABELS[op])}
                           </SelectItem>
                         ))}
                       </SelectContent>

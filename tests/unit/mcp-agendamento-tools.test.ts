@@ -330,6 +330,36 @@ describe("as escritas de agenda", () => {
     expect(handlers.marcarAgendamentoHandler).not.toHaveBeenCalled();
   });
 
+  it("endereço e observação passam ao handler; notes continua interno", async () => {
+    vi.mocked(idDoTipoPorSlug).mockResolvedValue({ id: "t-1", nome: "Consulta" });
+    vi.mocked(handlers.marcarAgendamentoHandler).mockResolvedValue({
+      id: "a-1",
+      status: "confirmed",
+      meeting_state: null,
+      meeting_url: null,
+    });
+    await crmBookAppointment.handler(
+      {
+        event_type_slug: "consulta",
+        starts_at: "2026-09-01T14:00:00Z",
+        contact_id: "11111111-1111-4111-8111-111111111111",
+        location_details: "Rua 1",
+        description: "Trazer RG",
+        notes: "queixa interna",
+      },
+      ctx,
+    );
+    expect(handlers.marcarAgendamentoHandler).toHaveBeenCalledWith(
+      ctx.supabase,
+      expect.anything(),
+      expect.objectContaining({
+        location_details: "Rua 1",
+        description: "Trazer RG",
+        notes: "queixa interna",
+      }),
+    );
+  });
+
   it("a organização vem do CONTEXTO do agente, nunca do argumento", async () => {
     // O handler recebe `organization_id` por parâmetro justamente para servir à tool,
     // e pelo MCP o client é service-role: a RLS não filtra. Se isto vier do input, é

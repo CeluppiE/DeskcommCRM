@@ -349,7 +349,20 @@ export async function indexarFonte(
     }
   } catch (err) {
     if (err instanceof ErroDeExtracao) {
-      return { tipo: "erro", detalhe: err.message };
+      // A mensagem é a chave estável; a causa mora em `detalhe`. Aqui é o
+      // único registro da falha numa reindexação — o cartão da fonte e o aviso
+      // da Central mostram este texto como está, sem traduzir —, então gravar
+      // só a chave apagaria a causa.
+      //
+      // Quem preenche `detalhe` hoje é o erro do Storage e a extensão
+      // desconhecida (`lib/ai/rag/ingest/documento.ts:78-92`). A mensagem do
+      // parser de PDF não chega: `extractPdfText` embrulha toda falha em
+      // `PdfExtractError`, e o ramo que casa com ela (`documento.ts:103-108`)
+      // não repassa causa — é o #1061 que abre esse ramo, não este código.
+      return {
+        tipo: "erro",
+        detalhe: err.detalhe ? `${err.message} (${err.detalhe})` : err.message,
+      };
     }
     return { tipo: "erro", detalhe: err instanceof Error ? err.message : String(err) };
   }

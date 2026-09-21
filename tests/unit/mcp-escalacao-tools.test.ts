@@ -226,6 +226,39 @@ describe("crm_list_available_attendants", () => {
 // crm_list_human_cases / crm_get_human_case
 // ---------------------------------------------------------------------------
 
+/**
+ * O mesmo dublê, registrando os `in` aplicados — é por eles que se vê se a
+ * leitura do agente foi recortada por conversa (ela não pode ser).
+ */
+function supabaseQueRegistraIn(resolve: Resolver) {
+  const ins: Array<[string, unknown]> = [];
+  const from = (tabela: string) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const chain: any = {
+      select: () => chain,
+      eq: () => chain,
+      is: () => chain,
+      in: (coluna: string, valores: unknown) => {
+        ins.push([coluna, valores]);
+        return chain;
+      },
+      order: () => chain,
+      limit: () => chain,
+      maybeSingle: () => Promise.resolve(resolve({ tabela, terminal: "maybeSingle" })),
+      then: (res: (v: unknown) => unknown) =>
+        Promise.resolve(resolve({ tabela, terminal: "then" })).then(res),
+    };
+    return chain;
+  };
+  return { ins, supabase: { from } };
+}
+
+/** O ctx padrão com um supabase escolhido a dedo. */
+function comSupabase(supabase: unknown): McpContext {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return { ...fazerCtx(() => ({ data: [] })), supabase: supabase as any } as McpContext;
+}
+
 const CHAMADO_ABERTO = {
   id: CHAMADO,
   title: "Desconto acima da alçada",
@@ -250,6 +283,24 @@ describe("crm_list_human_cases", () => {
     expect(res.cases[0]?.contact_name).toBe("Fulano");
     expect(res.cases[0]?.status).toBe("awaiting_human");
     expect(res.open_count).toBe(3);
+  });
+
+  it("o agente NÃO perde alcance: a leitura não é recortada por conversa", async () => {
+    // A tela passou a recortar a fila pelas conversas que a RLS mostra àquele
+    // atendente. Aqui não pode: `ctx.supabase` é admin por contrato, o agente
+    // abriu esses casos e acompanha a fila inteira. Se alguém trocar o `"todas"`
+    // de `lib/mcp/tools/escalacao.ts` por um conjunto, o `in("conversation_id")`
+    // aparece e este caso fica vermelho.
+    const { ins, supabase } = supabaseQueRegistraIn((q) =>
+      q.tabela === "agent_cases" ? { data: [CHAMADO_ABERTO], count: 3 } : { data: [] },
+    );
+
+    await crmListHumanCases.handler({ state: "abertos", limit: 20 }, comSupabase(supabase));
+
+    // Calibração: a sonda VÊ `in` (o filtro de status sempre passa por ela), de
+    // modo que a ausência do outro é medição e não cegueira.
+    expect(ins.map(([coluna]) => coluna)).toContain("status");
+    expect(ins.map(([coluna]) => coluna)).not.toContain("conversation_id");
   });
 });
 

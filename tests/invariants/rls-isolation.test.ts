@@ -101,7 +101,14 @@ beforeAll(() => {
       v_stage uuid;
       v_agent uuid;
       v_version uuid;
+      v_case uuid;
       v_boundary jsonb;
+      v_attendant uuid;
+      v_account uuid;
+      v_method uuid;
+      v_event_type uuid;
+      v_sale uuid;
+      v_sale_item uuid;
     begin
       foreach v_org in array array['${ORG_A}'::uuid, '${ORG_B}'::uuid] loop
         select id into v_sess from public.channel_sessions where organization_id = v_org limit 1;
@@ -148,6 +155,55 @@ beforeAll(() => {
               (select reply_context_revision from public.conversations where organization_id = v_org and id = v_conv),
               (select operation_revision from public.ai_agents where organization_id = v_org and id = v_agent),
               'pending', 'RLS invariant private reply');
+        end if;
+
+        -- 0281: a conversa INTERNA da equipe com a IA sobre um caso. Guarda o
+        -- texto que a pessoa perguntou e a resposta que a IA deu sobre um
+        -- contato identificável — vazar entre organizações entregaria ao
+        -- vizinho a deliberação inteira sobre um cliente que não é dele.
+        --
+        -- ⚠️ ARMADILHA DESTA SEMENTE, escrita para o próximo não cair nela: o
+        -- controle positivo só passa porque a conversa semeada tem
+        -- 'assigned_to_user_id' NULO e o default de 'visibility_mode' é
+        -- 'own_and_unassigned'. A policy desta tabela chama
+        -- 'fn_can_view_conversation', e o usuário semeado aqui é 'agent' — quem
+        -- atribuir a conversa a OUTRA pessoa neste seed deixa o caso vermelho
+        -- por ACERTO, e a "correção" natural seria afrouxar a policy. O eixo de
+        -- visibilidade (que é a razão de a tabela existir com 'conversation_id'
+        -- dentro) é medido em 'conversa-do-caso-visibilidade.test.ts', com
+        -- organização em 'visibility_mode = 'own'' e dois atendentes.
+        if not exists (select 1 from public.agent_case_chat_messages where organization_id = v_org) then
+          select id into v_case from public.agent_cases
+            where organization_id = v_org and conversation_id = v_conv limit 1;
+          if v_case is null then
+            insert into public.agent_cases (organization_id, conversation_id, title, summary, blocker)
+              values (v_org, v_conv, 'RLS Invariant Case', 'RLS invariant private summary',
+                      'RLS invariant private blocker')
+              returning id into v_case;
+          end if;
+          insert into public.agent_case_chat_messages
+            (organization_id, case_id, conversation_id, contact_id, turn_id, author_kind, body)
+          values
+            (v_org, v_case, v_conv, v_contact, gen_random_uuid(), 'human',
+             'RLS invariant private question');
+        end if;
+
+        -- 0291: a passagem do atendimento para uma pessoa. A coluna body é a
+        -- narrativa que a IA escreveu sobre o cliente, e notes são as palavras
+        -- literais dele — vazar entre organizações entrega ao vizinho o
+        -- atendimento inteiro de alguém que não é cliente dele.
+        -- (sem crase nesta prosa: o bloco inteiro é um template literal de JS.)
+        --
+        -- ⚠️ A MESMA ARMADILHA da semente acima: o controle positivo só passa
+        -- porque 'v_conv' está SEM dono e o default de 'visibility_mode' é
+        -- 'own_and_unassigned'. Atribuir a conversa aqui deixa o caso vermelho
+        -- por ACERTO, e a "correção" natural seria afrouxar a policy.
+        if not exists (select 1 from public.passagens_de_atendimento where organization_id = v_org) then
+          insert into public.passagens_de_atendimento
+            (organization_id, contact_id, conversation_id, motor, origem, motivo_codigo, body, notes)
+          values
+            (v_org, v_contact, v_conv, 'engine', 'pedido_explicito', 'requested_human',
+             'RLS invariant private briefing', 'RLS invariant literal words');
         end if;
 
         select id into v_pipe from public.crm_pipelines
@@ -265,6 +321,140 @@ beforeAll(() => {
               'auth-rls'
             );
         end if;
+
+        -- voip_trunk_settings (migration 0349): credenciais do trunk SIP da
+        -- organizacao. PK e o proprio organization_id (um trunk por org), e a
+        -- senha cifrada tem o MESMO esquema de ai_provider_credentials -- os
+        -- bytea aqui sao so preenchimento minimo pra satisfazer os NOT NULL,
+        -- nunca material real.
+        if not exists (select 1 from public.voip_trunk_settings where organization_id = v_org) then
+          insert into public.voip_trunk_settings
+            (organization_id, host, username, password_encrypted, password_iv, password_tag, password_last4, endpoint_name)
+            values (v_org, 'sip.rls-invariant.test', 'rls-user', '\\x00'::bytea, '\\x00'::bytea, '\\x00'::bytea, '0000', 'org-' || v_org::text || '-trunk-endpoint');
+        end if;
+
+        -- phone_numbers (SIP module, #677): numeros (DID) que a org cadastrou
+        -- pra receber ligacoes. 'number' e UNIQUE global, entao cada org
+        -- precisa de um valor distinto -- sufixado pelo proprio v_org.
+        if not exists (select 1 from public.phone_numbers where organization_id = v_org) then
+          insert into public.phone_numbers (organization_id, number, trunk_endpoint)
+            values (v_org, 'rls-' || v_org::text, 'trunk-endpoint');
+        end if;
+
+        if not exists (select 1 from public.ai_provider_credentials where organization_id = v_org) then
+          insert into public.ai_provider_credentials
+            (organization_id, provider, label, api_key_encrypted, api_key_iv, api_key_tag, api_key_last4)
+            values (v_org, 'anthropic', 'rls-invariant', '\\x00'::bytea, '\\x00'::bytea, '\\x00'::bytea, '0000');
+        end if;
+
+        -- ─── o módulo financeiro (migrations 0350-0357) ──────────────────
+        --
+        -- Dez tabelas que guardam o que a organização fatura, para quem, por
+        -- quanto, e quanto cada pessoa levou de comissão. Vazar qualquer uma
+        -- entrega ao vizinho o faturamento inteiro: quanto a clínica ao lado
+        -- cobra por consulta, quanto o atendente dela ganha, e quais clientes
+        -- pagaram. A LEITURA das dez é org-scoped SEM gate de papel (o 'agent'
+        -- semeado aqui é controle positivo válido); a ESCRITA exige 'manager'
+        -- no catálogo e 'agent' na comanda, e esse segundo eixo NÃO é medido
+        -- aqui. (sem crase nesta prosa: o bloco inteiro é um template literal
+        -- de JS.)
+        select user_id into v_attendant from public.user_organizations
+          where organization_id = v_org limit 1;
+
+        if not exists (select 1 from public.financial_accounts where organization_id = v_org) then
+          insert into public.financial_accounts (organization_id, name, kind)
+            values (v_org, 'RLS Invariant Caixa', 'cash');
+        end if;
+        select id into v_account from public.financial_accounts
+          where organization_id = v_org limit 1;
+
+        if not exists (select 1 from public.account_plans where organization_id = v_org) then
+          insert into public.account_plans (organization_id, name, direction)
+            values (v_org, 'RLS Invariant Servicos', 'in');
+        end if;
+
+        if not exists (select 1 from public.payment_methods where organization_id = v_org) then
+          insert into public.payment_methods (organization_id, name, account_id)
+            values (v_org, 'RLS Invariant Dinheiro', v_account);
+        end if;
+        select id into v_method from public.payment_methods
+          where organization_id = v_org limit 1;
+
+        -- O tipo de evento é o catálogo de serviços deste produto, e é o alvo
+        -- da regra de comissão e do item da comanda.
+        select id into v_event_type from public.calendar_event_types
+          where organization_id = v_org and slug = 'rls-inv';
+        if v_event_type is null then
+          insert into public.calendar_event_types (organization_id, name, slug, duration_minutes)
+            values (v_org, 'RLS Invariant Servico', 'rls-inv', 30)
+            returning id into v_event_type;
+        end if;
+
+        if not exists (select 1 from public.commission_rules where organization_id = v_org) then
+          insert into public.commission_rules
+            (organization_id, attendant_user_id, event_type_id, percent)
+            values (v_org, v_attendant, v_event_type, 10);
+        end if;
+
+        if not exists (select 1 from public.recurring_entries where organization_id = v_org) then
+          insert into public.recurring_entries
+            (organization_id, name, account_id, direction, amount_cents, day_of_month)
+            values (v_org, 'RLS Invariant Aluguel', v_account, 'out', 100000, 5);
+        end if;
+
+        -- A comanda e o que pende dela. Inserida DIRETO, e não por
+        -- fn_finalizar_comanda: o que se prova aqui é a cerca da LINHA, e
+        -- passar pela função amarraria esta semente ao comportamento dela.
+        if not exists (select 1 from public.sales where organization_id = v_org) then
+          insert into public.sales
+            (organization_id, number, contact_id, attendant_user_id, payment_method_id,
+             status, total_cents)
+            values (v_org, 1, v_contact, v_attendant, v_method, 'open', 5000);
+        end if;
+        select id into v_sale from public.sales where organization_id = v_org limit 1;
+
+        if not exists (select 1 from public.sale_items where organization_id = v_org) then
+          insert into public.sale_items
+            (organization_id, sale_id, event_type_id, description, attendant_user_id,
+             unit_price_cents, total_cents, commission_percent)
+            values (v_org, v_sale, v_event_type, 'RLS Invariant Servico', v_attendant,
+                    5000, 5000, 10);
+        end if;
+        select id into v_sale_item from public.sale_items where organization_id = v_org limit 1;
+
+        if not exists (select 1 from public.commissions where organization_id = v_org) then
+          insert into public.commissions
+            (organization_id, sale_item_id, attendant_user_id, percent, amount_cents)
+            values (v_org, v_sale_item, v_attendant, 10, 500);
+        end if;
+
+        if not exists (select 1 from public.financial_entries where organization_id = v_org) then
+          insert into public.financial_entries
+            (organization_id, account_id, sale_id, direction, amount_cents, description, origin)
+            values (v_org, v_account, v_sale, 'in', 5000, 'RLS invariant recebimento', 'sale');
+        end if;
+
+        if not exists (select 1 from public.loyalty_ledger where organization_id = v_org) then
+          insert into public.loyalty_ledger
+            (organization_id, contact_id, points, reason, sale_id)
+            values (v_org, v_contact, 5, 'RLS invariant ponto', v_sale);
+        end if;
+
+        -- migration 0372 — a conexão com o PostgreSQL externo. As três colunas
+        -- de senha são bytea not null e a cifra é do APP (AES-GCM), não do
+        -- banco: aqui vai um envelope QUALQUER, porque o que se mede é a cerca
+        -- de organização, não a cifra. O SELECT lido pelo caso abaixo é o da
+        -- TABELA-base; a view _safe é security_invoker e herda esta mesma
+        -- RLS, então provar a base prova as duas.
+        if not exists (select 1 from public.external_db_connections where organization_id = v_org) then
+          insert into public.external_db_connections
+            (organization_id, label, host, port, database_name, username,
+             password_encrypted, password_iv, password_tag)
+            values (v_org, 'RLS invariant fonte externa', 'db.invariante.interno', 5432,
+                    'outro_crm', 'leitor',
+                    '\\x00'::bytea, '\\x000000000000000000000000'::bytea,
+                    '\\x00000000000000000000000000000000'::bytea);
+        end if;
       end loop;
     end
     $seed$;
@@ -316,6 +506,15 @@ export const TABLES = [
   "crm_tasks",
   // 0227 — texto de sugestões: org + visibilidade da conversa por authenticated.
   "ai_reply_drafts",
+  // migration 0349 — credenciais do trunk SIP por organizacao. Leitura e
+  // qualquer membro da org (a tela de originar chamada precisa saber SE
+  // existe trunk configurado); a ESCRITA exige admin (mesmo nivel de
+  // ai_provider_credentials) e NAO e medida aqui.
+  "voip_trunk_settings",
+  // phone_numbers (SIP module, #677): numeros (DID) que recebem ligacao.
+  // Leitura/escrita org-scoped (sem segundo eixo medido aqui -- ver a nota
+  // de DIVIDA_RBAC_CONHECIDA em rbac-config-ia-canais.test.ts).
+  "phone_numbers",
   // 0232/0235 — chamada de voz. Guarda `peer_phone` (telefone da outra ponta) e
   // `owner_user_id` (quem atendeu): vazar a linha entrega ao vizinho com quem a
   // organização falou, quando, por quanto tempo e por meio de quem. A policy
@@ -327,6 +526,63 @@ export const TABLES = [
   // aceitou o risco do segundo aparelho vinculado: vazar entre organizacoes
   // diria a uma empresa quem, na outra, ligou a feature e quando.
   "org_voice_calls",
+  // migration 0207 — as credenciais de IA da organização. A 0150 apagou a policy
+  // de leitura por organização sem que nada acusasse, e a 0207 a restaurou; esta
+  // linha é o que passa a acusar se ela sumir de novo (issue #545). A leitura é
+  // org-scoped sem gate de papel, então o `agent` semeado serve de controle
+  // positivo. O SELECT de `authenticated` é por COLUNA, sem as colunas cifradas:
+  // a contagem abaixo usa só `organization_id` e mede o que um membro enxerga.
+  "ai_provider_credentials",
+  // migration 0281 — a conversa interna da equipe com a IA sobre um caso. `body`
+  // é texto livre que descreve uma pessoa identificável do OUTRO tenant, e a
+  // leitura é o único comando que a tabela concede a `authenticated` (a escrita
+  // é do servidor). Ver a armadilha do seed, escrita ao lado da semente: o
+  // controle positivo depende de a conversa semeada estar SEM dono.
+  "agent_case_chat_messages",
+  // migration 0291 — a passagem do atendimento para uma pessoa. `body` é a
+  // narrativa que a IA escreveu sobre um cliente identificável do OUTRO tenant,
+  // e `notes` guarda as palavras LITERAIS dele. Mesmo desenho da vizinha acima:
+  // leitura é o único comando concedido a `authenticated`, a escrita é do
+  // servidor, e a MESMA armadilha de seed vale aqui — o controle positivo só
+  // passa porque a conversa semeada está sem dono e o default de
+  // `visibility_mode` é `own_and_unassigned`. O eixo de visibilidade entre
+  // atendentes da MESMA organização é medido em
+  // `passagem-isolamento-e-visibilidade.test.ts`, com `visibility_mode = 'own'`.
+  "passagens_de_atendimento",
+  // migrations 0350-0357 — o módulo financeiro. As dez guardam o faturamento
+  // da organização: quanto ela cobra, de quem recebeu, quem atendeu e quanto
+  // cada pessoa levou de comissão. Vazar uma linha entrega ao vizinho o preço
+  // praticado e a carteira de clientes — é o dado comercial mais sensível que
+  // este produto grava, e o único dos dois lados (dinheiro E pessoa).
+  //
+  // A LEITURA das dez é org-scoped sem gate de papel, então o `agent` semeado
+  // aqui é controle positivo legítimo. A ESCRITA tem um segundo eixo que NÃO é
+  // medido nesta lista: `manager` no catálogo (0350/0357) e `agent` na comanda
+  // (0351). Quem for medir a escrita precisa de um usuário `viewer`, que este
+  // seed não tem.
+  "financial_accounts",
+  "payment_methods",
+  "account_plans",
+  "sales",
+  "sale_items",
+  "commission_rules",
+  "commissions",
+  "financial_entries",
+  "loyalty_ledger",
+  "recurring_entries",
+  // migration 0372 — a conexão com um PostgreSQL de OUTRO sistema (recorte do
+  // PR #1130, de @vgamkt). Vazar a linha entrega ao vizinho o host, a porta, o
+  // banco e o USUÁRIO do sistema interno dele: metade de uma credencial, e o
+  // mapa de por onde entrar. A senha em si não sai nem para o dono (as três
+  // colunas cifradas só existem na tabela-base; a tela lê a view `_safe`).
+  //
+  // Cabe neste molde porque a policy de SELECT é org-scoped SEM gate de papel
+  // — qualquer membro vê a lista, decisão do dono —, então o `agent` semeado
+  // aqui é controle positivo legítimo. A ESCRITA tem um segundo eixo que este
+  // seed NÃO mede: a policy `for all` exige `fn_role_at_least(org,'admin')`, e
+  // provar isso pediria um usuário abaixo de admin escrevendo. Fica declarado
+  // em vez de parecer coberto.
+  "external_db_connections",
   // ⚠️ `webhook_lead_captures` (migration 0174) NÃO entra nesta lista, e a
   // ausência é deliberada: a policy dela exige `manager`, e o usuário semeado
   // aqui é `agent` — o controle positivo falharia por ACERTO, e a "correção"

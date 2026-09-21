@@ -30,6 +30,7 @@
  * rede interna do Docker e nunca precisou dela pela internet. Ver Caddyfile.
  */
 import { env } from "@/lib/env";
+import { exigirAssinaturaNoWebhookDaInstalacao } from "@/lib/instalacao/comportamento";
 
 import { verifyHmacSha512 } from "./ingest";
 
@@ -58,7 +59,13 @@ export function authenticateWahaWebhook(input: WahaWebhookAuthInput): WahaWebhoo
         ? envSecret
         : null;
 
-  const required = env.WAHA_WEBHOOK_REQUIRE_SIGNATURE === "true";
+  // A exigência tem DUAS camadas, com a mesma divisão de papéis da política de
+  // cadastro: a linha da INSTALAÇÃO (escrita pela tela de admin) está acima, e
+  // o `.env` é o PISO — ele responde quando o processo ainda não leu o banco
+  // (issue #1034). Sem banco nesta vida do processo, isto é o de hoje.
+  const required = exigirAssinaturaNoWebhookDaInstalacao(
+    env.WAHA_WEBHOOK_REQUIRE_SIGNATURE === "true",
+  );
 
   if (signatureHeader) {
     // Assinou: tem que conferir. Sem segredo para conferir, não há como

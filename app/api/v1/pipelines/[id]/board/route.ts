@@ -24,6 +24,7 @@ import {
   type PropostaAmbigua,
 } from "@/lib/leads/next-action";
 import type { LeadCandidate } from "@/lib/leads/active-lead";
+import { anexarDadosDoContato, type LinhaDoContatoNoQuadro } from "@/lib/kanban/dados-do-contato";
 import { createClient } from "@/lib/supabase/server";
 import type { BoardData, Pipeline, Stage } from "@/lib/kanban/types";
 import type { Lead } from "@/lib/types/leads";
@@ -289,6 +290,14 @@ async function withScores(
  * A busca vai em `emLotes`, mas a ordenação continua válida: cada `contact_id`
  * pertence a UM lote só, então "primeira vista vence" segue correto dentro do
  * lote onde aquele contato caiu — a ordem entre lotes diferentes não importa.
+ *
+ * A MESMA consulta (por lote) também traz os marcadores de TODAS as conversas
+ * do contato (`conversation_tags`, a terceira caixa — decisão do dono, doc 40,
+ * 19/09). Aqui e não numa função própria porque ela já lê cada conversa do
+ * contato: uma coluna a mais custa bytes; outra consulta com a mesma lista de
+ * ids na URL custaria outra ida ao banco por quadro aberto — e, fora de
+ * `emLotes`, voltaria a esbarrar no mesmo limite de URL que o lote existe
+ * pra evitar.
  */
 async function withConversas(
   supabase: Awaited<ReturnType<typeof createClient>>,
@@ -304,10 +313,11 @@ async function withConversas(
     last_message_preview: string | null;
     last_message_at: string | null;
     unread_count_for_assignee: number | null;
+    tags: string[] | null;
   }>(contactIds, (lote) =>
     supabase
       .from("conversations")
-      .select("id, contact_id, last_message_preview, last_message_at, unread_count_for_assignee")
+      .select("id, contact_id, last_message_preview, last_message_at, unread_count_for_assignee, tags")
       .eq("organization_id", organizationId)
       .in("contact_id", lote)
       .order("last_message_at", { ascending: false, nullsFirst: false }),
@@ -315,7 +325,14 @@ async function withConversas(
   if (error) return { leads, error };
 
   const porContato = new Map<string, NonNullable<Lead["conversa"]>>();
+  const marcadoresPorContato = new Map<string, Set<string>>();
   for (const row of data) {
+    // Os marcadores somam TODAS as conversas; a linha do card é só a mais recente.
+    for (const tag of row.tags ?? []) {
+      const doContato = marcadoresPorContato.get(row.contact_id) ?? new Set<string>();
+      doContato.add(tag);
+      marcadoresPorContato.set(row.contact_id, doContato);
+    }
     // Primeira vista vence: a consulta já veio ordenada por atividade.
     if (porContato.has(row.contact_id)) continue;
     porContato.set(row.contact_id, {
@@ -328,8 +345,68 @@ async function withConversas(
 
   return {
     leads: leads.map((lead) => {
-      const conversa = lead.contact_id ? porContato.get(lead.contact_id) : undefined;
-      return conversa ? { ...lead, conversa } : lead;
+      if (!lead.contact_id) return lead;
+      const conversa = porContato.get(lead.contact_id);
+      const marcadores = marcadoresPorContato.get(lead.contact_id);
+      return {
+        ...lead,
+        ...(conversa ? { conversa } : {}),
+        // Vazio não vira campo, como `contact_tags`: o payload não engorda.
+        ...(marcadores && marcadores.size > 0 ? { conversation_tags: [...marcadores] } : {}),
+      };
+    }),
+    error: null,
+  };
+}
+
+/**
+ * Anexa os marcadores do CONTATO — a outra caixa de marcador do produto.
+ *
+ * O filtro de marcador do quadro lia só `crm_leads.tags`, escrita em "Editar
+ * lead". Quem marca a PESSOA (no Inbox ou na ficha) escreve em `contacts.tags`,
+ * e esse marcador não chegava ao quadro: não filtrava e nem aparecia na lista
+ * de opções. É o mesmo desencontro que o Inbox tinha no filtro dele.
+ *
+ * LEFT, como o score e a conversa: negócio sem contato é estado normal, e o
+ * card dele não pode sumir do quadro por não ter marcador de pessoa.
+ *
+ * Marcador vazio não vira campo: `contact_tags` só é escrito quando há alguma
+ * etiqueta, para o payload do quadro não engordar com array vazio em todo card.
+ *
+ * A MESMA leitura de `contacts` também alimenta telefone, e-mail e links do card
+ * (`anexarDadosDoContato`): uma consulta por quadro, não duas.
+ */
+async function withMarcadoresDoContato(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  organizationId: string,
+  leadsDoQuadro: Lead[],
+): Promise<{ leads: Lead[]; error: string | null }> {
+  const contactIds = [
+    ...new Set(leadsDoQuadro.map((l) => l.contact_id).filter((c): c is string => !!c)),
+  ];
+  if (contactIds.length === 0) return { leads: leadsDoQuadro, error: null };
+
+  const { data, error } = await supabase
+    .from("contacts")
+    .select("id, tags, phone_number, email, custom_fields, is_anonymized")
+    .eq("organization_id", organizationId)
+    .in("id", contactIds);
+  if (error) return { leads: leadsDoQuadro, error: error.message };
+
+  const linhas = (data ?? []) as Array<{ id: string; tags: string[] | null } & LinhaDoContatoNoQuadro>;
+  const leads = anexarDadosDoContato(leadsDoQuadro, linhas);
+
+  const porContato = new Map<string, string[]>();
+  for (const row of linhas) {
+    const tags = row.tags ?? [];
+    if (tags.length > 0) porContato.set(row.id, tags);
+  }
+  if (porContato.size === 0) return { leads, error: null };
+
+  return {
+    leads: leads.map((lead) => {
+      const contact_tags = lead.contact_id ? porContato.get(lead.contact_id) : undefined;
+      return contact_tags ? { ...lead, contact_tags } : lead;
     }),
     error: null,
   };
@@ -476,10 +553,19 @@ export async function GET(_req: NextRequest, ctx: RouteCtx): Promise<Response> {
     return fail("internal_error", leadsComConversa.error, 500, { requestId });
   }
 
+  const leadsComMarcadores = await withMarcadoresDoContato(
+    supabase,
+    (pipeline as Pipeline).organization_id,
+    leadsComConversa.leads,
+  );
+  if (leadsComMarcadores.error) {
+    return fail("internal_error", leadsComMarcadores.error, 500, { requestId });
+  }
+
   const board: BoardData = {
     pipeline: pipeline as Pipeline,
     stages: (stages ?? []) as Stage[],
-    leads: leadsComConversa.leads,
+    leads: leadsComMarcadores.leads,
   };
 
   return ok(board, { requestId });

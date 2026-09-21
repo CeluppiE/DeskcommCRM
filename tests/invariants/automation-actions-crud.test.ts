@@ -38,7 +38,7 @@ function sqlLiteral(v: unknown): string {
 type QResult = { data: unknown; error: { message: string; code?: string } | null };
 type RowResult = { data: Record<string, unknown> | null; error: { message: string; code?: string } | null };
 
-type FilterOp = "eq" | "is";
+type FilterOp = "eq" | "is" | "neq";
 interface Filter {
   op: FilterOp;
   col: string;
@@ -92,6 +92,28 @@ class FakeQuery implements PromiseLike<QResult> {
     return this;
   }
 
+  /**
+   * `.neq(col, v)` — o ramo irmão que faltava (issue #992).
+   *
+   * O produto passou a usar `neq` em `negocioAbertoEmOutroFunil`
+   * (`lib/automation/actions/create-or-move-lead.ts`), que procura o negócio
+   * ABERTO do contato em OUTRO funil. O dublê de `tests/helpers/stages-db-double.ts`
+   * — o que dá para rodar sem banco — aprendeu o ramo junto com a #992; ESTE, o
+   * dublê próprio da suíte de invariantes, ficou para trás. Sem ele a chamada
+   * estoura `TypeError`, cai no `catch (err)` do `execute` e volta como
+   * `status: "failed"`: o invariante mediria o dublê, não o código — e a suíte
+   * que roda contra o Postgres de verdade é justamente a que não pode medir isso.
+   *
+   * O SQL sai como `<>` de propósito, não como `not (col = v)`: é o que o
+   * PostgREST manda, e os dois divergem em coluna NULA — `col <> v` não é
+   * verdadeiro quando `col` é nulo, então a linha nula NÃO casa. É a semântica
+   * que o produto enxerga contra o banco.
+   */
+  neq(col: string, val: unknown): this {
+    this.filters.push({ op: "neq", col, val });
+    return this;
+  }
+
   order(col: string, opts: { ascending: boolean }): this {
     this.orderCol = col;
     this.orderAsc = opts.ascending;
@@ -106,7 +128,11 @@ class FakeQuery implements PromiseLike<QResult> {
   private buildWhere(): string {
     if (!this.filters.length) return "";
     const clauses = this.filters.map((f) =>
-      f.op === "is" ? `${f.col} is ${f.val === null ? "null" : sqlLiteral(f.val)}` : `${f.col} = ${sqlLiteral(f.val)}`,
+      f.op === "is"
+        ? `${f.col} is ${f.val === null ? "null" : sqlLiteral(f.val)}`
+        : f.op === "neq"
+          ? `${f.col} <> ${sqlLiteral(f.val)}`
+          : `${f.col} = ${sqlLiteral(f.val)}`,
     );
     return ` where ${clauses.join(" and ")}`;
   }

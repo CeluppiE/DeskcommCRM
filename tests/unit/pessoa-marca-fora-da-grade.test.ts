@@ -179,6 +179,10 @@ function bancoEmMemoria(tabelas: Record<string, Linha[]>, olhar: Olhar = "tudo")
         Object.assign(linha, args.p_patch as Linha, { revision: Number(linha.revision) + 1 });
         return { data: { ...linha }, error: null };
       }
+      // A OPÇÃO da agenda dos colegas (issue #978): o dublê responde o PADRÃO,
+      // ligada — este arquivo não é sobre o recorte dela, e o handler só a
+      // consulta quando o compromisso resolvido não é de quem pede.
+      if (fn === "fn_colegas_podem_mexer_na_agenda") return { data: true, error: null };
       // O gatilho de automação da Agenda sai por aqui (issue #877). Este arquivo
       // não é sobre ele — quem o vigia é `agenda-gatilho-leva-o-tipo-real`.
       if (fn === "emit_event") return { data: null, error: null };
@@ -228,6 +232,10 @@ function agenda(
     fimDaJornada?: string;
     /** Dias (`YYYY-MM-DD`, local) bloqueados por inteiro. */
     diasBloqueados?: string[];
+    /** Intervalo antes do atendimento (`calendar_event_types.buffer_before_minutes`). */
+    bufferAntesMin?: number;
+    /** Intervalo depois do atendimento (`buffer_after_minutes`). */
+    bufferDepoisMin?: number;
   } = {},
 ): Banco {
   return bancoEmMemoria({
@@ -238,8 +246,8 @@ function agenda(
         name: "Avaliação",
         is_active: true,
         duration_minutes: 60,
-        buffer_before_minutes: 0,
-        buffer_after_minutes: 0,
+        buffer_before_minutes: args.bufferAntesMin ?? 0,
+        buffer_after_minutes: args.bufferDepoisMin ?? 0,
         minimum_notice_minutes: 120,
         slot_interval_minutes: null,
         booking_window_days: 30,
@@ -537,5 +545,94 @@ describe("remarcar — a mesma regra", () => {
       alterarAgendamentoHandler(banco.client, ctx(PESSOA), { id: MEU_COMPROMISSO, starts_at: "2026-10-07T16:30:00.000Z" }),
     ).rejects.toMatchObject(RECUSA);
     expect(horarioDoMeu(banco)).toBe(MEU_INICIO);
+  });
+
+  // O compromisso que está sendo remarcado ocupa o horário DE ONDE SAI — nunca o
+  // de DESTINO. Sem intervalo configurado isso já valia, por acidente: a janela
+  // crua de `[14:00Z, 15:00Z]` nem encostava no próprio compromisso. Com 30 min
+  // de intervalo ANTES, a coleta alarga para `[13:30Z, 15:00Z]` e o próprio
+  // compromisso (13:00–14:00Z) passa a cruzar a janela: a IA remarcando para
+  // 14:00Z levava 422 `agenda_horario_indisponivel` por causa de SI MESMA — o
+  // horário de onde sai contava como ocupação do horário para onde vai (#1084).
+  it("a IA move para logo DEPOIS do próprio fim, com intervalo antes — o compromisso não ocupa a si mesmo", async () => {
+    const banco = agenda({ agendamentos: [meu()], bufferAntesMin: 30 });
+    await alterarAgendamentoHandler(banco.client, ctx(AGENTE), {
+      id: MEU_COMPROMISSO,
+      starts_at: MEU_FIM,
+    });
+    expect(
+      horarioDoMeu(banco),
+      "o compromisso se viu como conflito ao ser movido para o minuto seguinte ao próprio fim: o horário de saída cruzou a janela alargada",
+    ).toBe(MEU_FIM);
+  });
+
+  it("CONTROLE: com o mesmo intervalo, o destino que invade o respiro de OUTRO compromisso é RECUSADO", async () => {
+    // O vizinho termina 14:45Z e o destino é 15:00Z: com 30 min de intervalo, o
+    // destino cai dentro do respiro pedido (o vizinho invade `[14:30Z, 15:00Z]`).
+    // Tirar o próprio compromisso da conta não pode tirar o intervalo junto.
+    const banco = agenda({
+      agendamentos: [meu(), agendamento("2026-10-07T14:15:00.000Z", "2026-10-07T14:45:00.000Z")],
+      bufferAntesMin: 30,
+    });
+    await expect(
+      alterarAgendamentoHandler(banco.client, ctx(AGENTE), { id: MEU_COMPROMISSO, starts_at: "2026-10-07T15:00:00.000Z" }),
+    ).rejects.toMatchObject(RECUSA);
+    expect(horarioDoMeu(banco), "o intervalo deixou de valer contra outro compromisso").toBe(MEU_INICIO);
+  });
+
+  it("CONTROLE: sem intervalo, o MESMO destino colado no vizinho é ACEITO", async () => {
+    // Prova que a recusa acima é do INTERVALO, e não de uma sobreposição comum: o
+    // vizinho termina 15 min antes do destino e não encosta nele.
+    const banco = agenda({
+      agendamentos: [meu(), agendamento("2026-10-07T14:15:00.000Z", "2026-10-07T14:45:00.000Z")],
+    });
+    await alterarAgendamentoHandler(banco.client, ctx(AGENTE), { id: MEU_COMPROMISSO, starts_at: "2026-10-07T15:00:00.000Z" });
+    expect(horarioDoMeu(banco), "o ajuste do intervalo encostou na ocupação real").toBe("2026-10-07T15:00:00.000Z");
+  });
+});
+
+describe("o intervalo antes do atendimento vale na ESCRITA, não só na leitura (issue #876)", () => {
+  // O vizinho termina 12:45Z; o atendimento de 60 min começa 13:00Z. Com 30 min de
+  // intervalo ANTES, esse vizinho invade o respiro pedido: a LEITURA esconde
+  // 13:00Z (`horariosLivresDaOrg` infla cada candidato pelo buffer e entrega a
+  // ocupação ao motor — quem decide ali é o motor). A ESCRITA ia pela janela crua
+  // do atendimento (`[13:00Z, 14:00Z]`), não enxergava um compromisso que TERMINA
+  // 12:45Z — ele não cruza essa janela — e aceitava o horário que a leitura
+  // escondia. O que muda aqui é só o que a COLETA enxerga.
+  const VIZINHO_INICIO = "2026-10-07T12:00:00.000Z"; // 09:00 local, 45 min
+  const VIZINHO_FIM = "2026-10-07T12:45:00.000Z"; // 09:45 local — 15 min antes do atendimento
+
+  it("CONTROLE: sem intervalo configurado, a IA marca colada no compromisso anterior", async () => {
+    const banco = agenda({ agendamentos: [agendamento(VIZINHO_INICIO, VIZINHO_FIM)] });
+    await marcarAgendamentoHandler(banco.client, ctx(AGENTE), { event_type_id: TIPO, starts_at: NA_GRADE });
+    expect(criados(banco), "sem intervalo, colar no vizinho é o comportamento de sempre").toHaveLength(1);
+  });
+
+  it("CONTROLE: vizinho que termina EXATAMENTE no fim do intervalo não barra — o intervalo não engorda", async () => {
+    const banco = agenda({
+      agendamentos: [agendamento("2026-10-07T12:00:00.000Z", "2026-10-07T12:30:00.000Z")],
+      bufferAntesMin: 30,
+    });
+    await marcarAgendamentoHandler(banco.client, ctx(AGENTE), { event_type_id: TIPO, starts_at: NA_GRADE });
+    expect(criados(banco), "o intervalo barrou um vizinho que respeita o intervalo pedido").toHaveLength(1);
+  });
+
+  it("a IA marcar DENTRO do intervalo antes do atendimento é RECUSADA", async () => {
+    const banco = agenda({ agendamentos: [agendamento(VIZINHO_INICIO, VIZINHO_FIM)], bufferAntesMin: 30 });
+    await expect(
+      marcarAgendamentoHandler(banco.client, ctx(AGENTE), { event_type_id: TIPO, starts_at: NA_GRADE }),
+    ).rejects.toMatchObject(RECUSA);
+    expect(criados(banco), "a escrita aceitou o horário que a leitura esconde: a coleta ignorou o intervalo").toHaveLength(0);
+  });
+
+  it("o intervalo também alcança o evento do GOOGLE AGENDA vizinho", async () => {
+    const banco = agenda({
+      eventosDoGoogle: [eventoDoGoogle(VIZINHO_INICIO, VIZINHO_FIM)],
+      bufferAntesMin: 30,
+    });
+    await expect(
+      marcarAgendamentoHandler(banco.client, ctx(AGENTE), { event_type_id: TIPO, starts_at: NA_GRADE }),
+    ).rejects.toMatchObject(RECUSA);
+    expect(criados(banco)).toHaveLength(0);
   });
 });

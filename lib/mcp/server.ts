@@ -75,14 +75,21 @@ export function createMcpServer(auth: McpAuthResult, requestId: string): McpServ
 
           const result = await tool.handler(args as never, ctx);
           const durationMs = Date.now() - startedAt;
+          // Mesma regra do ingresso do agente (`lib/ai/runtime/tools.ts`, #484):
+          // o vazio que a tool declara não é sucesso. Sem isto, a mesma busca
+          // sem achado era `success: true` por aqui e `false` por lá.
+          const motivoDoVazio = tool.motivoDoVazio?.(result) ?? null;
 
           await auditMcpToolCall({
             ctx,
             toolName: tool.name,
             args,
             durationMs,
-            success: true,
+            success: motivoDoVazio === null,
             resultSummary: summarizeResult(result),
+            ...(motivoDoVazio === null
+              ? {}
+              : { desfecho: "sem_resultado" as const, motivo: motivoDoVazio }),
           });
 
           return {

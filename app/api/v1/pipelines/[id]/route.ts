@@ -26,6 +26,7 @@ import { requireRole } from "@/lib/auth/require-role";
 import {
   podeExcluirDeVez,
   posicaoEntre,
+  updatesDeMarcaExclusiva,
   updatesDePadrao,
   validarArquivamento,
   validarNomeDeFunil,
@@ -53,12 +54,38 @@ const bodySchema = z
     name: z.string().min(1).max(80).optional(),
     description: z.string().max(280).nullable().optional(),
     is_default: z.boolean().optional(),
+    /**
+     * ⚠️ `false` É ACEITO AQUI, ao contrário de `is_default: false` — e a
+     * assimetria é deliberada, não descuido. Toda organização PRECISA de um
+     * funil padrão (sem ele, lead criado sem funil escolhido fica sem destino);
+     * nenhuma precisa de um funil de clientes, e não ter é o estado de fábrica.
+     * Recusar o desligamento prenderia o operador numa escolha que ele fez para
+     * experimentar. Quem "consertar" esta assimetria quebra o desfazer.
+     */
+    is_client_pipeline: z.boolean().optional(),
+    /**
+     * TIRAR DO ARQUIVO (#979). `true` é aceito pelo schema e recusado pelo
+     * handler, de propósito: quem manda `is_archived: true` quer arquivar, e
+     * arquivar tem porta própria (`DELETE`) porque conta as dependências antes
+     * — formulário apontando para o funil, automação ativa, ser o padrão ou o
+     * último vivo. Deixar o PATCH arquivar daria a volta em todas elas. Recusar
+     * no handler, e não com `z.literal(false)`, é o que permite responder
+     * "use o DELETE" em vez de "não entendi o que mudar neste funil".
+     */
+    is_archived: z.boolean().optional(),
     depois_de: z.string().min(1).nullable().optional(),
   })
   .strict()
   .refine((b) => Object.keys(b).length > 0, { message: "Nada para alterar." });
 
-type PatchDoFunil = { name?: string; description?: string | null; position?: number; is_default?: boolean };
+type PatchDoFunil = {
+  name?: string;
+  description?: string | null;
+  position?: number;
+  is_default?: boolean;
+  is_client_pipeline?: boolean;
+  is_archived?: boolean;
+};
 
 export async function PATCH(req: NextRequest, ctx: RouteCtx): Promise<Response> {
   const supportDenied = await requireSupportWrite();
@@ -104,15 +131,40 @@ export async function PATCH(req: NextRequest, ctx: RouteCtx): Promise<Response> 
   const alvo = funis.find((f) => f.id === pipelineId);
   if (!alvo) return fail("not_found", t("Funil não encontrado."), 404, { requestId });
 
-  // ⚠️ ARQUIVADO NÃO SE EDITA. `uniq_crm_pipelines_org_default` é PARCIAL
-  // (`where is_archived = false`): marcar um funil arquivado como padrão passa
-  // pelo índice, libera o padrão de verdade e deixa a organização com o padrão
-  // numa linha que sumiu da lista. Alcançável sem má-fé: uma aba aberta antes de
-  // o funil ser arquivado.
-  if (alvo.is_archived) {
+  // ⚠️ ARQUIVAR É DO `DELETE`, NÃO DAQUI — ele conta as dependências antes
+  // (`validarArquivamento`), e este handler não conta nenhuma.
+  if (pedido.is_archived === true) {
+    return fail(
+      "unprocessable_entity",
+      `Para arquivar «${alvo.name}», use a opção Arquivar da lista de funis — ela confere antes se algum ` +
+        `formulário ou automação ainda manda negócio para ele. Por aqui só dá para tirar do arquivo.`,
+      422,
+      { requestId },
+    );
+  }
+
+  // ⚠️ ARQUIVADO NÃO SE EDITA — e a guarda fica, mas o MOTIVO escrito aqui era
+  // falso. Dizia que `uniq_crm_pipelines_org_default` é parcial em
+  // `is_archived`, e que por isso marcar um arquivado como padrão "passa pelo
+  // índice". Medido em `supabase/baseline.sql`: ele é `where (is_default = true)`
+  // e mais nada, então essa marcação bate em 23505, não passa.
+  //
+  // O que a guarda evita de verdade é pior de explicar ao usuário: editar nome,
+  // posição ou marca de um funil que sumiu da lista dele. Alcançável sem má-fé —
+  // uma aba aberta antes de o funil ser arquivado — e o erro do banco, quando
+  // vem, fala de índice, não do que a pessoa fez.
+  //
+  // ⚠️ A ÚNICA EXCEÇÃO É TIRÁ-LO DO ARQUIVO, E SÓ SE FOR ISSO SOZINHO (#979).
+  // Pedido MISTO (desarquivar + renomear, por exemplo) continua 409: quem o
+  // montou está com uma tela antiga na frente, e as validações de nome e de
+  // posição são medidas contra a lista de ATIVOS — lista de onde o alvo ainda
+  // não saiu no instante em que elas rodariam. Aceitar metade do pedido seria
+  // pior: o funil voltaria com o nome velho e ninguém saberia por quê.
+  const soTiraDoArquivo = pedido.is_archived === false && Object.keys(pedido).length === 1;
+  if (alvo.is_archived && !soTiraDoArquivo) {
     return fail(
       "state_conflict",
-      `O funil «${alvo.name}» foi arquivado e não está mais na sua lista. Recarregue a página.`,
+      `O funil «${alvo.name}» está arquivado e não está mais na sua lista. Tire-o do arquivo antes de editar.`,
       409,
       { requestId },
     );
@@ -141,6 +193,14 @@ export async function PATCH(req: NextRequest, ctx: RouteCtx): Promise<Response> 
   if (pedido.description !== undefined) {
     patchDoAlvo.description = pedido.description?.trim() || null;
   }
+
+  // Tirar do arquivo é update SIMPLES: nenhum índice a disputar (nem o de slug
+  // nem o de padrão são parciais em `is_archived`, então o funil já ocupava o
+  // lugar dele enquanto estava arquivado). Só entra no patch se ele ESTIVER
+  // arquivado — pedir de novo em quem já está fora é pedido já atendido, e uma
+  // escrita vazia viraria linha de auditoria sem fato nenhum por trás.
+  const tiraDoArquivo = pedido.is_archived === false && alvo.is_archived;
+  if (tiraDoArquivo) patchDoAlvo.is_archived = false;
 
   if (pedido.depois_de !== undefined) {
     // Só os ativos compõem a régua: arquivado não ocupa lugar na lista.
@@ -176,7 +236,15 @@ export async function PATCH(req: NextRequest, ctx: RouteCtx): Promise<Response> 
   // cabe aqui dentro, e declarar assim evita o cast que esconderia um erro real
   // se o formato do patch de padrão mudasse.
   const updates: Array<{ pipelineId: string; patch: PatchDoFunil }> =
-    pedido.is_default === true ? updatesDePadrao(funis, pipelineId) : [];
+    pedido.is_default === true
+      ? updatesDePadrao(funis, pipelineId)
+      : pedido.is_client_pipeline === true
+        ? updatesDeMarcaExclusiva(funis, pipelineId, "is_client_pipeline")
+        : [];
+
+  // Desligar é update SIMPLES: não há anterior a liberar, e nenhum índice a
+  // disputar. Entra pelo patch do alvo como nome e descrição entram.
+  if (pedido.is_client_pipeline === false) patchDoAlvo.is_client_pipeline = false;
   if (Object.keys(patchDoAlvo).length > 0) {
     const i = updates.findIndex((u) => u.pipelineId === pipelineId);
     if (i >= 0) updates[i] = { pipelineId, patch: { ...updates[i]!.patch, ...patchDoAlvo } };
@@ -203,7 +271,10 @@ export async function PATCH(req: NextRequest, ctx: RouteCtx): Promise<Response> 
 
   if (updates.length > 0) {
     void audit({
-      action: "pipeline.updated",
+      // Tirar do arquivo tem código PRÓPRIO, espelhando o `pipeline.archived`
+      // que o DELETE emite: quem audita quer saber quem trouxe o funil de volta,
+      // e `pipeline.updated` esconderia isso entre os renames.
+      action: tiraDoArquivo ? "pipeline.unarchived" : "pipeline.updated",
       actorUserId: authz.user.id,
       organizationId: orgId,
       resourceType: "crm_pipeline",

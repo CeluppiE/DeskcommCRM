@@ -43,6 +43,7 @@ import {
 import type { DesfechoDoAviso } from "@/lib/agent-engine/agent/aviso-de-escalacao";
 import { corpoDoBloqueio } from "@/lib/agent-engine/edge/llm/orcamento";
 import { LlmBudgetExceededError } from "@/lib/agent-engine/edge/llm/run-model-call";
+import { montarBriefingDaPassagem } from "@/lib/escalacao/briefing-da-passagem";
 
 const RAIZ = process.cwd();
 const INBOUND = join(RAIZ, "lib/agent-engine/agent/inbound-turn.ts");
@@ -52,7 +53,12 @@ const CABECALHO = join(RAIZ, "components/inbox/ConversationHeader.tsx");
 const ORG = "11111111-1111-4111-8111-111111111111";
 const LEAD = "22222222-2222-4222-8222-222222222222";
 const CONVERSA = "33333333-3333-4333-8333-333333333333";
-const RESUMO_DO_CHECKPOINT = "Compromissos: enviar orçamento. Próxima ação: ligar amanhã.";
+/**
+ * O que o briefing do checkpoint produz — a montagem é PURA e determinística,
+ * então o valor esperado é derivado dela, não redigitado. Redigitar faria este
+ * arquivo reprovar por mudança de formatação em vez de por perda de contexto.
+ */
+const RESUMO_DO_CHECKPOINT = "Compromissos: enviar orçamento";
 
 function poolFalso(opts: { falhaEm?: string } = {}) {
   const chamadas: Array<{ sql: string; params: unknown[] }> = [];
@@ -92,7 +98,18 @@ function contexto(pool: unknown, log: unknown, avisarLead = avisoEspiao()) {
     // FUNÇÃO, não valor: a escolta envolve o turno inteiro e abre antes de o
     // checkpoint ter sido lido. Resolver o resumo no caminho feliz seria uma
     // query a mais por turno para um texto que quase nunca é usado.
-    resumoDoCheckpoint: async () => RESUMO_DO_CHECKPOINT,
+    //
+    // Devolve o BRIEFING inteiro, e não só o texto, desde a onda que fez a
+    // passagem virar linha de banco: as quatro colunas da linha saem daqui.
+    briefingDoCheckpoint: async () =>
+      montarBriefingDaPassagem({
+        checkpoint: {
+          commitments: ["enviar orçamento"],
+          objections: [],
+          next_action: "ligar amanhã",
+          rolling_summary: "",
+        },
+      }),
     avisarLead,
     log: log as never,
   };
@@ -160,9 +177,15 @@ describe("a escolta do orçamento", () => {
     expect(crons?.params).toEqual([ORG, LEAD]);
 
     // (d) a Central recebe o item de escalação, com o título desta causa
-    const inbox = chamadas.find((c) => c.sql.includes("insert into agent_inbox_items"));
+    const inbox = chamadas.find((c) => c.sql.includes("agent_inbox_items"));
     expect(inbox, "handoff sem item na Central é passagem que ninguém vê").toBeDefined();
     expect(inbox?.params).toContain(TITULO_DO_HANDOFF_POR_ORCAMENTO);
+
+    // (e) a LINHA DE FATO — o que quem assume vai ler, e que não existia
+    const passagem = chamadas.find((c) => c.sql.includes("insert into passagens_de_atendimento"));
+    expect(passagem, "a passagem por teto de gasto não virou registro").toBeDefined();
+    expect(passagem?.params).toContain("teto_de_gasto");
+    expect(passagem?.params).toContain("orcamento_de_ia");
   });
 
   it("o resumo do handoff é texto fixo + checkpoint — nunca um resumo gerado", async () => {
@@ -178,8 +201,14 @@ describe("a escolta do orçamento", () => {
     // de ser recusado.
     expect(chamada).toHaveBeenCalledTimes(1);
 
-    const inbox = chamadas.find((c) => c.sql.includes("insert into agent_inbox_items"));
-    const corpo = String(inbox?.params?.[2] ?? "");
+    // ⚠️ O CONTEXTO MUDOU DE CASA. Ele ia para o corpo do aviso da Central, e a
+    // rota da Central lê os avisos com o client de serviço e entrega `body` a
+    // qualquer `agent` — inclusive a quem a visibilidade de conversa não
+    // deixaria abrir aquele atendimento. Agora ele mora na LINHA da passagem,
+    // que é lida sob `fn_can_view_conversation`. A propriedade medida é a mesma
+    // ("o humano assume com o contexto acumulado"); o que mudou foi onde olhar.
+    const passagem = chamadas.find((c) => c.sql.includes("insert into passagens_de_atendimento"));
+    const corpo = String(passagem?.params?.find((p) => typeof p === "string" && p.includes(RESUMO_DO_HANDOFF_POR_ORCAMENTO)) ?? "");
     expect(corpo).toContain(RESUMO_DO_HANDOFF_POR_ORCAMENTO);
     expect(corpo, "o humano assume sem o contexto acumulado da conversa").toContain(
       RESUMO_DO_CHECKPOINT,
@@ -228,7 +257,13 @@ describe("a escolta do orçamento", () => {
     // jeito, mas quem for assumir precisa saber que o cliente está esperando sem
     // ter sido avisado — é o que muda a primeira frase que o atendente digita.
     const { pool, chamadas } = poolFalso();
-    const avisar = vi.fn(async (): Promise<DesfechoDoAviso> => ({ avisado: false, porque: "outside_window" }));
+    const avisar = vi.fn(
+      async (): Promise<DesfechoDoAviso> => ({
+        avisado: false,
+        porque: "messaging_window_closed",
+        motivoCodigo: "fora_da_janela",
+      }),
+    );
 
     await expect(
       comHandoffSeOrcamentoAcabar(contexto(pool, logFalso(), avisar), async () => {
@@ -236,10 +271,18 @@ describe("a escolta do orçamento", () => {
       }),
     ).rejects.toThrow();
 
-    const inbox = chamadas.find((c) => c.sql.includes("insert into agent_inbox_items"));
+    const inbox = chamadas.find((c) => c.sql.includes("agent_inbox_items"));
     const corpo = String(inbox?.params?.[2] ?? "");
     expect(corpo).toMatch(/NÃO foi avisado/u);
-    expect(corpo).toContain("outside_window");
+    // ⚠️ O código TÉCNICO do gate saiu do corpo e o que entrou é a frase em
+    // português do vocabulário fechado. `outside_window` é texto para quem lê
+    // log; quem lê a Central é quem vai atender o cliente.
+    expect(corpo).toContain("Estamos fora do horário em que este canal envia mensagens");
+    expect(corpo, "código de gate na tela de quem opera").not.toContain("messaging_window_closed");
+    // E o desfecho vira DADO na linha da passagem, não só frase.
+    const passagem = chamadas.find((c) => c.sql.includes("insert into passagens_de_atendimento"));
+    expect(passagem?.params).toContain("fora_da_janela");
+    expect(passagem?.params).toContain(false);
   });
 
   it("aviso que falha NÃO impede a passagem", async () => {

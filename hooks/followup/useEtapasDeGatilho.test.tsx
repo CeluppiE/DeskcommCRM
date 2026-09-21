@@ -35,6 +35,42 @@ describe("useEtapasDeGatilho", () => {
     expect(result.current.etapas).toEqual([]);
   });
 
+  /**
+   * Lista vazia por FALHA e lista vazia por não haver etapa são estados
+   * diferentes. Sem distinguir, uma consulta que caiu vira "esta etapa não
+   * existe" no cartão do fluxo — acusação falsa sobre uma regra sadia, no
+   * momento em que o produto já está pior. O react-query não ajuda: em erro ele
+   * sai de `isPending`, então `isLoading` fica false com `data` indefinido.
+   */
+  it("consulta que falha devolve falhou=true, e não 'carregando' nem 'nenhuma etapa'", async () => {
+    vi.mocked(apiClient.get).mockImplementation(async (path: string) => {
+      if (path === "/api/v1/pipelines") throw new Error("500");
+      return {} as never;
+    });
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { result } = renderHook(() => useEtapasDeGatilho(), { wrapper: wrapperFor(qc) });
+
+    await waitFor(() => expect(result.current.falhou).toBe(true));
+    expect(result.current.carregando).toBe(false);
+    expect(result.current.etapas).toEqual([]);
+  });
+
+  it("um funil que falha entre vários também levanta falhou", async () => {
+    vi.mocked(apiClient.get).mockImplementation(async (path: string) => {
+      if (path === "/api/v1/pipelines") {
+        return { data: [{ id: "p1", name: "Funil 1" }] } as never;
+      }
+      throw new Error("500");
+    });
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { result } = renderHook(() => useEtapasDeGatilho(), { wrapper: wrapperFor(qc) });
+
+    await waitFor(() => expect(result.current.falhou).toBe(true));
+    expect(result.current.carregando).toBe(false);
+  });
+
   it("lê do MESMO slot de cache que useAgentMapping — sem isso, uma tela contamina a outra", async () => {
     const pipelineId = "p1";
     vi.mocked(apiClient.get).mockImplementation(async (path: string) => {

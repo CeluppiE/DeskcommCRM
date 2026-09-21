@@ -14,6 +14,11 @@
 # um script do kit "não encontrado" no meio da atualização.
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 source "$KIT_DIR/_common.sh"
+# O aviso que assume a porta enquanto o CRM esta parado. Fica em arquivo
+# proprio porque so a ATUALIZACAO para o CRM — install.sh e agent.sh sourceiam
+# `_common.sh` e nao tem o que anunciar.
+# shellcheck source=manutencao.sh
+source "$KIT_DIR/manutencao.sh"
 enter_project
 
 FORCE=""; SKIP_BACKUP=""; TARGET_TAG=""
@@ -103,7 +108,16 @@ if [ -z "$FORCE" ] && [ -z "$MESMA_TAG" ]; then
        bash hostgator-setup-kit/update.sh --to $TARGET_TAG --force" ;;
   esac
 fi
-if [ -n "$MESMA_TAG" ]; then
+if [ -n "$MESMA_TAG" ] && [ -n "$FORCE" ]; then
+  # Com --force na mesma tag ninguém conferiu a imagem: quem chega aqui pediu
+  # para refazer (é a saída que a própria atualização ensina quando o banco não
+  # termina limpo). Dizer "o app está rodando uma imagem antiga" seria inventar.
+  if [ -n "$SKIP_BACKUP" ]; then
+    c_ylw "Refazendo a versão $TARGET_TAG, como pedido (--force): banco de novo, e confere o app."
+  else
+    c_ylw "Refazendo a versão $TARGET_TAG, como pedido (--force): backup e banco de novo, e confere o app."
+  fi
+elif [ -n "$MESMA_TAG" ]; then
   c_ylw "O código já está na $TARGET_TAG, mas o app está rodando uma imagem antiga. Vou atualizar a imagem."
 else
   c_ylw "Vou atualizar para a versão $TARGET_TAG com segurança."
@@ -134,42 +148,273 @@ if ! git checkout --quiet "$TARGET_TAG" 2>&1; then
   die "Não consegui trocar para a versão $TARGET_TAG (parece haver mudanças locais que divergem).
      Rode 'git status' pra ver, ou peça ajuda. NÃO mexi no banco — está tudo como estava."
 fi
+
+# As funções do kit são carregadas na linha 16, ANTES deste checkout — então,
+# sem esta releitura, o resto desta atualização roda com as funções da versão
+# ANTIGA, e todo conserto que viva numa função do kit só chega na atualização
+# SEGUINTE. Foi medido numa VPS de produção em 17/09/2026: depois de atualizar
+# para a versão que conserta a linha do cron (que deixava um segredo escrito no
+# crontab, e portanto no syslog), a linha antiga continuava lá — o conserto
+# existia no disco e não tinha rodado. Duas passadas para aplicar um conserto é
+# o mesmo que exigir passo manual de quem opera a VPS, e a doutrina de
+# packaging proíbe.
+#
+# `_common.sh` só define funções e constantes no topo (`set -euo pipefail`,
+# COMPOSE, cores, REFUSED_RC), então reler é idempotente: nada é reexecutado
+# com efeito. O que muda é de onde vêm as funções daqui para baixo.
+source "$KIT_DIR/_common.sh"
+# E o aviso de manutenção pelo MESMO motivo, na mesma linha do raciocínio acima:
+# ele também é carregado no topo, também é só definição de função, e o passo que
+# o USA (a pausa do banco) vem depois daqui. Sem esta linha o parágrafo acima
+# valeria para `_common.sh` e seria falso para o kit — um conserto na página de
+# manutenção chegaria uma atualização atrasada, que é exatamente o defeito que a
+# releitura existe para fechar.
+source "$KIT_DIR/manutencao.sh"
+
 [ -n "${DESKCOMM_AGENT_REPORT:-}" ] && eval "${DESKCOMM_AGENT_REPORT_CMD}" codigo
 
 # ── 4. Banco: schema + correções de dados (schema ANTES do app) ──────────────
 # O baseline é idempotente e auto-curativo. Re-aplicar numa base que JÁ existe
 # gera erros do tipo "já existe" / "multiple primary keys" — isso é ESPERADO e
 # inofensivo (são objetos que já estavam lá). Filtramos esse ruído e só
-# mostramos problemas de verdade.
+# mostramos problemas de verdade. Erro de disputa com o app no ar (deadlock)
+# faz o arquivo ser aplicado de novo: ver `reaplicar_baseline` em _common.sh.
 # Re-aplicar o baseline é DDL, então vai por `url_do_schema` (_common.sh) e não
 # pela string do app: numa instalação em Supabase próprio, com a role menor no
 # `.env` como recomendamos, este passo passava a falhar em silêncio a cada
 # atualização — e é o update.sh que entrega migration nova ao clone (issue #192).
+# ── NINGUÉM FALA COM O BANCO ENQUANTO ELE MUDA ───────────────────────────────
+#
+# Medido nesta instalação, no mesmo dia e com o mesmo arquivo:
+#   tudo de pé ................................ 113 travamentos
+#   CRM parado ................................  60 travamentos
+#   CRM + rest + realtime + studio parados ....   0 travamentos
+#
+# Travamento aqui não é lentidão: quando o `create policy` trava, o `drop` que
+# veio antes já valeu. A regra some, o banco nega a leitura em silêncio, e a
+# tela fica vazia — indistinguível de "não há nada aqui".
+#
+# Custa ~16s (medido: parar 10,3s, subir 6,0s) numa atualização cuja mediana
+# real é 308s e cuja variação natural entre duas rodadas foi de 785s. Fica
+# abaixo do ruído que já existe.
+#
+# O `trap` é o que impede um erro no meio de deixar a instalação pela metade:
+# qualquer saída — sucesso, erro ou interrupção — devolve as peças do Supabase.
+# EXIT nao basta: interrupcao (Ctrl+C, cron matando a rodada, reinicio da
+# maquina) nao passa por ele em todos os casos — e o desfecho seria a
+# instalacao com as pecas do banco paradas, que foi o que se mediu.
+trap restaurar_servicos EXIT INT TERM HUP
+
 step "Atualizando o banco de dados"
+# O que sobrou de errado no banco, para ser repetido no FIM da execução.
+# Vazio = o banco terminou limpo (ou não havia baseline para aplicar).
+BANCO_INCOMPLETO=""
+# As linhas que repetir NÃO cura: as que não são de disputa nem de conexão
+# (permissão, dado). Vazio com BANCO_INCOMPLETO cheio = só o banco ocupado.
+BANCO_RESTANTE=""
+# O que fazer, dito por causa, no passo 4 e de novo no fim. Rodar o update.sh sem
+# --force responderia "já está na versão mais recente" e não tocaria no banco.
+# O restore vem por ÚLTIMO: ele desfaz também o que o CRM gravou desde o backup.
+orientar_banco_incompleto() {
+  # As duas metades SOMAM: uma lista pode ter disputa (que repetir cura) e erro de
+  # permissão ou de dado (que não). Escolher uma só escondia a ação possível.
+  if [ "$BANCO_RESTANTE" != "$BANCO_INCOMPLETO" ]; then
+    c_ylw "  Parte não aplicou porque o banco seguiu ocupado ou fora de alcance nas $BASELINE_PASSADAS passadas."
+    c_ylw "  Confira se o banco está no ar e repita a atualização, de preferência num horário de pouco"
+    c_ylw "  movimento (reaplica o banco; o site pode piscar por alguns segundos):"
+    c_ylw "    bash hostgator-setup-kit/update.sh --to $TARGET_TAG --force"
+  fi
+  case "$BANCO_RESTANTE" in
+    "") ;;
+    *permission\ denied*|*must\ be\ owner*|*permissão\ negada*)
+      c_ylw "  Há erros de PERMISSÃO, e esses repetir não cura: a conexão do .env não é o dono do banco."
+      c_ylw "  Num Supabase próprio, declare SUPABASE_DB_ADMIN_URL no .env — é ela que roda o schema — e"
+      c_ylw "  repita a atualização:"
+      c_ylw "    bash hostgator-setup-kit/update.sh --to $TARGET_TAG --force" ;;
+    *)
+      c_ylw "  O resto dos erros acima repetir não cura: guarde a mensagem e peça ajuda." ;;
+  esac
+  c_ylw "  Só em último caso, volte ao backup feito antes desta atualização (restore.sh)."
+}
 if [ -f supabase/baseline.sql ]; then
+  # O aviso PRIMEIRO: entre pausar e anunciar, quem estivesse com a tela aberta
+  # veria o erro do navegador, que e o desfecho que esta onda existe para tirar.
+  manutencao_sobe
+  pausar_o_que_fala_com_o_banco
   # Extensões que o schema exige (idempotente; iguais ao install.sh).
   docker run --rm postgres:17-alpine psql "$(url_do_schema)" -c \
     "create extension if not exists vector with schema public; create extension if not exists citext with schema public; create extension if not exists pg_trgm with schema public;" \
     >/dev/null 2>&1 || true
 
-  raw="$(docker run --rm -i -v "$PROJECT_DIR/supabase/baseline.sql:/b.sql:ro" \
-        postgres:17-alpine psql "$(url_do_schema)" -f /b.sql 2>&1 || true)"
-
-  # Erros benignos ao re-aplicar sobre uma base existente:
-  benign='already exists|multiple primary keys|multiple default values|is already a member|already a partition'
-  unexpected="$(printf '%s\n' "$raw" | grep -iE 'ERROR|FATAL' | grep -viE "$benign" || true)"
-
-  if [ -n "$unexpected" ]; then
-    c_ylw "⚠ Apareceram avisos no banco que NÃO são os esperados:"
-    printf '%s\n' "$unexpected" | head -20
-    c_ylw "  O app pode ainda funcionar. Se algo estiver errado, restaure o backup (restore.sh)."
-    case "$unexpected" in
-      *permission\ denied*|*must\ be\ owner*|*permissão\ negada*)
-        c_ylw "  Os erros são de PERMISSÃO: a conexão do .env não é o dono do banco. Num Supabase"
-        c_ylw "  próprio, declare SUPABASE_DB_ADMIN_URL no .env — é ela que roda o schema." ;;
-    esac
+  # ── O LOG DO BANCO FICA GUARDADO ──────────────────────────────────────────
+  #
+  # Ele era descartado: a saída do psql servia só para o filtro de erros e
+  # morria com a função. O que o agente guarda em `system_update_runs.log_tail`
+  # é a CAUDA da atualização — Docker e reinício —, e o banco acontece antes.
+  #
+  # Medido em 2026-09-12, numa instalação real: duas regras de isolamento
+  # sumiram durante uma atualização, o funil ficou vazio para todo mundo, e não
+  # houve como saber por quê — a evidência tinha sido jogada fora. A única coisa
+  # que restou foi a hipótese.
+  #
+  # O segundo argumento de `reaplicar_baseline` já existe para isto e recebe
+  # TODAS as passadas, cada uma com cabeçalho — melhor que a saída da última.
+  if reaplicar_baseline "$PROJECT_DIR/supabase/baseline.sql" "$PROJECT_DIR/.deskcomm-banco.log"; then
+    if [ "$BASELINE_PASSADAS" -gt 1 ]; then
+      c_grn "✓ banco atualizado na passada $BASELINE_PASSADAS — as anteriores não aplicaram tudo (banco ocupado ou conexão instável; o que faltou está listado acima)."
+    else
+      c_grn "✓ banco atualizado (e conversas reorganizadas, se havia bagunça)."
+    fi
   else
-    c_grn "✓ banco atualizado (e conversas reorganizadas, se havia bagunça)."
+    BANCO_INCOMPLETO="$BASELINE_INESPERADO"
+    BANCO_RESTANTE="$(printf '%s\n' "$BANCO_INCOMPLETO" | grep -viE "$BASELINE_ERROS_DE_DISPUTA" || true)"
+    c_ylw "⚠ Apareceram avisos no banco que NÃO são os esperados:"
+    # Sem `| head`: com pipefail, o head que fecha cedo mata o printf com SIGPIPE
+    # numa lista grande — e o set -e derrubava o script aqui, antes do aviso de
+    # PERMISSÃO, que foi escrito justamente para ela.
+    listar_erros_do_banco "$BANCO_INCOMPLETO" 20
+    c_ylw "  O app pode ainda funcionar."
+    orientar_banco_incompleto
+  fi
+  # ── E AS REGRAS DE ISOLAMENTO SÃO CONFERIDAS ──────────────────────────────
+  #
+  # ## Por que isto existe
+  #
+  # O baseline aplica cada regra como APAGAR e depois CRIAR — é o único jeito
+  # portável, porque o Postgres não tem `create or replace policy`. E esta
+  # atualização roda SEM parar em erro, de propósito, para um clone bagunçado
+  # conseguir se curar.
+  #
+  # As duas coisas juntas têm um desfecho ruim: se o "criar" falha, o "apagar"
+  # já valeu. A regra some, a atualização segue e reporta SUCESSO. Com a regra
+  # de leitura ausente e a segurança por linha ligada, o Postgres nega tudo —
+  # sem erro, sem aviso. A tela mostra uma lista vazia, que é indistinguível de
+  # "não há nada aqui".
+  #
+  # Medido: o dono de uma instalação descobriu horas depois, pelo funil vazio, e
+  # não pela atualização que tinha acabado de dizer "concluída com sucesso".
+  #
+  # ## A régua, e por que não é "toda regra que o arquivo cria"
+  #
+  # O baseline CRIA e depois APAGA a mesma regra de propósito em vários pontos —
+  # é assim que uma regra antiga vira três novas (`conversations_agent_write`
+  # virou insert/update/delete). Contar toda criação daria falso positivo em
+  # cima de decisão deliberada, e falso positivo derruba a confiança no aviso
+  # inteiro. Vale a ÚLTIMA operação de cada regra no arquivo: quem termina
+  # criada é esperada; quem termina apagada, não.
+  esperadas="$(awk '
+    match($0, /drop policy if exists "?[a-zA-Z0-9_]+"? on public\.[a-zA-Z0-9_]+/) {
+      linha = substr($0, RSTART, RLENGTH); acao = "drop"
+    }
+    match($0, /create policy "?[a-zA-Z0-9_]+"? on public\.[a-zA-Z0-9_]+/) {
+      linha = substr($0, RSTART, RLENGTH); acao = "create"
+    }
+    acao != "" {
+      gsub(/.*policy (if exists )?"?/, "", linha); gsub(/"? on public\./, "|", linha)
+      estado[linha] = acao; acao = ""
+    }
+    END { for (k in estado) if (estado[k] == "create") print k }
+  ' supabase/baseline.sql | sort -u)"
+
+  existentes="$(docker run --rm -i postgres:17-alpine psql "$(url_do_schema)" -t -A -F'|' -c \
+    "select p.polname, c.relname from pg_policy p join pg_class c on c.oid=p.polrelid
+       join pg_namespace n on n.oid=c.relnamespace where n.nspname='public';" 2>/dev/null | sort -u)"
+
+  faltando="$(comm -23 <(printf '%s\n' "$esperadas") <(printf '%s\n' "$existentes") || true)"
+
+  if [ -n "$faltando" ]; then
+    # ── RECRIAR AS QUE FALTAM, NUNCA REAPLICAR O ARQUIVO ─────────────────────
+    #
+    # ⚠️ Isto corrige o que este script fazia antes: reaplicar o baseline inteiro
+    # e conferir de novo. Aquilo era o que eu tinha feito no servidor, e a
+    # medição mostrou que NÃO FECHA — reaplicar não converge. A segunda passada
+    # devolveu `conversations_select` e levou embora `conversations_agent_insert`;
+    # a terceira trocou o conjunto outra vez. Cada passada sorteia, porque cada
+    # passada é a mesma corrida de APAGAR e CRIAR 92 vezes.
+    #
+    # Recriar só o que falta é um punhado de comandos rápidos, com muito menos
+    # superfície para travar. E roda com os serviços ainda PARADOS, que é a
+    # única janela sem disputa.
+    #
+    # E não é uma segunda cópia das 92 declarações: o comando sai do PRÓPRIO
+    # `baseline.sql`, recortado dele. Nada aqui sabe o que uma regra diz.
+    c_ylw "⚠ Faltaram regras de isolamento. Recriando exatamente as que faltam…"
+    faltam_arq="$PROJECT_DIR/.deskcomm-regras-faltando.txt"
+    printf '%s\n' "$faltando" > "$faltam_arq"
+
+    # A régua junta o comando INTEIRO — uma regra real ocupa várias linhas, e
+    # recortar só a primeira produziria SQL sem predicado e sem `;`, que falha
+    # deixando a impressão de que tentou. E vale a ÚLTIMA operação de cada
+    # regra: quem o arquivo cria e depois apaga de propósito não é recriada.
+    # /!\ O arquivo do que falta entra como PRIMEIRO ARQUIVO do awk, e nao por
+    # `-v`. MEDIDO: `awk -v var=valor` processa sequencias de escape no valor,
+    # entao um caminho do Windows (C:\Users\...) perde as barras e o awk le um
+    # arquivo que nao existe — devolvendo vazio, EM SILENCIO, como se nada
+    # faltasse. Numa VPS Linux nao doeria; o teste pegou antes de virar aposta.
+    recria="$(awk '
+      NR == FNR { sub(/[ \t\r]+$/, "", $0); if ($0 != "") quero[$0] = 1; next }
+      /create policy|drop policy if exists/ { buf = ""; coletando = 1 }
+      coletando { buf = buf $0 "\n" }
+      coletando && /;[ \t]*$/ {
+        coletando = 0
+        if (match(buf, /drop policy if exists "?[a-zA-Z0-9_]+"? on public\.[a-zA-Z0-9_]+/)) { k = substr(buf, RSTART, RLENGTH); acao = "drop" }
+        else if (match(buf, /create policy "?[a-zA-Z0-9_]+"? on public\.[a-zA-Z0-9_]+/)) { k = substr(buf, RSTART, RLENGTH); acao = "create" }
+        else next
+        gsub(/.*policy (if exists )?"?/, "", k); gsub(/"? on public\./, "|", k)
+        estado[k] = acao; if (acao == "create") texto[k] = buf
+      }
+      END { for (k in quero) if (estado[k] == "create") printf "%s", texto[k] }
+    ' "$faltam_arq" supabase/baseline.sql)"
+
+    if [ -n "$recria" ]; then
+      printf '%s\n' "$recria" | docker run --rm -i postgres:17-alpine \
+        psql "$(url_do_schema)" >> "$PROJECT_DIR/.deskcomm-banco.log" 2>&1 || true
+    fi
+    rm -f "$faltam_arq"
+
+    existentes="$(docker run --rm -i postgres:17-alpine psql "$(url_do_schema)" -t -A -F'|' -c \
+      "select p.polname, c.relname from pg_policy p join pg_class c on c.oid=p.polrelid
+         join pg_namespace n on n.oid=c.relnamespace where n.nspname='public';" 2>/dev/null | sort -u)"
+    faltando="$(comm -23 <(printf '%s\n' "$esperadas") <(printf '%s\n' "$existentes") || true)"
+  fi
+
+  if [ -n "$faltando" ]; then
+    c_red "⛔ REGRAS DE ISOLAMENTO AUSENTES — NÃO use o sistema até resolver."
+    c_red "   Sem elas o banco NEGA a leitura em silêncio: telas aparecem VAZIAS,"
+    c_red "   sem erro nenhum, e isso é indistinguível de 'não há dados'."
+    printf '%s\n' "$faltando" | sed 's/|/ na tabela /; s/^/   • /' | head -20
+    c_ylw "   O log do banco está em .deskcomm-banco.log — mande-o para o suporte."
+    c_ylw "   Para voltar ao estado anterior: bash restore.sh"
+    # ⛔ E A ATUALIZAÇÃO PARA AQUI.
+    #
+    # Antes ela seguia: imprimia este bloco vermelho e ia para o passo 5, que
+    # sobe o app com a imagem nova. O CRM voltava ao ar sem regra de isolamento,
+    # mostrando tela vazia para todo mundo — e o vermelho já tinha rolado para
+    # fora da tela. Foi assim que o dono da instalação descobriu pelo funil,
+    # horas depois, e não pela atualização.
+    #
+    # O `trap` (logo acima do passo do banco) devolve as peças do Supabase e
+    # deixa o CRM parado de propósito. Um CRM fora do ar é um problema visível
+    # que alguém resolve; um CRM no ar sem isolamento, não.
+    REGRAS_FALTANDO="$faltando"
+    exit 1
+  else
+    c_grn "✓ regras de isolamento conferidas ($(printf '%s\n' "$esperadas" | grep -c . ) declaradas, todas no lugar)."
+    # ── O BANCO RELIGA AQUI, e nao no fim do script ──────────────────────────
+    #
+    # MEDIDO na instalacao real em 2026-09-13: as pecas pararam as 03:10:18 e o
+    # script so terminou as 03:13:09. QUASE TRES MINUTOS sem o Supabase — e nao
+    # por falha: por DESENHO. A volta so acontecia no gatilho de saida, depois
+    # de baixar imagem, recriar conteiner e esperar o healthcheck do app.
+    #
+    # Nada disso precisa do Supabase parado. O que precisava era o DDL, e ele
+    # acabou na linha de cima — junto com a conferencia das regras, que e o
+    # unico motivo de esperar ate aqui em vez de religar antes.
+    #
+    # Fica no ramo do SUCESSO de proposito: com regra faltando o script sai no
+    # `exit 1` acima, e a volta das pecas vira responsabilidade do gatilho de
+    # saida — que religa o banco e deixa o CRM parado, como deve.
+    religar_o_supabase
   fi
 else
   c_ylw "⚠ supabase/baseline.sql não encontrado — pulei a parte do banco."
@@ -234,6 +479,7 @@ VERSAO_ALVO="${TARGET_TAG#v}"
 export APP_IMAGE="${IMG_APP}:${VERSAO_ALVO}"
 export WORKER_IMAGE="${IMG_WORKER}:${VERSAO_ALVO}"
 export SCHEDULER_IMAGE="${IMG_SCHEDULER}:${VERSAO_ALVO}"
+export VOICE_AGENT_IMAGE="${IMG_VOICE_AGENT}:${VERSAO_ALVO}"
 gravar_imagens .env "$VERSAO_ALVO"
 
 # Os segredos da chamada de voz (spec 18), para quem instalou antes dela existir.
@@ -255,7 +501,8 @@ if ! dc pull; then
   # frase tranquilizadora sobre o caso errado é o pior desfecho possível: o
   # `worker` e o `scheduler` têm `build:` ao lado do `image:` e o `up -d` os
   # constrói; o `app` NÃO tem, então se for a imagem dele que falta, o `up -d`
-  # morre logo abaixo — e dizer "sigo assim mesmo" teria sido mentira.
+  # falha logo abaixo e a guarda dele constrói a versão aqui — e dizer "sigo
+  # assim mesmo" teria sido mentira.
   if dc pull app >/dev/null 2>&1; then
     c_ylw "⚠ Não consegui puxar todas as imagens da versão ${VERSAO_ALVO}."
     c_ylw "  A do app veio; o que faltar é construído aqui (mais lento, mesmo resultado)."
@@ -271,7 +518,43 @@ fi
 # external, but could not be found" — e este script roda sozinho pelo agent.sh,
 # então ninguém está lendo a tela para decifrar isso. Mesma função do install.sh.
 garantir_rede_do_proxy
-dc up -d
+# O `up -d` falha por imagem ausente no disco e, com ele, a atualização inteira:
+# numa VPS de arquitetura diferente da das imagens publicadas o `pull` acima não
+# traz nada, e o `app` — ao contrário do worker e do scheduler — não tem `build:`
+# ao lado do `image:`, então o Compose não tem como construí-lo. Sem esta guarda
+# o script terminava como se tivesse dado certo e o dono ficava na versão velha
+# sem saber; pelo botão "Atualizar" do site, pior: o agente roda sozinho no cron
+# e não há ninguém lendo a tela para desconfiar.
+#
+# O gatilho é o CÓDIGO DE SAÍDA, nunca o texto do erro — arquitetura da VPS, tag
+# ainda publicando, pacote privado no registro e registro fora do ar caem no
+# mesmo caminho, sem depender de casar em inglês uma frase que o Docker muda. O
+# custo é o pior caso: um `up -d` que falhe por outro motivo gasta o build antes
+# de desistir. É o preço de não adivinhar.
+# ⛔ O AVISO DESCE AQUI, e nao no gatilho de saida.
+#
+# MEDIDO na atualizacao real para a v1.17.21: o gatilho roda depois de mais
+# quatro etapas — baixar imagem, recriar, conferir saude, conferir automacoes. E
+# o roteamento do aviso tem prioridade 500, ACIMA da regra do app. Resultado: o
+# CRM voltava ao ar e quem abrisse continuava vendo "estamos atualizando" por
+# minutos, com o sistema ja funcionando. Aviso que mente e pior que aviso nenhum:
+# a pessoa vai embora achando que o sistema esta fora.
+#
+# `restaurar_servicos` segue chamando o mesmo `manutencao_desce` — ele e
+# `docker rm -f ... || true`, idempotente de proposito, e la ele cobre o caminho
+# de ERRO, onde este ponto aqui nunca chega a ser alcancado.
+manutencao_desce
+CONSTRUIU_AQUI=""
+if ! dc up -d; then
+  if construir_aqui_e_subir "$VERSAO_ALVO"; then
+    CONSTRUIU_AQUI=1
+  else
+    c_red "✖ A atualização não terminou: nem as imagens prontas desta versão nem a construção aqui funcionaram."
+    c_ylw "  O CRM segue no ar, na versão anterior. O erro está logo acima;"
+    c_ylw "  para reproduzir só a construção: docker compose $(dc_files) -f ${COMPOSE_BUILD} build"
+    exit 1
+  fi
+fi
 
 # O Caddyfile entra no container por bind mount de UM ARQUIVO, e bind mount de
 # arquivo fica preso ao inode. O `git pull` não edita o arquivo: escreve outro e
@@ -305,7 +588,20 @@ step "Conferindo se o app voltou no ar"
 ok=""
 wait_app_healthy 20 3 >/dev/null && ok=1
 if [ -n "$ok" ]; then
-  c_grn "✓ Atualização concluída — app no ar e saudável."
+  if [ -n "$BANCO_INCOMPLETO" ]; then
+    c_ylw "⚠ App no ar e saudável, mas o banco NÃO terminou limpo — o que fazer está no fim desta saída."
+  else
+    c_grn "✓ Atualização concluída — app no ar e saudável."
+    # Dito AQUI, no fim, porque é o que sobra na tela do site: o agent.sh manda o
+    # rabo da saída, e o build local encheu as linhas de cima com a própria
+    # construção. Sem esta frase o dono lê "concluída" e não faz ideia de que a
+    # VPS dele passou 20 minutos construindo imagens.
+    if [ -n "$CONSTRUIU_AQUI" ]; then
+      c_ylw "  (as três imagens desta versão foram construídas aqui nesta VPS: as"
+      c_ylw "   prontas não servem para a arquitetura dela. Toda atualização aqui"
+      c_ylw "   segue o mesmo caminho — é mais lento e não precisa de nada manual.)"
+    fi
+  fi
   # Dito no fim, e não no início, porque é aqui que o dono lê. Se a execução
   # anterior deixou o pin pela metade, ele nunca soube — a tela dizia "concluída"
   # e o worker seguia um canal móvel. Agora ele sabe que existiu e que acabou.
@@ -349,3 +645,13 @@ fi
 step "Conferindo as automações"
 ensure_encryption_key .env
 setup_event_log_drain_cron
+
+# ── Fim: o banco que não terminou limpo é a ÚLTIMA coisa na tela ─────────────
+# Na v1.27.3 de uma VPS real o aviso do passo 4 ficou soterrado por centenas de
+# linhas do docker pull, e as últimas linhas da tela eram ✓ verdes. É aqui,
+# depois de tudo, que o dono lê.
+if [ -n "$BANCO_INCOMPLETO" ]; then
+  step "Atenção: o banco NÃO terminou limpo nesta atualização"
+  c_ylw "  Os avisos completos estão no passo \"Atualizando o banco de dados\", acima."
+  orientar_banco_incompleto
+fi

@@ -90,6 +90,31 @@ const CURADORIA: {
     ],
   },
   {
+    // A PORTA DE DESCOBERTA do aviso no WhatsApp (B1 da revisão de UX).
+    //
+    // A entrada no menu existe, e ela não basta: numa instalação nova a tela de
+    // Casos está VAZIA, então um botão lá em cima é invisível justamente no dia
+    // em que o recurso precisava já estar ligado — e quase ninguém volta a
+    // explorar menu. Aqui a pessoa está sendo conduzida, acabou de montar o
+    // funcionário e acabou de ler que ele às vezes trava. É o instante em que
+    // "quer ser avisado no seu WhatsApp quando isso acontecer?" faz sentido.
+    //
+    // Fica DEPOIS de "Quando ele pede ajuda" de propósito: a pergunta só é
+    // compreensível depois de a pessoa saber que existe um pedido de ajuda.
+    href: "/app/ai/cases/avisos",
+    comoChamar: "Ser avisado no seu WhatsApp",
+    porQue: "Você não fica com o sistema aberto o dia todo — mas fica com o WhatsApp.",
+    // Comportamento real do motor (`lib/escalacao/aviso-ao-suporte.ts`): o aviso
+    // sai na ABERTURA do caso, uma vez, e o número escolhido só recebe — o que
+    // chegar nele é descartado antes de virar contato.
+    comoFunciona: [
+      "Você escolhe um número da equipe para receber os avisos",
+      "Quando ele trava e abre um pedido de ajuda, chega uma mensagem nesse número, na hora",
+      "A mensagem traz o assunto e um link que abre o atendimento — e nunca o telefone do cliente",
+      "Responder àquele número não chega ao cliente: ele é só da equipe",
+    ],
+  },
+  {
     href: "/app/ai/proposals",
     comoChamar: "As ideias dele",
     porQue: "Com o tempo ele sugere as próprias melhorias — e você decide se entram.",

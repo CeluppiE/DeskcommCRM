@@ -9,6 +9,7 @@
  * Timeout 5s, sem retry. Erros 401 são distintos de erros de rede.
  */
 import { PROVEDORES } from "@/lib/ai/pontos/provedores";
+import { env } from "@/lib/env";
 
 /**
  * Os provedores cuja CHAVE este arquivo sabe validar.
@@ -141,10 +142,43 @@ export async function validateGoogleKey(apiKey: string): Promise<ValidationResul
  * ele é só dado, não prova. Catálogo fora do ar não recusa uma chave que já
  * provou ser válida: seria trocar um erro de credencial por um de
  * disponibilidade.
+ *
+ * O ENDEREÇO da prova é o da instalação: `OPENROUTER_BASE_URL` quando ela está
+ * definida (ver `baseDaOpenRouter` abaixo). Até aqui a tela de Credenciais era
+ * o único caminho que ainda batia em `openrouter.ai` fixo.
  */
+
+/**
+ * A base do OpenRouter, lida da MESMA fonte que o resto do código lê (`env`).
+ *
+ * O #1200 fez a variável valer para o agente publicado, para o turno do worker
+ * e para a credencial da organização. Ficou de fora a validação da tela de
+ * Credenciais: quem aponta a instalação para um gateway compatível via a tela
+ * dizer "chave inválida" (`auth_failed_401`, vindo da openrouter.ai) enquanto o
+ * agente respondia normalmente por ela.
+ *
+ * Duas decisões de montagem, as duas seguindo o que o repositório já faz:
+ *
+ *  - NADA de `/api/v1` é acrescentado. A variável pode ser a raiz ou já incluir
+ *    o prefixo, e o caminho entra por concatenação — igual ao
+ *    `${baseUrl ?? OPENROUTER_ENDPOINT}/chat/completions` da prova de crédito
+ *    (`lib/instalacao/prova-de-credito.ts`) e ao `baseURL` do gateway
+ *    (`lib/ai/gateway.ts`). Quem aponta para a raiz de um gateway que espera
+ *    `/chat/completions` na raiz continua sendo atendido.
+ *  - barra final é removida antes da junção, como `lib/webhooks/url-publica.ts`
+ *    decidiu para o mesmo formato (`base + "/" + caminho`, sob a mesma forma:
+ *    `.../api/v1/` viraria `.../api/v1//key`).
+ */
+function baseDaOpenRouter(): string {
+  const configurada = (env.OPENROUTER_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  return configurada || "https://openrouter.ai/api/v1";
+}
+
 export async function validateOpenRouterKey(apiKey: string): Promise<ValidationResult> {
   try {
-    const auth = await timedFetch("https://openrouter.ai/api/v1/key", {
+    const base = baseDaOpenRouter();
+
+    const auth = await timedFetch(`${base}/key`, {
       method: "GET",
       headers: { Authorization: `Bearer ${apiKey}` },
     });
@@ -155,7 +189,7 @@ export async function validateOpenRouterKey(apiKey: string): Promise<ValidationR
       return { ok: false, error: `provider_status_${auth.status}` };
     }
 
-    const res = await timedFetch("https://openrouter.ai/api/v1/models", {
+    const res = await timedFetch(`${base}/models`, {
       method: "GET",
       headers: { Authorization: `Bearer ${apiKey}` },
     });
@@ -163,6 +197,43 @@ export async function validateOpenRouterKey(apiKey: string): Promise<ValidationR
 
     const json = (await res.json()) as { data?: { id?: string }[] };
     const models = (json.data ?? []).map((m) => m.id ?? "").filter(Boolean);
+    return { ok: true, models };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.name : "network_error" };
+  }
+}
+
+/**
+ * A DeepSeek é OpenAI-compatível e o `GET /models` dela EXIGE a credencial —
+ * diferente do catálogo público da OpenRouter, que responde 200 para qualquer
+ * string. Uma chamada já prova a chave e devolve o catálogo, então não há o
+ * segundo request que a OpenRouter precisa para a lista.
+ *
+ * ⚠️ Por que a URL canônica fica AQUI e não é derivada de
+ * `aceitaEndpointProprio`/`base_url`: a interface `ProvedorSuportado` carrega
+ * só o BOOLEANO (aceita endpoint próprio), sem guardar endereço, e
+ * `validateProviderKey(provider, apiKey)` não recebe `baseUrl`. Não há de onde
+ * derivar sem mudar a assinatura — que arrastaria os quatro call sites e o
+ * roteiro de endpoint próprio, fora deste escopo. Os outros três validadores já
+ * hardcodam o endpoint de LISTAGEM deles pelo mesmo motivo; o endpoint próprio
+ * é provado pela GERAÇÃO real (`lib/instalacao/prova-de-credito.ts`), não por
+ * esta listagem. A raiz `https://api.deepseek.com` é a documentada pelo
+ * provedor (ele também aceita `/v1`).
+ */
+export async function validateDeepSeekKey(apiKey: string): Promise<ValidationResult> {
+  try {
+    const res = await timedFetch("https://api.deepseek.com/models", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, error: "auth_failed_401" };
+    }
+    if (!res.ok) {
+      return { ok: false, error: `provider_status_${res.status}` };
+    }
+    const json = (await res.json()) as { data?: { id: string }[] };
+    const models = (json.data ?? []).map((m) => m.id).filter(Boolean);
     return { ok: true, models };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.name : "network_error" };
@@ -182,6 +253,8 @@ export function validateProviderKey(
       return validateGoogleKey(apiKey);
     case "openrouter":
       return validateOpenRouterKey(apiKey);
+    case "deepseek":
+      return validateDeepSeekKey(apiKey);
     default: {
       // Sem `never` aqui: `Provider` agora é derivado de PROVEDORES, e a lista
       // cresce sem que este arquivo saiba. Provedor novo cadastrado antes de

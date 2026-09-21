@@ -6,6 +6,7 @@
  */
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { perfilDaOrganizacao } from "@/lib/legal/perfil-do-pais";
 import { computeDueAt } from "./sla";
 import type { LgpdRequest, LgpdRequestType, LgpdScope } from "./types";
 
@@ -35,7 +36,13 @@ export async function createLgpdRequest(
 ): Promise<{ id: string; due_at: string }> {
   const admin = createAdminClient();
 
-  const dueAt = computeDueAt(input.receivedAt, input.slaDays);
+  // O prazo é contado no calendário ÚTIL do PAÍS da organização (issue #1033):
+  // citar a lei de um país e contar o prazo pelo feriado de outro produz um
+  // documento que afirma uma data que o sistema não cumpre — é exatamente o
+  // par que a issue manda andar junto. `computeDueAt` já aceitava o conjunto de
+  // feriados por parâmetro; o que faltava era quem o resolvesse.
+  const perfil = await perfilDaOrganizacao(admin, input.organizationId);
+  const dueAt = computeDueAt(input.receivedAt, input.slaDays, new Set(perfil.calendario.feriados));
 
   const { data, error } = await admin
     .from("lgpd_requests")

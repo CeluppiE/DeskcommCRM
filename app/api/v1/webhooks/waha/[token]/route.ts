@@ -15,6 +15,7 @@ import type { NextRequest, NextResponse } from "next/server";
 import { fail, ok } from "@/lib/api/wrappers";
 import { audit } from "@/lib/audit";
 import { ARCHIVED_AT, queryTolerantToMissingArchived } from "@/lib/channels/archived";
+import { carregarComportamentoDaInstalacao } from "@/lib/instalacao/comportamento-servidor";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { conferirContratoWaha, lerRoteamentoWaha } from "@/lib/waha/envelope";
@@ -114,6 +115,12 @@ export async function POST(req: NextRequest, ctx: RouteCtx): Promise<NextRespons
     sessionSecret = null;
   }
 
+  // O portão lê a exigência de assinatura da MEMÓRIA do processo, de forma
+  // síncrona. Sem carregar a linha da instalação aqui, um processo recém-subido
+  // responde com o piso do `.env` até alguém abrir outra tela que a carregue —
+  // e a escolha feita em /admin/sistema não vale para a entrada de mensagens.
+  // O memo de 30 s faz disto no máximo uma leitura por janela; nunca lança.
+  await carregarComportamentoDaInstalacao();
   const auth = authenticateWahaWebhook({ rawBody, signatureHeader: sigHeader, sessionSecret });
   if (!auth.ok) {
     await audit({

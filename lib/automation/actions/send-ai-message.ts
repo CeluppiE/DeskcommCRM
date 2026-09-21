@@ -100,7 +100,7 @@ async function execute(ctx: ActionCtx, config: Record<string, unknown>): Promise
     return { type: TIPO, status: "failed", error: "ia_indisponivel", detail: { reason: "ia_indisponivel" } };
   }
 
-  const { dados, origem, veioDeFormulario } = await dadosDoFormularioDoContexto(ctx);
+  const { dados, origem, origemDaAbordagem } = await dadosDoFormularioDoContexto(ctx);
 
   let boundary: ServiceBoundary;
   try { boundary = await serviceForAutomation(ctx, contact.id, sessionId); }
@@ -115,7 +115,7 @@ async function execute(ctx: ActionCtx, config: Record<string, unknown>): Promise
       instrucao,
       origem,
       dados,
-      veioDeFormulario,
+      origemDaAbordagem,
     });
     if (!gerado.ok) {
       return { type: TIPO, status: "failed", error: gerado.reason, detail: { reason: gerado.reason } };
@@ -155,7 +155,8 @@ async function execute(ctx: ActionCtx, config: Record<string, unknown>): Promise
         organization_id: ctx.organizationId,
         serviceBoundary: boundary,
         proactiveContext: { organizationId: ctx.organizationId, contactId: contact.id },
-        actor: { type: "webhook_source", id: ctx.ruleId },
+        // Disparada por regra, ESCRITA pela IA: o carimbo segue a autoria (#652).
+        actor: { type: "webhook_source", id: ctx.ruleId, textoEscritoPelaIA: true },
         requestId: `rule:${ctx.ruleId}`,
       },
       { conversation_id: conversationId, type: "text", body: texto } as Parameters<

@@ -23,6 +23,7 @@ import { describe, expect, it } from "vitest";
 import {
   VISIBILITY_MODES,
   atendimentoConfigPatchSchema,
+  mesclarSettingsDeAtendimento,
   routingConfigSchema,
 } from "@/lib/schemas/routing";
 import { DEFAULT_VISIBILITY_MODE, type VisibilityMode } from "@/lib/auth/types";
@@ -36,11 +37,9 @@ function proximoSettings(
   atual: Record<string, unknown>,
   corpo: unknown,
 ): Record<string, unknown> {
-  const input = atendimentoConfigPatchSchema.parse(corpo);
-  const { visibility_mode, ...routing } = input;
-  const proximo: Record<string, unknown> = { ...atual, routing };
-  if (visibility_mode !== undefined) proximo.visibility_mode = visibility_mode;
-  return proximo;
+  // A MESMA função da rota (antes este helper era uma cópia dela, e cópia
+  // diverge sem avisar).
+  return mesclarSettingsDeAtendimento(atual, atendimentoConfigPatchSchema.parse(corpo)).settings;
 }
 
 describe("config de atendimento — routing + visibilidade na mesma porta", () => {
@@ -92,8 +91,35 @@ describe("config de atendimento — routing + visibilidade na mesma porta", () =
     // O contrato v1 já estava publicado. Se o corpo de antes deixasse de valer,
     // a mudança seria quebra de API disfarçada de feature nova.
     const antigo = { mode: "round_robin", max_retries: 3, backoff_seconds: 30 };
-    expect(atendimentoConfigPatchSchema.parse(antigo)).toEqual({
-      ...routingConfigSchema.parse(antigo),
+    // O corpo antigo não conhece o prazo de devolução: no PATCH ele fica
+    // OMITIDO (e a mescla preserva o que vale), no schema do jsonb ele é null.
+    const { handoff_return_after_minutes: _padrao, ...semPrazo } = routingConfigSchema.parse(antigo);
+    expect(atendimentoConfigPatchSchema.parse(antigo)).toEqual(semPrazo);
+  });
+
+  it("corpo SEM handoff_return_after_minutes preserva o prazo que já valia", () => {
+    const atual = { routing: { mode: "manual", handoff_return_after_minutes: 60 } };
+    const proximo = proximoSettings(atual, { mode: "round_robin", max_retries: 5, backoff_seconds: 60 });
+    expect(
+      (proximo.routing as { handoff_return_after_minutes: number | null }).handoff_return_after_minutes,
+      "cliente que só conhece roteamento não pode desligar a devolução automática por omissão",
+    ).toBe(60);
+  });
+
+  it("handoff_return_after_minutes: null desliga; fora da faixa é recusado", () => {
+    const atual = { routing: { mode: "manual", handoff_return_after_minutes: 60 } };
+    const proximo = proximoSettings(atual, {
+      mode: "manual",
+      max_retries: 5,
+      backoff_seconds: 60,
+      handoff_return_after_minutes: null,
     });
+    expect((proximo.routing as { handoff_return_after_minutes: unknown }).handoff_return_after_minutes).toBeNull();
+    expect(() =>
+      atendimentoConfigPatchSchema.parse({ mode: "manual", max_retries: 5, backoff_seconds: 60, handoff_return_after_minutes: 2 }),
+    ).toThrow();
+    expect(() =>
+      atendimentoConfigPatchSchema.parse({ mode: "manual", max_retries: 5, backoff_seconds: 60, handoff_return_after_minutes: 1441 }),
+    ).toThrow();
   });
 });

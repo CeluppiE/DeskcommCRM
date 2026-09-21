@@ -41,7 +41,14 @@ const GOOGLE_ENDPOINT = 'https://generativelanguage.googleapis.com';
  * com ela sem dependência nova — e os ids dela já vêm no formato
  * `familia/modelo`, o mesmo dos nossos, sem tradução no meio.
  */
-export const OPENROUTER_ENDPOINT = 'https://openrouter.ai/api/v1';
+export const OPENROUTER_ENDPOINT = process.env.OPENROUTER_BASE_URL?.trim() || 'https://openrouter.ai/api/v1';
+
+/**
+ * A DeepSeek também fala a API da OpenAI — mesma fábrica, mesmo formato de
+ * payload, sem SDK novo. O endpoint é a raiz que o provedor documenta (ele
+ * também aceita `/v1`); o `@ai-sdk/openai` acrescenta `/chat/completions`.
+ */
+export const DEEPSEEK_ENDPOINT = 'https://api.deepseek.com';
 
 /**
  * Cabeçalhos OPCIONAIS de atribuição da OpenRouter.
@@ -70,6 +77,63 @@ export function cabecalhosDeAtribuicaoOpenRouter(): Record<string, string> | und
 }
 
 /**
+ * Toggle do raciocínio (thinking) da DeepSeek — knob DEEPSEEK_THINKING.
+ * `'provider'` preserva o default do provedor (raciocínio LIGADO); `'disabled'`
+ * injeta o desligamento no corpo das chamadas. Só a DeepSeek o lê.
+ */
+export type RaciocinioDeepseek = 'provider' | 'disabled';
+
+/**
+ * Desliga o raciocínio da DeepSeek no CORPO do request — sem tocar em prompt,
+ * tools, temperatura ou qualquer outro parâmetro da chamada.
+ *
+ * POR QUE UM CAMPO, E POR QUE DOIS NOMES: o raciocínio da DeepSeek nasce LIGADO
+ * e o token de raciocínio é cobrado como SAÍDA (medido em produção: ~8× a saída
+ * do OpenAI por turno e +22 s de latência — o desconto de preço foi anulado
+ * pelo volume). São DUAS superfícies e cada uma lê um nome diferente (doc
+ * oficial, "Thinking Mode › Toggle and Effort Control"):
+ *
+ *   - Responses API (`/responses`)   → `reasoning.effort = 'none'` desliga;
+ *   - Chat Completions               → `thinking.type = 'disabled'`.
+ *
+ * O SDK instalado (`createOpenAI(...)(modelId)`) fala a Responses API — o teste
+ * `deepseek-sem-raciocinio.test.ts` prende essa rota. Por isso vão os DOIS
+ * campos: o provedor ignora em SILÊNCIO o que a rota não conhece (não erra),
+ * então o desligamento vale em qualquer uma das duas — e o caminho real do SDK
+ * é o `/responses`, que só entende `reasoning`.
+ *
+ * O corpo é lido por cima do `init` que o SDK montou, então nada mais muda; um
+ * `reasoning` já presente é preservado (só o `effort` é forçado a 'none').
+ */
+function comRaciocinioDesligado(inner: typeof fetch): typeof fetch {
+  return (input, init) => {
+    const corpo = init?.body;
+    if (typeof corpo === 'string') {
+      try {
+        const json = JSON.parse(corpo) as Record<string, unknown>;
+        const reasoningBruto = json['reasoning'];
+        const reasoning =
+          reasoningBruto !== null && typeof reasoningBruto === 'object'
+            ? (reasoningBruto as Record<string, unknown>)
+            : {};
+        return inner(input, {
+          ...init,
+          body: JSON.stringify({
+            ...json,
+            thinking: { type: 'disabled' },
+            reasoning: { ...reasoning, effort: 'none' },
+          }),
+        });
+      } catch {
+        // Corpo não-JSON: repassa intacto. Um ajuste de tuning nunca pode
+        // derrubar a chamada que ele veio otimizar.
+      }
+    }
+    return inner(input, init);
+  };
+}
+
+/**
  * Providers reais do lançamento. Sonnet (Anthropic) é o default RECOMENDADO —
  * recomendação vive em .env.example/docs; o id do modelo é sempre config da org.
  *
@@ -80,7 +144,14 @@ export function cabecalhosDeAtribuicaoOpenRouter(): Record<string, string> | und
  * (createFakeRegistry, sem fetch real); este caminho só é exercitado pelo smoke
  * (rede real → endpoint canônico do provider allowlistado).
  */
-export function createDefaultRegistry(opts?: { allowedHosts?: string[] }): ProviderRegistry {
+export function createDefaultRegistry(opts?: {
+  allowedHosts?: string[];
+  /**
+   * Knob DEEPSEEK_THINKING aplicado à fábrica da DeepSeek (e SÓ a ela — a
+   * fábrica é dela). Ausente = 'provider' = nada é injetado.
+   */
+  deepseekThinking?: RaciocinioDeepseek;
+}): ProviderRegistry {
   const extra = opts?.allowedHosts ?? [];
   const contain = (endpoint: string): typeof fetch => {
     const allow = buildAllowlist([endpoint, ...extra]);
@@ -111,6 +182,19 @@ export function createDefaultRegistry(opts?: { allowedHosts?: string[] }): Provi
         headers: cabecalhosDeAtribuicaoOpenRouter(),
         fetch: contain(endpoint),
       })(modelId);
+    },
+    /**
+     * DeepSeek é OpenAI-compatível e aceita um `base_url` próprio pela mesma
+     * razão da OpenRouter: o painel de provedores oferece apontar para um
+     * gateway, e a allowlist do egress precisa ser a DELE — fixá-la no endpoint
+     * canônico bloquearia a configuração que a própria tela permitiu.
+     */
+    deepseek: (apiKey, modelId, baseUrl) => {
+      const endpoint = baseUrl ?? DEEPSEEK_ENDPOINT;
+      const contido = contain(endpoint);
+      const fetchFinal =
+        opts?.deepseekThinking === 'disabled' ? comRaciocinioDesligado(contido) : contido;
+      return createOpenAI({ apiKey, baseURL: endpoint, fetch: fetchFinal })(modelId);
     },
   };
 }

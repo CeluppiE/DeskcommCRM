@@ -71,7 +71,17 @@ describe("0087 · o canal da sessão chega ao clone", () => {
     const cols = sql(`select column_name from information_schema.columns
                        where table_schema = 'public' and table_name = 'channel_sessions'
                          and column_name like 'meta\\_%' order by 1`).split("\n");
-    expect(cols).toEqual(["meta_phone_number_id", "meta_token_encrypted", "meta_waba_id"]);
+    // As três `meta_webhook_override_*` (migration 0311) entraram de propósito: são o
+    // desfecho do registro do webhook do número ao conectar o canal oficial. A cerca
+    // continua valendo — ela existe para pegar coluna que entrou SEM querer.
+    expect(cols).toEqual([
+      "meta_phone_number_id",
+      "meta_token_encrypted",
+      "meta_waba_id",
+      "meta_webhook_override_em",
+      "meta_webhook_override_erro",
+      "meta_webhook_override_uri",
+    ]);
   });
 
   it("waha_session_name deixou de ser obrigatório — senão meta_cloud é inexprimível", () => {

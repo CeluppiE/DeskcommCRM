@@ -28,6 +28,11 @@ export function extrairAtribuicaoMeta(referral: unknown): AtribuicaoDeAnuncio | 
 
   const sourceId =
     str(r.ctwa_clid) ?? str(r.ctwaClid) ?? str(r.source_id) ?? str(r.sourceId);
+  // O id do anúncio, SEMPRE, e não só quando o clique falta. Enquanto ele era
+  // apenas o degrau de baixo do `??` acima, o payload que trazia os dois — o
+  // caso comum — perdia este aqui, e a pergunta "de qual anúncio veio?" ficava
+  // sem resposta mesmo com o dado na mão.
+  const adId = str(r.source_id) ?? str(r.sourceId);
   const titulo = str(r.headline);
   const sourceUrl = str(r.source_url) ?? str(r.sourceUrl);
   // Sem NENHUM campo que identifique o anúncio, não há o que atribuir — um
@@ -38,6 +43,7 @@ export function extrairAtribuicaoMeta(referral: unknown): AtribuicaoDeAnuncio | 
   return {
     plataforma: "meta_ads",
     sourceId,
+    adId,
     titulo,
     corpo: str(r.body),
     sourceUrl,

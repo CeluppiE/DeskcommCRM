@@ -77,13 +77,15 @@ export type TipoDeLocal = "in_person" | "phone" | "whatsapp" | "video_link" | "g
  * Quem participa do compromisso, já resolvido pelo chamador.
  *
  * O agendamento guarda `owner_user_id` e `contact_id` — ids, não e-mails. Quem
- * traduz ids em endereços é a rota; esta camada recebe a lista pronta, e por
- * isso continua pura.
+ * traduz ids em endereços é o executor de sincronização; esta camada recebe a
+ * lista pronta, e por isso continua pura.
  *
  * **Lead sem e-mail é o caso comum, não a exceção:** contato que veio do
  * WhatsApp costuma ter só telefone. Ele simplesmente não entra na lista, e o
- * evento continua válido — quem avisa o cliente é a nossa própria cadeia de
- * envio, não o convite do Google.
+ * evento continua válido — o lembrete no WhatsApp é outro caminho. **Lead COM
+ * e-mail entra:** a ficha tem o endereço, e o convite do Google é o que põe o
+ * compromisso na agenda dele. Quem monta a lista (e-mail da ficha + convidado
+ * digitado) é o executor; esta camada só traduz.
  */
 export interface ParticipanteDoAgendamento {
   email: string;
@@ -104,6 +106,36 @@ export interface ParticipanteDoAgendamento {
    * motivo de se mandar convite do Google em vez de um e-mail comum.
    */
   aguardandoResposta?: boolean;
+}
+
+/**
+ * A lista de convidados do evento: e-mail da ficha do contato, depois o
+ * convidado digitado na tela. Mesmo endereço duas vezes vira uma linha — o
+ * Google recusa o evento inteiro se `attendees` tiver e-mail repetido.
+ *
+ * Os dois pedem RSVP (`aguardandoResposta`): o convite existe para a pessoa
+ * aceitar na caixa dela, não para gravar um "sim" em nome dela.
+ */
+export function participantesDoAgendamento(input: {
+  contactEmail?: string | null;
+  contactName?: string | null;
+  guestEmail?: string | null;
+}): ParticipanteDoAgendamento[] {
+  const out: ParticipanteDoAgendamento[] = [];
+  const vistos = new Set<string>();
+  const entra = (email: string | null | undefined, nome?: string | null) => {
+    const limpo = email?.trim();
+    if (!limpo) return;
+    const chave = limpo.toLowerCase();
+    if (vistos.has(chave)) return;
+    vistos.add(chave);
+    const p: ParticipanteDoAgendamento = { email: limpo, aguardandoResposta: true };
+    if (nome?.trim()) p.nome = nome.trim();
+    out.push(p);
+  };
+  entra(input.contactEmail, input.contactName);
+  entra(input.guestEmail);
+  return out;
 }
 
 /** O subconjunto de `calendar_appointments` que o Google entende. */

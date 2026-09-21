@@ -96,7 +96,10 @@ Input (Zod `.strict()`, guard prototype-pollution como `schedule-followup.ts`):
   // context_snapshot é montado pelo runtime a partir da conversa REAL — nunca do modelo
 }
 ```
-Efeito: `INSERT agent_cases(status='awaiting_human', ...)` + event `opened` + broadcast realtime `case_pending` no canal `org:<org>:queue`. Retorno `{ok:true, case_id}` ou `{ok:false, error:{message}}` (erro-como-ensino).
+Efeito: `INSERT agent_cases(status='awaiting_human', ...)` + event `opened` + `emit_event('ai.case_opened')`.
+> ⚠️ **Correção de estado (2026-09-18).** Este parágrafo prometia um *broadcast realtime `case_pending` no canal `org:<org>:queue`* — ele **nunca existiu**: `grep -rn "case_pending" lib app hooks workers` sai vazio. Quem avisa é o `event_log`: `ai.case_opened` (reservado pela migration 0279) tem hoje dois consumidores — o gatilho de follow-up e o aviso ao suporte no WhatsApp (migration 0292). A tela de casos continua em consulta periódica, como o próprio §9 descreve.
+
+Retorno `{ok:true, case_id}` ou `{ok:false, error:{message}}` (erro-como-ensino).
 
 ### 4.2 `provide_case_update`
 > **description:** "Quando um caso está esperando informação do cliente e você já colheu essa informação na conversa, use esta tool para devolver a informação ao humano responsável pelo caso. Não invente — só o que o lead realmente disse."
@@ -158,12 +161,17 @@ Três camadas; a 3ª é a garantia dura.
 
 Quando o humano clica **"Não consigo → escalar"**, o caso vira `escalated` e dispara o **handoff canônico do engine** — a IA sai de cena e um humano assume a conversa (fluxo existente). O texto do humano vira o `reason` do handoff.
 
-**Resolvido (era risco §10.1):** o caminho canônico do engine é **`performHumanHandoff`** (`lib/agent-engine/agent/human-handoff.ts:149`) — já é o que a tool inline `request_human_handoff` delega internamente, e o que a detecção determinística e o opt-out chamam. A escalação do caso chama:
-```ts
-await performHumanHandoff(pool, { tenantId, leadId, conversationId },
-  { reason: <texto do humano>, conversationSummary: buildHandoffSummary(previous), log });
+**Resolvido (era risco §10.1):** o caminho canônico do engine é **`performHumanHandoff`** (`lib/agent-engine/agent/human-handoff.ts`) — já é o que a tool inline `request_human_handoff` delega internamente, e o que a detecção determinística e o opt-out chamam. Não criamos um 3º caminho.
+
+O que a escalação do caso passa a ele mudou com a migration 0291/0293: além do `reason` (o texto do humano), ela monta o **briefing da passagem** (`lib/escalacao/briefing-da-passagem.ts`) com o caso **mais o checkpoint durável da conversa**, e declara `passagem: { origem: 'caso_escalado', motivoCodigo: 'caso_escalado', casoId }`. Esta seção mandava usar `buildHandoffSummary(previous)` e o código nunca o fez — quem recebia a passagem de um caso escalado via o título, o resumo e o bloqueio do caso, e nada da conversa.
+
+Para ver a chamada em vigor sem acreditar nesta prosa (comando não envelhece):
+
+```bash
+grep -n "performHumanHandoff" -B 20 'app/api/v1/ai/cases/[id]/reply/route.ts'
 ```
-Efeitos (idempotentes): `contacts.force_human=true`, `conversations.status ai_handling→pending` + `bot_silenced_until='infinity'`, `cancelPendingCronsForLead`, INSERT `agent_inbox_items(kind='handoff')`. Não criamos um 3º caminho.
+
+Efeitos (idempotentes): `contacts.force_human=true`, `conversations.status ai_handling→pending` + `bot_silenced_until='infinity'`, `cancelPendingCronsForLead`, INSERT em `passagens_de_atendimento`, e o item de `agent_inbox_items(kind='handoff', ref_kind='conversation')` — que é **inserido ou acrescentado**, nunca descartado.
 
 ---
 
@@ -217,7 +225,14 @@ create table if not exists agent_case_events (
 );
 create index if not exists agent_case_events_case_idx on agent_case_events (case_id, created_at);
 ```
-Append-only, sem RLS de UPDATE/DELETE (como `api_audit_log`). RLS select/insert por org.
+Append-only, sem RLS de UPDATE/DELETE (como `api_audit_log`). **RLS de SELECT por org — e só
+ela, desde a migration 0279**: a policy de INSERT saiu junto com o GRANT de escrita de
+`authenticated`, aqui e em `agent_cases`. Quem escreve caso é o motor (`pg.Pool` em
+`lib/agent-engine/agent/human-cases.ts`) e o cron (service role); nenhum caminho do produto
+escrevia por login de usuário, e enquanto a porta existiu um `viewer` reescrevia pelo PostgREST
+o texto que a equipe lê para decidir. Para ver o que está em vigor sem confiar nesta linha:
+`grep -nEi 'policy .*(agent_cases|agent_case_events)' supabase/baseline.sql`. Vigiado por
+`tests/invariants/caso-so-nasce-do-motor.test.ts`.
 
 ### 8.3 Alterações em tabelas existentes
 - `ai_agent_versions add column if not exists cases_enabled boolean not null default false;`
@@ -236,6 +251,11 @@ Reusa o shell `app/app/ai/inbox/` (assistente), **seção/tab própria "Casos"**
   - `[ Não consigo → escalar ]` → `human_action=escalate`
   - `[ Enviar p/ IA ]` → POST cria event `human_replied` + enfileira `case_reply_turn` (ou dispara handoff se `escalate`).
 - **Clareza (requisito):** o estado do caso é sempre visível (esperando você / esperando cliente / resolvido / escalado). A UI não deixa ambíguo de quem é a bola.
+- **Quem é avisado fora da tela, e quando** *(migration 0292, tela `/app/ai/cases/avisos`)*:
+  - **existe**: uma mensagem no WhatsApp de um número da equipe, **na ABERTURA do caso**, uma vez por caso. É opt-in de quem administra (`config_aviso_de_caso.ligado`), sai fora do horário comercial de propósito (a janela protege o cliente, e a equipe é interna) e o registro de cada tentativa fica em `entregas_de_aviso_de_caso`;
+  - **existe**: o vigia `case-stale-watcher`, que cobra até três vezes **na Central** o caso que ninguém abriu;
+  - **NÃO existe**: re-notificação quando o cliente responde e o caso volta de `awaiting_lead` para `awaiting_human`. O aviso não se repete, e a tela do aviso diz isso com essas palavras. Quem quiser acompanhar a volta usa a Central.
+
 - Rota API: `POST /api/v1/ai/cases/[id]/reply` — molde `app/api/v1/leads/[id]/win/route.ts`: `requireRole("agent", {requestId, resource})` (valida JWT via `getUser()`, org do cookie validado — nunca do body), Zod no body, `audit(...)`, `ok()`/`fail()`, `X-Request-Id`. **Sem rate-limit** (rota autenticada de staff, não pública — doutrina: rate-limit só em rota pública). `GET /api/v1/ai/cases` e `GET /api/v1/ai/cases/[id]` (detalhe + timeline) seguem o molde de `app/api/v1/ai/inbox/route.ts`.
 
 ---

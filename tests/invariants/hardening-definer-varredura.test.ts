@@ -67,6 +67,43 @@ const ANON_PERMITIDO: readonly Excecao[] = [];
  */
 const AUTHENTICATED_PERMITIDO: readonly Excecao[] = [
   {
+    fn: "fn_finalizar_comanda(uuid,uuid,uuid,integer)",
+    razao:
+      "POST app/api/v1/financeiro/comandas/[id]/finalizar/route.ts e " +
+      "app/api/v1/financeiro/comandas/faturar-lote/route.ts usam createClient da " +
+      "sessão — e aqui não é preferência, é requisito: a função começa por " +
+      "`auth.uid() is null` e recusa, então com a service key ela levanta " +
+      "`comanda_forbidden`. Definer porque as seis escritas (venda, item, comissão, " +
+      "lançamento na conta, ponto de fidelidade e conclusão do agendamento) têm de " +
+      "cair numa transação só, sob FOR UPDATE, e uma delas escreve em tabela que a " +
+      "policy do usuário não concede. A guarda de tenant é a mesma da casa: " +
+      "`fn_role_at_least(p_org, 'agent')` antes de qualquer escrita, e todo comando " +
+      "interno é fechado por organization_id.",
+  },
+  {
+    fn: "fn_estornar_comanda(uuid,uuid,text)",
+    razao:
+      "POST app/api/v1/financeiro/comandas/[id]/estornar/route.ts usa createClient da " +
+      "sessão. Estorno NÃO apaga: insere o contra-lançamento e carimba " +
+      "`reversed_at`, e é definer porque `fn_lancamento_pago_e_imutavel` fecha o " +
+      "UPDATE de lançamento pago para todo mundo — o caminho tem de ser este, e só " +
+      "este. Exige `fn_role_at_least(p_org, 'manager')`: desfazer dinheiro não é do " +
+      "mesmo papel que lançar.",
+  },
+  {
+    fn: "fn_passagem_devolvida(uuid,uuid)",
+    razao:
+      "POST app/api/v1/conversations/[id]/reactivate-bot/route.ts usa createClient da " +
+      "sessão e chama por lib/escalacao/retomada.ts — devolver o atendimento ao " +
+      "automático fecha a passagem aberta. Ela NÃO pode ser um update daqui: a policy " +
+      "de passagens_de_atendimento é `for select` apenas, de propósito, para ninguém " +
+      "reescrever um fato. A definer carrega a mesma guarda de fn_conversation_assign: " +
+      "com sessão, exige membro `agent`+ DAQUELA organização (fn_role_at_least), e o " +
+      "update é fechado por organization_id + conversation_id, só em linha ainda não " +
+      "reconhecida. tests/invariants/passagem-se-reconhece-sozinha.test.ts prova " +
+      "cross-org, viewer e a idempotência.",
+  },
+  {
     fn: "fn_reply_action(uuid,uuid,text,text,text,text)",
     razao:
       "POST app/api/v1/ai/replies/[id]/route.ts usa createClient da sessão. " +
@@ -136,6 +173,26 @@ const AUTHENTICATED_PERMITIDO: readonly Excecao[] = [
       "negação agent/viewer/cross-org e ausência de efeito recusado.",
   },
   {
+    fn: "fn_definir_colegas_podem_mexer_na_agenda(uuid,boolean)",
+    razao:
+      "app/actions/settings/definirAgendaDosColegas.ts chama por rpc com o " +
+      "createClient da SESSÃO, e a própria função reconfere auth.uid(), " +
+      "manager, suporte de escrita e MFA comprovado antes de gravar. " +
+      "tests/invariants/agenda-presenca-acl.test.ts prova manager da própria " +
+      "org com fator provado e a negação de agent, viewer, sessão aal1, anon " +
+      "e da org vizinha, com a configuração intacta depois das recusas.",
+  },
+  {
+    fn: "fn_definir_cliente_pela_agenda(uuid,boolean)",
+    razao:
+      "app/actions/settings/definirClientePelaAgenda.ts chama com createClient da sessão; " +
+      "auth.uid() exige admin da própria organização, suporte de escrita e MFA comprovado " +
+      "antes de gravar settings.crm e classificar o histórico. " +
+      "tests/invariants/cliente-nasce-do-agendamento.test.ts prova admin próprio, negação de " +
+      "manager/agent/viewer, admin de outra organização, sem sessão, aal1 com fator e suporte " +
+      "somente leitura/vencido.",
+  },
+  {
     fn: "emit_event(text,text,uuid,jsonb,jsonb,uuid)",
     razao:
       "Server Actions chamam com a sessão do usuário " +
@@ -163,6 +220,44 @@ const AUTHENTICATED_PERMITIDO: readonly Excecao[] = [
       "Chamada de dentro dos triggers de domínio; o grant a authenticated foi " +
       "declarado pela migration 0034 e não há call site de RPC para removê-lo " +
       "com segurança sem medir o disparo de cada trigger.",
+  },
+  {
+    fn: "fn_definir_aviso_de_caso(uuid,uuid,text,text,boolean,boolean)",
+    razao:
+      "A ÚNICA porta de escrita de `config_aviso_de_caso` — a tabela não tem " +
+      "INSERT/UPDATE/DELETE para authenticated, só `grant select` sob RLS de " +
+      "admin. A função exige, na MESMA transação: auth.uid() não nulo, " +
+      "fn_role_at_least(p_org,'admin'), fn_support_write_allowed(p_org), " +
+      "fn_session_mfa_proven(), E.164 no destino, canal DA organização e não " +
+      "arquivado, recusa do número da própria organização (o laço robô-com-robô) " +
+      "e recusa de número que já é contato, a menos que p_confirma_contato. " +
+      "tests/invariants/aviso-de-caso-escrita.test.ts prova agent e viewer " +
+      "recusados (42501), admin aprovado, admin de OUTRA organização recusado, " +
+      "canal do vizinho recusado e anon sem EXECUTE. " +
+      "⚠️ A TELA QUE A CHAMA COM A SESSÃO DO USUÁRIO É DA ONDA SEGUINTE " +
+      "(Configurações › Avisos de atendimento). Até ela existir, o grant é " +
+      "superfície sem consumidor — declarado aqui em vez de presumido —, e a " +
+      "função recusa tudo que não seja admin da própria organização.",
+  },
+  {
+    fn: "fn_vocabulario_de_tags_operar(uuid,text,text,text,text)",
+    razao:
+      "POST app/api/v1/tags/vocabulario/route.ts chama com createClient da " +
+      "sessão (a tela de Tags é manager+, com suporte de escrita e MFA). A " +
+      "função exige fn_role_at_least(p_org,'manager') ANTES de qualquer escrita, " +
+      "recusa ação fora do vocabulário e roda os três arrays, as sementes da " +
+      "organização e as ações add_tag de automation_rules numa transação só — é " +
+      "essa atomicidade que impede o rename de deixar a regra do agente " +
+      "apontando para o nome velho. " +
+      "A assinatura tem CINCO argumentos desde a 0336 (issue #1271): " +
+      "`p_cor text default null` para a ação `definir_cor`, que mexe só em " +
+      "organizations.settings.tags e sai antes dos laços (cor não mora nas " +
+      "linhas). " +
+      "tests/invariants/tags-vocabulario.test.ts prova duas orgs com a MESMA " +
+      "etiqueta (a de fora não é tocada), viewer recusado, anon sem EXECUTE, " +
+      "junção 'vip'+'VIP' sem duplicata e exclusão que informa — sem apagar — a " +
+      "regra do agente; tests/invariants/tags-cor-de-etiqueta.test.ts prova a " +
+      "cor.",
   },
 ];
 

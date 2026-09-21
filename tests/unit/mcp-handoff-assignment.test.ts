@@ -214,3 +214,84 @@ describe("crm_request_human_handoff v2 (INB-12 — roteamento G5 unificado)", ()
   });
 
 });
+
+/**
+ * O CONTEXTO QUE O AGENTE EXTERNO ESCREVE, E ONDE ELE PODE MORAR.
+ *
+ * Antes desta entrega a tool descartava tudo menos a intenção: `reason` era
+ * fixado em `"requested_human"` e o texto que o agente escreveu ia para
+ * `metadata.original_reason` — que o orquestrador copia inteiro para
+ * `api_audit_log.metadata`. **Nenhum papel tem GRANT de UPDATE ou DELETE nessa
+ * tabela, nem `service_role`**: texto livre de fora gravado ali é texto que a
+ * cascata de LGPD não consegue redigir. O destino certo é `content`, que a
+ * cascata alcança.
+ *
+ * E o catálogo MCP promete, desta tool, "entregando um resumo do que já
+ * aconteceu na conversa". Era falso: nada de resumo saía daqui. Com os campos
+ * novos a promessa vira verdade — por isso o texto do catálogo se mantém.
+ */
+describe("crm_request_human_handoff · o contexto para quem assume", () => {
+  it("aceita o que o agente já tentou e o que o cliente quer", async () => {
+    const state = stubState({ allowed: [] });
+    await crmRequestHumanHandoff.handler(
+      {
+        ...baseInput,
+        o_que_tentei: [{ o_que: "consultei a política de troca", desfecho: "só vale em 7 dias" }],
+        cliente_quer: "trocar depois de 20 dias",
+      },
+      makeCtx(state),
+    );
+    const chamada = vi.mocked(triggerHandoff).mock.calls.at(-1)?.[0];
+    expect(chamada?.declarado?.cliente_quer).toBe("trocar depois de 20 dias");
+    expect(chamada?.declarado?.tentativas).toHaveLength(1);
+  });
+
+  it("o `reason` do agente vai para o texto do motivo, NUNCA para o audit", async () => {
+    const state = stubState({ allowed: [] });
+    await crmRequestHumanHandoff.handler(
+      { ...baseInput, reason: "cliente muito irritado com a entrega" },
+      makeCtx(state),
+    );
+    const chamada = vi.mocked(triggerHandoff).mock.calls.at(-1)?.[0];
+    expect(chamada?.motivoTexto).toBe("cliente muito irritado com a entrega");
+    expect(
+      JSON.stringify(chamada?.metadata ?? {}),
+      "texto livre de fora numa tabela sem UPDATE nem DELETE para nenhum papel",
+    ).not.toContain("cliente muito irritado");
+    expect(chamada?.metadata).not.toHaveProperty("original_reason");
+  });
+
+  it("a origem declarada é a do agente externo — não se confunde com a nativa", async () => {
+    const state = stubState({ allowed: [] });
+    await crmRequestHumanHandoff.handler(baseInput, makeCtx(state));
+    expect(vi.mocked(triggerHandoff).mock.calls.at(-1)?.[0].origem).toBe("mcp_externo");
+  });
+
+  it("`next_action` deixa de mandar avisar quem o orquestrador JÁ avisou", async () => {
+    // O aviso ao cliente é o passo 0 de `triggerHandoff`, e acontece antes de a
+    // tool responder. Repetir "avise o cliente" aqui fazia o agente mandar a
+    // mesma coisa duas vezes.
+    vi.mocked(triggerHandoff).mockResolvedValueOnce({
+      triggered: true,
+      reason: "requested_human",
+      aviso: { avisado: true },
+    });
+    const r = (await crmRequestHumanHandoff.handler(baseInput, makeCtx(stubState({ allowed: [] })))) as {
+      next_action: string;
+    };
+    expect(r.next_action).toContain("já foi avisado");
+    expect(r.next_action).not.toMatch(/Avise o cliente/u);
+  });
+
+  it("quando o aviso NÃO saiu, a instrução muda — e não promete nada ao cliente", async () => {
+    vi.mocked(triggerHandoff).mockResolvedValueOnce({
+      triggered: true,
+      reason: "requested_human",
+      aviso: { avisado: false, porque: "na_fila_canal_fora", motivoCodigo: "na_fila_canal_fora" },
+    });
+    const r = (await crmRequestHumanHandoff.handler(baseInput, makeCtx(stubState({ allowed: [] })))) as {
+      next_action: string;
+    };
+    expect(r.next_action).toContain("Não foi possível avisar o cliente");
+  });
+});

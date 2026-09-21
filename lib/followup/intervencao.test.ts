@@ -9,7 +9,7 @@ import {
   retomadaApos,
   validaAdiamento,
 } from "./intervencao";
-import type { FlowEdge } from "./graph-schema";
+import type { FlowEdge, FlowNode } from "./graph-schema";
 
 const AGORA = new Date("2026-08-10T12:00:00.000Z");
 
@@ -101,6 +101,30 @@ describe("escolheSaida — pular sem decidir pelo operador", () => {
       // decisão foi de um modelo e não de uma regra fixa.
       expect(r.opcoes[0]?.quando).toBe("quando a IA classifica a resposta como “quente”");
     }
+  });
+
+  it("as opções nomeiam a etapa da regra pelo nome, não pelo id que o motor compara", () => {
+    const ID_DA_ETAPA = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b";
+    const origem: FlowNode = {
+      id: "no-atual",
+      type: "condition",
+      label: "Pagou?",
+      position: { x: 0, y: 0 },
+      config: {
+        branching: "per_check",
+        combinator: "and",
+        checks: [{ id: "regra-1", field: "lead_stage", op: "eq", value: ID_DA_ETAPA }],
+      },
+    };
+    const r = escolheSaida(
+      [edge("e1", "a", 1, { type: "branch", branch_id: "regra-1" }), edge("e2", "b", 0)],
+      "no-atual",
+      null,
+      origem,
+      { etapa: (id) => (id === ID_DA_ETAPA ? "Pago · Vendas" : null) },
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.opcoes[0]?.quando).toBe("quando o lead está na etapa “Pago · Vendas”");
   });
 
   it("com a escolha feita, respeita a escolha", () => {

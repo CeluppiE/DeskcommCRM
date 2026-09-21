@@ -97,6 +97,34 @@ export interface Lead {
   external_id: string | null;
   custom_fields: Record<string, unknown>;
   tags: string[];
+  /**
+   * Derivado (não é coluna): os marcadores do CONTATO deste negócio.
+   *
+   * O produto tem DUAS caixas de marcador e elas não são a mesma: `tags`, acima,
+   * é do negócio e se escreve em "Editar lead"; esta é da pessoa, e se escreve
+   * no Inbox e na ficha — é a que a campanha lê. O quadro precisa das duas para
+   * o filtro não mentir, e por não ser coluna ela é opcional: um negócio sem
+   * contato (criado à mão ou por webhook) simplesmente não tem.
+   */
+  contact_tags?: string[];
+  /**
+   * Derivado (não é coluna): telefone, e-mail e links (Instagram, site, Google
+   * Meu Negócio…) do CONTATO deste negócio — o que o card do funil mostra sem
+   * abrir o dossiê. Ausente quando o negócio não tem contato, o contato foi
+   * anonimizado (LGPD) ou o campo está vazio: o payload do quadro não engorda.
+   * Os links vêm de `contacts.custom_fields` (`lib/leads/links-de-contato.ts`),
+   * já validados — só http/https.
+   */
+  contact_phone?: string;
+  contact_email?: string;
+  contact_links?: Array<{ tipo: string; href: string }>;
+  /**
+   * Derivado (não é coluna): os marcadores das CONVERSAS do contato deste
+   * negócio — a terceira caixa, "Tags da conversa" no painel do Inbox, onde a
+   * IA também escreve. União de TODAS as conversas do contato, não só da mais
+   * recente. Filtrar por ela é decisão do dono (doc 40, item 7, 19/09).
+   */
+  conversation_tags?: string[];
   created_at: string;
   updated_at: string;
   created_by_user_id: string | null;

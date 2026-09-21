@@ -28,6 +28,18 @@ export interface AtribuicaoDeAnuncio {
   plataforma: PlataformaDeAnuncio;
   /** `ctwa_clid` — identifica o clique específico que abriu a conversa. */
   sourceId: string | null;
+  /**
+   * O ANÚNCIO, que não é o clique.
+   *
+   * Existe como campo próprio porque os dois vinham disputando `sourceId`: o
+   * extrator preferia o `ctwa_clid` e caía para o id do anúncio só na ausência
+   * dele, então o payload que trazia os DOIS perdia o segundo em silêncio — ele
+   * sobrevivia só dentro de `bruto`, que ninguém consulta para responder "de
+   * qual anúncio veio". Um clique identifica uma pessoa numa hora; um anúncio
+   * identifica a peça que milhares de pessoas viram. São perguntas diferentes,
+   * e é o anúncio que tem nome, conjunto e campanha para resolver depois.
+   */
+  adId: string | null;
   /** Título/headline do anúncio, quando o payload o traz. */
   titulo: string | null;
   corpo: string | null;
@@ -52,18 +64,28 @@ export const str = (v: unknown): string | null =>
  * de `source_metadata` ATOMICAMENTE no banco (não aqui): duas mensagens quase
  * simultâneas do mesmo contato novo não podem correr a corrida de leitura e
  * escrita em JS e uma pisar na outra.
+ * Organização é parâmetro OBRIGATÓRIO (issue #1248). A função é
+ * `security definer` e o único limite era o `p_contact` que o chamador mandava
+ * — uma chamada de service_role escrevia no contato de QUALQUER organização.
+ * O `where` da função passou a casar `organization_id = p_org`: contato de
+ * outra organização não casa linha nenhuma, em silêncio, como a guarda de
+ * primeiro toque. Sem a organização não há chamada — a assinatura de três
+ * argumentos foi derrubada no banco de propósito.
  */
 export async function estamparAtribuicaoDoContato(
   admin: SupabaseClient,
+  organizationId: string,
   contactId: string,
   atribuicao: AtribuicaoDeAnuncio,
 ): Promise<void> {
   const { error } = await admin.rpc("fn_estampar_atribuicao_de_anuncio" as never, {
+    p_org: organizationId,
     p_contact: contactId,
     p_platform: atribuicao.plataforma,
     p_metadata: {
       ad_platform: atribuicao.plataforma,
       ad_source_id: atribuicao.sourceId,
+      ad_id: atribuicao.adId,
       ad_title: atribuicao.titulo,
       ad_body: atribuicao.corpo,
       ad_source_url: atribuicao.sourceUrl,

@@ -44,6 +44,19 @@ export const TOOLS_RETENCAO = declararTools([
     pacotes: ["reter"],
   },
   {
+    name: "crm_enroll_followup_flow",
+    category: "write",
+    rotulo: "Iniciar um acompanhamento configurado",
+    explicacao:
+      "Coloca o cliente num acompanhamento já montado na tela, que decide quando falar, o que dizer e quando parar.",
+    oQueToca: "Retornos e acompanhamento",
+    // Mesmo nível de `crm_schedule_followup`, e pelo mesmo motivo: inscrever não
+    // fala com ninguém agora. Cada envio do fluxo passa pelos portões de sempre,
+    // e o acompanhamento aparece na fila com botão de cancelar.
+    risco: "atencao",
+    pacotes: ["reter"],
+  },
+  {
     name: "crm_cancel_followup",
     category: "write",
     rotulo: "Cancelar um retorno agendado",

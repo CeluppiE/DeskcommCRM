@@ -81,6 +81,7 @@ function makeDb(pointers: Row[], versions: Row[], stages: Row[] = []) {
     function matches(row: Row): boolean {
       return filters.every(([k, v]) => {
         if (k === "surface") return (row.surface ?? "followup") === v;
+        if (v instanceof Set) return v.has(row[k]);
         return row[k] === v;
       });
     }
@@ -171,6 +172,10 @@ function makeDb(pointers: Row[], versions: Row[], stages: Row[] = []) {
       },
       eq(col: string, val: unknown) {
         filters.push([col, val]);
+        return b;
+      },
+      in(col: string, vals: unknown[]) {
+        filters.push([col, new Set(vals)]);
         return b;
       },
       order(col: string, opts?: { ascending?: boolean }) {
@@ -556,6 +561,78 @@ describe("POST /api/v1/ai/followup-flows/:id/publish", () => {
       .select()
       .eq("id", "33333333-3333-4333-8333-333333333333")) as { data: Row[] };
     expect(pointerRows[0]!.status).toBe("active");
+  });
+
+  /**
+   * A regra de etapa do nó de condição guarda o `stage_id`, e só o banco sabe se
+   * ele existe. Antes do seletor, a tela aceitava o NOME digitado ("PAGO"), que o
+   * motor nunca casa — e o fluxo publicava com a regra morta. A rota lê as etapas
+   * citadas FILTRANDO a organização: id de etapa de outra org é etapa que não existe.
+   */
+  describe("regra de etapa no nó de condição", () => {
+    const STAGE_ID = "55555555-5555-4555-8555-555555555555";
+    const POINTER_ID = "33333333-3333-4333-8333-333333333333";
+    const comRegraDeEtapa = (valor: string): FlowGraph => ({
+      nodes: [
+        trigger("t1"),
+        {
+          id: "c1",
+          type: "condition",
+          label: "c1",
+          position: pos,
+          config: { combinator: "and", checks: [{ field: "lead_stage", op: "eq", value: valor }] },
+        },
+        end("e1"),
+      ],
+      edges: [
+        edge("edge1", "t1", "c1"),
+        { id: "edge2", source: "c1", target: "e1", priority: 0, condition: { type: "cond_result", value: true } },
+        { id: "edge3", source: "c1", target: "e1", priority: 0, condition: { type: "cond_result", value: false } },
+      ],
+    });
+    const publicar = async (valor: string, stages: Row[]) => {
+      const db = makeDb(
+        [{ id: POINTER_ID, organization_id: ORG_ID, status: "draft", draft_graph: comRegraDeEtapa(valor) }],
+        [],
+        stages,
+      );
+      session("manager", db);
+      const { POST } = await import("@/app/api/v1/ai/followup-flows/[id]/publish/route");
+      return POST(req("POST"), ctx(POINTER_ID));
+    };
+    const codigos = async (res: Response) =>
+      ((await res.json()) as { error: { details: { errors: Array<{ code: string }> } } }).error.details.errors.map(
+        (e) => e.code,
+      );
+
+    it("etapa ativa da organização → publica", async () => {
+      const res = await publicar(STAGE_ID, [
+        { id: STAGE_ID, organization_id: ORG_ID, name: "Pago", is_archived: false, crm_pipelines: { name: "Vendas" } },
+      ]);
+      expect(res.status).toBe(200);
+    });
+
+    it("nome digitado à mão (fluxo antigo) → 422 check_stage_not_found", async () => {
+      const res = await publicar("PAGO", []);
+      expect(res.status).toBe(422);
+      expect(await codigos(res)).toEqual(["check_stage_not_found"]);
+    });
+
+    it("etapa de OUTRA organização → 422, igual a etapa que não existe", async () => {
+      const res = await publicar(STAGE_ID, [
+        { id: STAGE_ID, organization_id: OTHER_ORG_ID, name: "Pago", is_archived: false, crm_pipelines: { name: "Vendas" } },
+      ]);
+      expect(res.status).toBe(422);
+      expect(await codigos(res)).toEqual(["check_stage_not_found"]);
+    });
+
+    it("etapa arquivada → 422 check_stage_archived", async () => {
+      const res = await publicar(STAGE_ID, [
+        { id: STAGE_ID, organization_id: ORG_ID, name: "Pago", is_archived: true, crm_pipelines: { name: "Vendas" } },
+      ]);
+      expect(res.status).toBe(422);
+      expect(await codigos(res)).toEqual(["check_stage_archived"]);
+    });
   });
 
   it("kind conhecido mas SEM motor ('conversation_end') → 422 trigger_kind_not_implemented", async () => {

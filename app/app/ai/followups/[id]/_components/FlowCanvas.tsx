@@ -30,6 +30,7 @@ import {
   type RFNodeData,
 } from "@/lib/followup/graph-mappers";
 import { conditionLabel } from "@/lib/followup/edge-condition-options";
+import { nextSequenceId } from "@/lib/followup/next-sequence-id";
 import {
   branchIdForCondition,
   conditionForBranch,
@@ -46,6 +47,7 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Plus, X } from "@/lib/ui/icons";
 import { NodeConfigPanel } from "./NodeConfigPanel";
 import { EdgeConfigPanel } from "./EdgeConfigPanel";
+import { EtapasDoFluxoProvider, useEtapasDoFluxo } from "./EtapasDoFluxo";
 import { NodePalette } from "./NodePalette";
 import { PublishBar } from "./PublishBar";
 import { NODE_VISUALS } from "./nodes/nodeVisuals";
@@ -81,6 +83,7 @@ interface Props {
 
 function FlowCanvasInner({ flowId, initialData }: Props) {
   const t = useT();
+  const { nomes } = useEtapasDoFluxo();
   const { data: flow } = useFollowupFlow(flowId, { initialData });
   // `initial` seeds React Flow state ONCE on mount — it must NOT react to
   // `flow` changing on every refetch (that would clobber in-progress edits).
@@ -92,8 +95,11 @@ function FlowCanvasInner({ flowId, initialData }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState<RFNode>(initial.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<RFEdge>(initial.edges);
   const [savedGraph, setSavedGraph] = useState<FlowGraph>(initialData.draft_graph ?? EMPTY_GRAPH);
-  const nextId = useRef(1);
-  const nextEdgeId = useRef(1);
+  // Continue after the largest persisted suffix. Starting again at 1 makes a
+  // newly-created node/edge reuse an existing React Flow key and visually
+  // replace a connection in older drafts.
+  const nextId = useRef(nextSequenceId(initial.nodes.map((node) => node.id)));
+  const nextEdgeId = useRef(nextSequenceId(initial.edges.map((edge) => edge.id)));
   const { screenToFlowPosition, fitView } = useReactFlow();
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -164,11 +170,11 @@ function FlowCanvasInner({ flowId, initialData }: Props) {
         return {
           ...e,
           type: "smoothstep" as const,
-          label: branch ? t(rotuloDoRamo(branch)) : t(conditionLabel(condition)),
+          label: branch ? t(rotuloDoRamo(branch, nomes)) : t(conditionLabel(condition)),
           selected: e.id === selectedEdgeId,
         };
       }),
-    [edges, nodes, selectedEdgeId, t],
+    [edges, nodes, selectedEdgeId, t, nomes],
   );
 
   // Quais saídas do nó selecionado já têm aresta. Quem sabe isso é o canvas —
@@ -261,7 +267,7 @@ function FlowCanvasInner({ flowId, initialData }: Props) {
         height: n.measured?.height ?? estimateNodeSize(toFlowNode(n)).height,
       });
     }
-    const laid = layoutFlowGraph(liveGraph, sizes);
+    const laid = layoutFlowGraph(liveGraph, sizes, nomes);
     const pos = new Map(laid.nodes.map((n) => [n.id, n.position]));
     setNodes((nds) =>
       nds.map((n) => {
@@ -337,7 +343,13 @@ function FlowCanvasInner({ flowId, initialData }: Props) {
             onPaneClick={onPaneClick}
             defaultEdgeOptions={{ type: "smoothstep" }}
             connectionLineType={ConnectionLineType.SmoothStep}
-            fitView
+            // Enquadrar só o que já existia ao abrir. Num fluxo vazio o XYFlow
+            // guarda o enquadramento para quando o PRIMEIRO nó for medido — e
+            // enquadrar um nó só é ampliá-lo ao zoom máximo (2x): quem acabou de
+            // criar o fluxo clica em "Gatilho" e a tela salta para 200%, com os
+            // nós seguintes nascendo fora da vista (medido no trace do e2e
+            // followup-cartoes: scale 1 → 2 logo após o primeiro clique).
+            fitView={initial.nodes.length > 0}
           >
             <Background />
             <Controls />
@@ -429,7 +441,9 @@ function FlowCanvasInner({ flowId, initialData }: Props) {
 export function FlowCanvas(props: Props) {
   return (
     <ReactFlowProvider>
-      <FlowCanvasInner {...props} />
+      <EtapasDoFluxoProvider>
+        <FlowCanvasInner {...props} />
+      </EtapasDoFluxoProvider>
     </ReactFlowProvider>
   );
 }

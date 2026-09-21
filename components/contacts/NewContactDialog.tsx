@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { normalizarTags } from "@/lib/contacts/tag-normalizada";
 import { contactCreateSchema, type ContactCreate } from "@/lib/schemas/contacts";
 import type { Contact } from "@/lib/types/contacts";
 import { useCreateContact } from "@/hooks/contacts/useCreateContact";
@@ -56,10 +57,9 @@ export function NewContactDialog({ open, onOpenChange, nomeInicial, onCriado }: 
 
   async function onSubmit(values: FormShape) {
     setServerError(null);
-    const tags = (values.tagsRaw ?? "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
+    // A MESMA normalização da API (lib/contacts/tag-normalizada): o que a ficha
+    // grava é o que o filtro `?tag=` casa (issue #1224).
+    const tags = normalizarTags((values.tagsRaw ?? "").split(","));
 
     const payload: Record<string, unknown> = { source: "manual" };
     if (values.name?.trim()) payload.name = values.name.trim();
@@ -106,7 +106,7 @@ export function NewContactDialog({ open, onOpenChange, nomeInicial, onCriado }: 
             <Input id="name" {...form.register("name")} />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="email">Email</Label>
+            <Label htmlFor="email">{t("Email")}</Label>
             <Input id="email" type="email" {...form.register("email")} />
           </div>
           <div className="space-y-2">

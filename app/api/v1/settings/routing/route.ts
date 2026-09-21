@@ -36,6 +36,7 @@ import { ApiError } from "@/lib/api/types";
 import { audit } from "@/lib/audit";
 import { requireRole } from "@/lib/auth/require-role";
 import { atendimentoConfigPatchSchema, routingConfigSchema, validateRequest } from "@/lib/schemas";
+import { mesclarSettingsDeAtendimento } from "@/lib/schemas/routing";
 import { DEFAULT_VISIBILITY_MODE, type VisibilityMode } from "@/lib/auth/types";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
@@ -118,13 +119,10 @@ export async function PATCH(req: NextRequest): Promise<Response> {
   if (readErr) return fail("internal_error", readErr.message, 500, { requestId });
 
   const currentSettings = (orgRow?.settings as Record<string, unknown> | null) ?? {};
-  const { visibility_mode, ...routing } = input;
-  // Merge não-destrutivo em DOIS níveis: preserva as demais chaves de `settings`
-  // e, quando `visibility_mode` não vem no corpo, preserva a que já valia — um
-  // cliente antigo (que só conhece o roteamento) não pode desligar a restrição
-  // de visibilidade sem pedir.
-  const nextSettings: Record<string, unknown> = { ...currentSettings, routing };
-  if (visibility_mode !== undefined) nextSettings.visibility_mode = visibility_mode;
+  const { visibility_mode } = input;
+  // A mescla (não-destrutiva em dois níveis) mora em `lib/schemas/routing.ts`,
+  // onde o teste a lê pela mesma função.
+  const { settings: nextSettings, routing } = mesclarSettingsDeAtendimento(currentSettings, input);
 
   const { error: updErr } = await supabase
     .from("organizations")

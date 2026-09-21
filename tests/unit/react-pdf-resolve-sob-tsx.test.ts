@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
  * `require`, QUALQUER import estático de `@react-pdf/renderer` (usado pelo
  * PDF de exportação LGPD, `lib/lgpd/pdf-renderer.tsx`) derrubava
  * `carregarDeps()` com `ERR_PACKAGE_PATH_NOT_EXPORTED` — e como
- * `register-handlers.ts` registra os 12 handlers num só import chain, UM
+ * `register-handlers.ts` registra TODOS os handlers num só import chain, UM
  * pacote quebrado tirava o laço rápido de TODOS, não só do LGPD (medido em
  * VPS, 2026-09-08: warn "event-log drain OFF" a cada boot do worker,
  * handlers caindo pro cron de 1×/min).

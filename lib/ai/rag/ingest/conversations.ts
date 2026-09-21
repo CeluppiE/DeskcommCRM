@@ -21,7 +21,8 @@
 
 import { embedText } from "@/lib/ai/embed";
 import { resolverChaveDeEmbedding } from "@/lib/ai/embeddings/chave";
-import { anonymize, detectResidualPii } from "@/lib/ai/anonymize";
+import { anonymize, detectResidualPii, padroesDePii } from "@/lib/ai/anonymize";
+import { perfilDaOrganizacao } from "@/lib/legal/perfil-do-pais";
 import { chunkText, computeContentHash } from "@/lib/ai/rag/chunker";
 import {
   activateVersion,
@@ -197,6 +198,11 @@ export async function ingestConversationsBatch(
   let skipped = 0;
   let totalChunkInserts = 0;
 
+  // O perfil do PAÍS da organização (issue #1033): o mesmo conjunto de padrões
+  // anonimiza e vigia. Resolvido UMA vez por rodada — ler por conversa daria o
+  // mesmo resultado e uma consulta por conversa.
+  const padroes = padroesDePii([await perfilDaOrganizacao(admin, organizationId)]);
+
   for (const conv of conversations) {
     // Defense in depth: re-check org id.
     if (conv.organization_id !== organizationId) {
@@ -236,7 +242,7 @@ export async function ingestConversationsBatch(
     }
 
     // b. Anonymize.
-    const { anonymized, hits } = anonymize(transcript);
+    const { anonymized, hits } = anonymize(transcript, padroes);
 
     // c. False-negative guard: long conversation with zero PII signal is
     //    suspicious -> route to manual review, do NOT ingest.
@@ -264,7 +270,7 @@ export async function ingestConversationsBatch(
     // e. Final leak guard.
     let leaked = false;
     for (const chunk of chunks) {
-      const residual = detectResidualPii(chunk);
+      const residual = detectResidualPii(chunk, padroes);
       if (residual) {
         console.error(
           `[kb-conversations] PII LEAK detected (${residual}) -- skipping conversation`,

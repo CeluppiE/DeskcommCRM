@@ -157,7 +157,16 @@ export type ActivityType =
    * doutrina de migrations), então o banco aceitaria a divergência calado e a
    * timeline cairia no fallback.
    */
-  | "contacts_merged";
+  | "contacts_merged"
+  /**
+   * O negócio nasceu da TROCA DE FUNIL (`POST /api/v1/leads/[id]/clone`).
+   *
+   * ⚠️ Não é `lead_created`: aquele rótulo diz "Entrou pelo WhatsApp", e este
+   * negócio não entrou por canal nenhum — ele veio de outro funil, e é isso que
+   * quem abre o card no destino precisa ler. O outro lado da troca é a
+   * `demand_closed` da origem, com a razão "Levado para o funil X".
+   */
+  | "moved_from_pipeline";
 
 export const ACTIVITY_LABELS: Record<ActivityType, string> = {
   lead_created: "Entrou pelo WhatsApp",
@@ -257,6 +266,7 @@ export const ACTIVITY_LABELS: Record<ActivityType, string> = {
   // cadastros da mesma pessoa viraram um — e é por isso que este negócio pode
   // ter mudado de contato sem ninguém tê-lo movido.
   contacts_merged: "Contatos duplicados juntados",
+  moved_from_pipeline: "Veio de outro funil",
 };
 
 /** Quando o tipo é legado/desconhecido, a linha ainda é honesta — sem jargão. */

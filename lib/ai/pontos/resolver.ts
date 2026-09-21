@@ -149,6 +149,13 @@ export const PONTOS_QUE_HERDAM_DO_AGENTE: ReadonlySet<string> = new Set([
   "checkpoint",
   "draft_suggestion",
   "automation_ai_message",
+  "prospecting_agent_setup_chat",
+  // migration 0281 — a consulta interna da equipe sobre um caso herda do agente
+  // que ABRIU aquele caso (`lib/agent-engine/agent/conversa-do-caso.ts` passa
+  // `model` e `llmOverride` no mesmo objeto). NUNCA em
+  // `PONTOS_DO_AGENTE_PUBLICADO`: lá a escolha pertence à versão publicada, o
+  // painel vira somente leitura, e "configurável por organização" morreria.
+  "case_chat",
 ]);
 
 export function decidirBinding(entrada: EntradaDaDecisao): DecisaoDeBinding {

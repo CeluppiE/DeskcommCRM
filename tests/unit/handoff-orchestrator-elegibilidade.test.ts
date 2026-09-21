@@ -58,7 +58,7 @@ beforeEach(() => {
 describe("triggerHandoff · gate de elegibilidade", () => {
   it("gate 'allowlist' + não autorizado (bloqueioPorAllowlist) → NÃO dispara, NÃO avisa, NÃO mexe na conversa", async () => {
     decidir.mockResolvedValue({ permite: false, motivo: "sem_autorizacao", bloqueioPorAllowlist: true });
-    const r = await triggerHandoff({ conversationId: CONV, organizationId: ORG, reason: "low_sentiment" });
+    const r = await triggerHandoff({ conversationId: CONV, organizationId: ORG, reason: "low_sentiment", origem: "sentimento" });
     expect(r.triggered).toBe(false);
     expect(r.reason).toContain("nao_elegivel");
     expect(avisarLeadDoCrm).not.toHaveBeenCalled();
@@ -67,14 +67,14 @@ describe("triggerHandoff · gate de elegibilidade", () => {
 
   it("já duravelmente silenciada (conversa_silenciada) → NÃO re-dispara nem re-avisa", async () => {
     decidir.mockResolvedValue({ permite: false, motivo: "conversa_silenciada", bloqueioPorAllowlist: false });
-    const r = await triggerHandoff({ conversationId: CONV, organizationId: ORG, reason: "low_confidence" });
+    const r = await triggerHandoff({ conversationId: CONV, organizationId: ORG, reason: "low_confidence", origem: "legado_confianca" });
     expect(r.triggered).toBe(false);
     expect(avisarLeadDoCrm).not.toHaveBeenCalled();
   });
 
   it("erro ao ler elegibilidade → NÃO dispara (fail-closed, o evento re-tenta)", async () => {
     decidir.mockRejectedValue(new Error("db down"));
-    const r = await triggerHandoff({ conversationId: CONV, organizationId: ORG, reason: "low_sentiment" });
+    const r = await triggerHandoff({ conversationId: CONV, organizationId: ORG, reason: "low_sentiment", origem: "sentimento" });
     expect(r.triggered).toBe(false);
     expect(r.reason).toBe("elegibilidade_indeterminada");
     expect(avisarLeadDoCrm).not.toHaveBeenCalled();
@@ -82,7 +82,7 @@ describe("triggerHandoff · gate de elegibilidade", () => {
 
   it("conversa elegível (permite) → segue: avisa o lead", async () => {
     decidir.mockResolvedValue({ permite: true, motivo: "autorizado", bloqueioPorAllowlist: false });
-    const r = await triggerHandoff({ conversationId: CONV, organizationId: ORG, reason: "requested_human" });
+    const r = await triggerHandoff({ conversationId: CONV, organizationId: ORG, reason: "requested_human", origem: "legado_pedido" });
     expect(avisarLeadDoCrm).toHaveBeenCalledOnce();
     expect(r.triggered).toBe(true);
   });

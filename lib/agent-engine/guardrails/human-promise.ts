@@ -82,7 +82,7 @@ function buildPatterns(target: string): RegExp[] {
     // (2c) ESTADO passivo alegado — não uma promessa de AÇÃO futura (vai resolver),
     //      e sim uma AFIRMAÇÃO de que já está sendo tratado agora: "está em análise
     //      pela equipe", "ficou em análise com o responsável". Achado em produção
-    //      (tenant YADEA, 2026-08-30): o agente respondeu a uma reclamação de garantia
+    //      (2026-08-30): o agente respondeu a uma reclamação de garantia
     //      de quase 1 dia dizendo que estava "em análise pela equipe responsável" sem
     //      NENHUM caso aberto — as 7 regras acima exigem verbo de AÇÃO (vai/vamos/
     //      encaminho) e nenhuma casa uma alegação de estado já em curso.
@@ -120,11 +120,11 @@ function escapeRegex(word: string): string {
  * conservador (spec §10.2). Vazio/whitespace = false.
  *
  * `extraHumanNames` (opcional) — nome(s) próprio(s) que o PROMPT do tenant usa
- * para a retaguarda humana (ex.: "Fernando", o gerente citado no system_prompt
- * do agente YADEA). Sem isto, um agente cujo prompt nomeia a pessoa em vez do
- * cargo ("vou confirmar com o Fernando") escapa 100% do detector — TARGET só
- * conhece cargos genéricos (medido em produção, 2026-08-29/30, tenant YADEA:
- * dezenas de promessas nomeando "Fernando", 1 só detecção em 3 dias). A fonte
+ * para a retaguarda humana (ex.: "Fulano", o gerente citado no system_prompt
+ * de um agente em produção). Sem isto, um agente cujo prompt nomeia a pessoa em vez do
+ * cargo ("vou confirmar com o Fulano") escapa 100% do detector — TARGET só
+ * conhece cargos genéricos (medido em produção, 2026-08-29/30:
+ * dezenas de promessas nomeando o gerente pelo nome, 1 só detecção em 3 dias). A fonte
  * natural é `ai_agent_versions.handoff_keywords` — já é o vocabulário que o
  * tenant escreveu pra "isto é uma pessoa/situação que exige humano" (reusado
  * hoje só do lado do CLIENTE, em `matchesHandoffKeyword`); aqui aplicamos o

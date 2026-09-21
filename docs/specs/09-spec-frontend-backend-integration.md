@@ -56,7 +56,7 @@ Esta tabela é a **primeira coisa a consultar** ao começar uma feature.
 | Read interativo (filtros, busca, refetch on-focus) | TanStack Query (`@tanstack/react-query`) + Supabase browser client | Cache compartilhado entre rotas, stale-while-revalidate, optimistic, invalidations cruzadas | A página é puramente RSC e o estado vive na URL |
 | Mutation de form simples | Server Action (`'use server'`) | DX limpa, progressive enhancement, `revalidatePath`/`revalidateTag` integrado, sem boilerplate de fetch | Mutation precisa de optimistic UI complexo, retorno parcial streamado, ou roda fora do fluxo de form |
 | Mutation com optimistic UI (drag-drop, send message, claim) | TanStack Query `useMutation` + API route `/api/v1/*` via `apiClient` | Controle fino de `onMutate`/`onError`/`onSuccess`, rollback explícito, `Idempotency-Key` automática | A mutation é simples e cabe num form com `useFormState` |
-| Mutation server-to-server (webhooks externos chamando back) | API Route com Bearer auth (`Authorization: Bearer tok_...`) | Padrão REST canônico, audit log integrado, isolamento sem cookie | Operação iniciada por um humano logado |
+| Mutation server-to-server (webhooks externos chamando back) | API Route com Bearer auth (`Authorization: Bearer dsk_...`) | Padrão REST canônico, audit log integrado, isolamento sem cookie | Operação iniciada por um humano logado |
 | Realtime updates (inbox, kanban, channel session, presence) | Supabase Realtime via `useRealtimeChannel` hook | Push automático com RLS aplicada nos eventos, escala sem worker próprio | Estado local muda a cada keystroke (use `useState`); mudança não tem mais de 1 observador |
 | File upload (mídia WhatsApp, política em PDF) | Direct upload pro Supabase Storage com signed URL | Bypass do servidor pra arquivos grandes, sem ocupar serverless function por minuto | Arquivos <100KB: passar direto via Server Action é mais simples |
 
@@ -169,7 +169,7 @@ sequenceDiagram
   participant DB as api_tokens
   participant Adm as Supabase admin client
 
-  Ext->>API: GET /api/v1/leads<br/>Authorization: Bearer tok_live_...
+  Ext->>API: GET /api/v1/leads<br/>Authorization: Bearer dsk_<prefixo>_<segredo>
   API->>DB: SELECT org_id, scopes, revoked_at, expires_at<br/>WHERE token_hash = sha256($token)
   DB-->>API: { org_id, scopes }
   API->>API: requestContext.set({ orgId, scopes, requestId })

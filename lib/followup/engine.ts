@@ -27,12 +27,14 @@ import {
   ehConfirmacao,
   latestRepeatIndex,
   occupancyEventCount,
+  rechecksOciososDaAcao,
   actionTurnCompleted,
   processNode,
   repeatTakenFromEvents,
   repeatTotalFromEvents,
   resolveWaitPhase,
   selectEdge,
+  ultimoDesfechoDe,
   type EnrollmentEventRef,
   type EnrollmentOutcome,
   type EnrollmentRow,
@@ -537,6 +539,33 @@ async function processEnrollment(
       return;
     }
     if (!(error instanceof StaleServiceBoundaryError)) throw error;
+    // ⚠️ A ESPERA LONGA MORRE AQUI, E NÃO PODE MORRER CALADA.
+    //
+    // A fronteira é congelada quando a inscrição nasce, e fica stale quando a
+    // conversa fecha, a demanda fecha ou `service_revision` muda — o que, num
+    // retorno de semanas, é provável e é justamente o que caracteriza um
+    // retorno: o atendimento que o originou ACABOU. Quem espera dias volta e
+    // encontra a inscrição cancelada com um motivo que parece rotina.
+    //
+    // Reancorar aqui não é opção: `beginServiceAtOrigin` é explícito em
+    // "nunca usado por job/tick/retry", e fronteira nula é recusada de
+    // propósito (`assertCurrentServiceBoundary`, e o teste que a vigia). Enquanto
+    // a decisão de arquitetura não vem, o dever é tornar a perda VISÍVEL — um
+    // acompanhamento que some sem aviso é a ilha que a doutrina proíbe.
+    if (enrollment.status === "dormente") {
+      const nome =
+        (await db.loadFlowPointerName(enrollment.organization_id, enrollment.pointer_id)) ??
+        enrollment.pointer_id;
+      await db.insertDeadInboxItem({
+        organization_id: enrollment.organization_id,
+        title: "Um retorno programado não pôde ser enviado",
+        body:
+          `O fluxo "${nome}" esperava a data do retorno, mas o atendimento que o originou ` +
+          `foi encerrado ou substituído no meio da espera, e o envio foi cancelado ` +
+          `(enrollment ${enrollment.id}). Fale com o contato por outro caminho se ainda fizer sentido.`,
+        ref_id: enrollment.id,
+      });
+    }
     await db.updateEnrollment(enrollment.id, enrollment.organization_id, { status: "cancelled", cancel_reason: "Atendimento encerrado ou substituído", claimed_until: null, completed_at: clock().toISOString() });
     return;
   }
@@ -562,6 +591,8 @@ async function processEnrollment(
     lead_stage: leadRow.lead_stage,
     tags: leadRow.tags,
     steps_taken: enrollment.steps_taken,
+    // Preenchido LOGO ABAIXO, depois que os eventos forem lidos: o desfecho do
+    // passo anterior é dado que mora nos eventos, não na linha do lead.
     last_outcome: null,
     contact_name: leadRow.contact_name ?? null,
     custom_fields: leadRow.custom_fields,
@@ -586,10 +617,18 @@ async function processEnrollment(
     node.type === "ai_classify" ||
     node.type === "match_reply" ||
     node.type === "action" ||
-    node.type === "repeat";
+    node.type === "repeat" ||
+    // O `condition` só entra aqui por causa de `last_outcome`: o desfecho do
+    // passo anterior mora nos eventos (evento `ai_classified`), e sem lê-los o
+    // motor avaliava a condição contra `null` fixo — controle decorativo.
+    node.type === "condition";
 
   if (precisaEventos) {
     events = await db.loadEnrollmentEvents(enrollment.id);
+  }
+
+  if (node.type === "condition") {
+    lead.last_outcome = ultimoDesfechoDe(events);
   }
 
   if (vaiPlanejar) {
@@ -612,7 +651,10 @@ async function processEnrollment(
     }
     if (node.type === "action") {
       actionEnqueued = waitElapsed;
-      actionRecheckCount = occupancyEventCount(events, node.id);
+      // NÃO é `occupancyEventCount`: o dead-man mede ociosidade DESDE A ÚLTIMA
+      // prova de vida do turno, e um adiamento de janela é prova de vida. Ver
+      // `rechecksOciososDaAcao` / `EVENTO_ACAO_ADIADA` em node-handlers.ts.
+      actionRecheckCount = rechecksOciososDaAcao(events, node.id);
       actionCompleted = actionTurnCompleted(events, node.id);
     }
   }

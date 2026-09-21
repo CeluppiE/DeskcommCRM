@@ -19,6 +19,12 @@ build/
 .env*
 !.env.example
 !.env.hostgator.example
+!.env.voip.example
+
+# Asterisk — credenciais reais do trunk SIP/ARI (módulo VoIP, migration 0231),
+# nunca comitar. Templates ficam em asterisk/*.conf.example.
+asterisk/pjsip.conf
+asterisk/ari.conf
 
 # Testing & coverage
 coverage/
@@ -135,6 +141,10 @@ evidence/.sonda-score-residuo.json
 # acima não os alcança porque eles vivem num diretório, com outro prefixo.
 backups/
 
+# Marcas de execução do kit (agent.sh / update.sh)
+.update.lock
+.deskcomm-site-url-avisado
+
 # Dump de banco de QA. A doutrina já estava escrita duas linhas acima e só o
 # PADRÃO faltava: `backups/` não casa com `.qa-backups/`, e um dump de 1,1 MB de
 # um Supabase local chegou a um PR de contribuidor por causa disso (#600). O
@@ -143,3 +153,13 @@ backups/
 # commit posterior de remoção não tira o blob.
 .qa-backups/
 *.dump
+docker-compose.override.yml
+.prova/
+
+# Marca do kit: a senha das rotinas que vazou no log já foi trocada (#1054)
+.deskcomm-segredo-do-cron-trocado
+
+# Bytecode do Python: a suíte roda scripts em experiments/ e regrava o .pyc a cada
+# rodada. Versionado, ele sujava a árvore de quem rodava os testes.
+__pycache__/
+*.pyc

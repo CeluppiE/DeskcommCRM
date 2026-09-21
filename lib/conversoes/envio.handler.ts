@@ -128,8 +128,9 @@ async function handle(row: EventRow): Promise<HandlerResult> {
 
   const transporte = transporteDe(plataforma);
   if (!transporte) {
-    // `google_ads` cai aqui, e é o desfecho CERTO — não um bug. A lacuna é
-    // anterior: sem extrator de `gclid` não há clique capturado para reportar.
+    // Plataforma do vocabulário declarada sem transporte no registro — o
+    // desfecho CERTO, não um bug (invariante 4 da restrição de canal). Hoje
+    // nenhuma cai aqui: `meta_ads` e `google_ads` têm transporte.
     await registra("skipped", "plataforma_sem_transporte");
     return ok("skipped", "plataforma_sem_transporte");
   }

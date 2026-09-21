@@ -13,7 +13,7 @@ Este kit sobe o **DeskcommCRM** no seu servidor VPS da HostGator. Você tem dois
 > ```
 
 > **Outra hospedagem?** O kit é feito para a HostGator (é a parceria do projeto e o caminho
-> testado de ponta a ponta), mas roda em qualquer VPS com Docker. Se a sua já vem com um
+> testado de ponta a ponta), mas roda em qualquer VPS **x86_64/amd64** com Docker. Se a sua já vem com um
 > **proxy reverso próprio** ocupando as portas 80/443 — caso de Hostinger, Coolify, Dokploy
 > e CapRover —, o instalador **detecta isso sozinho** e publica o CRM através dele, em vez
 > de tentar subir um Caddy que não caberia. Ver
@@ -104,6 +104,9 @@ Owner/Admin. Não dá para hospedar vários clientes numa conta só.
 
 ## Requisitos do VPS
 
+- **Arquitetura x86_64/amd64.** As imagens oficiais publicadas atualmente são `linux/amd64`.
+  VPS ARM64/aarch64 ainda não são suportadas pelo kit; use uma VPS x86_64/amd64 enquanto
+  não houver imagens multi-arquitetura.
 - **4 GB RAM recomendados.** A imagem é pré-buildada, então o servidor não compila nada e a
   stack SOBE com 2 GB — mas operar é outra coisa: são 7 contêineres, e o WAHA consome
   ~150 MB por sessão de WhatsApp além de ~300 MB de overhead do Node. Com 2 GB você roda

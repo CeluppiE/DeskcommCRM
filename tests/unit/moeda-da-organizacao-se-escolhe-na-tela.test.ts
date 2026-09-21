@@ -73,7 +73,6 @@ function entrada(over: Record<string, unknown> = {}) {
     media_retention_days: 365,
     dpo_email: null,
     privacy_policy_url: null,
-    lost_reasons_extra: [],
     ...over,
   };
 }
@@ -103,6 +102,12 @@ describe("a moeda da organização", () => {
     // ⚠️ MXN e não BRL: com o padrão chumbado este caso passaria verde e a
     // escolha da tela seria decorativa.
     expect(atualizado).toMatchObject({ currency: "MXN" });
+    // ⚠️ E NADA de `settings`. Esta action lia o jsonb inteiro, espalhava em
+    // memória e regravava o objeto (PR #1209 tirou); com dois round-trips, uma
+    // escrita concorrente some sem erro — `visibility_mode` já voltou de `own`
+    // para `all` assim, e a RLS lê essa chave. `toMatchObject` sozinho não
+    // impede a volta do padrão: ele ignora as chaves que não cita.
+    expect(atualizado).not.toHaveProperty("settings");
     // ⚠️ O admin client BYPASSA RLS por desenho (única policy de escrita de
     // `organizations` é `orgs_write_platform_admin`) — o `.eq("id", orgId)`
     // é a ÚNICA cerca entre "salvei a moeda da minha org" e "salvei a moeda

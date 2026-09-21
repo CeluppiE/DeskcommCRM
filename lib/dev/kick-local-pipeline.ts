@@ -1,8 +1,9 @@
 /**
  * Relógio do pipeline webhook → automação → follow-up → 1º envio.
  *
- * NÃO usa cron da Vercel. O Hobby só agenda 1×/dia e event-log-drain nem
- * entra na lista. Este código corre DENTRO do POST (captação ou inbound).
+ * NÃO depende de agendador externo: onde não há cron de minuto, o dreno de
+ * eventos não roda a tempo. Este código corre DENTRO do POST (captação ou
+ * inbound).
  *
  * O crontab da VPS continua existindo como rede de segurança; não é requisito
  * desta jornada. Falha aqui nunca vira 5xx do webhook.
@@ -10,6 +11,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { drainEventLog } from "@/lib/event-log/drain";
+import { comOrigemDeRequest } from "@/lib/event-log/origem-do-dreno";
 import { ensureHandlersRegistered } from "@/lib/event-log/register-handlers";
 import { idsDoContatoEGemeos } from "@/lib/channels/contato-por-telefone";
 import { aplicarTextoNosFollowups } from "@/lib/followup/aplicar-inbound";
@@ -151,7 +153,13 @@ export async function acelerarPipelineDeEventos(
     }
     ensureHandlersRegistered();
     try {
-      const drain = await drainEventLog(admin);
+      // ⚠️ MARCADO COMO "dentro de requisição". Este dreno roda no meio do
+      // webhook de mensagem, e o webhook do WhatsApp tem timeout e REENTREGA:
+      // um handler que fale com um terceiro pela rede aqui pode transformar uma
+      // mensagem entregue numa mensagem reentregue — e a reentrega dispara o
+      // agente de novo. Quem precisa dessa informação a lê por `origemDoDreno()`
+      // e se adia; quem não precisa não muda uma linha.
+      const drain = await comOrigemDeRequest(() => drainEventLog(admin));
       logger.info("[dev.pipeline] event-log-drain", { ...drain });
     } catch (err) {
       logger.warn("[dev.pipeline] drain falhou; tick do follow-up segue", {

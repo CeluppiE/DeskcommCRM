@@ -14,6 +14,12 @@ export interface AutomationRuleRow {
   trigger_event: string;
   conditions: Array<{ field: string; op: "eq" | "neq" | "contains"; value: string }>;
   actions: Array<{ type: string; config: Record<string, unknown> }>;
+  /**
+   * O que o gatilho precisa saber além do nome (#989, migration 0268). Só o
+   * gatilho de data do funil usa (`{ pipeline_id, campo, dias }`); nas regras
+   * anteriores à coluna, e nas dos outros gatilhos, é o objeto vazio.
+   */
+  trigger_config: Record<string, unknown> | null;
   is_active: boolean;
   last_run_at: string | null;
   run_count: number;

@@ -20,6 +20,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { ChipDeEtiqueta } from "@/components/tags/ChipDeEtiqueta";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,6 +32,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { useActiveOrg } from "@/hooks/auth/AuthProvider";
 import { useDeleteContact } from "@/hooks/contacts/useDeleteContact";
 import type { ContactOrderBy } from "@/lib/schemas/contacts";
 import type { Contact } from "@/lib/types/contacts";
@@ -108,6 +110,7 @@ function SortableHead({
 export function ContactsTable({ contacts, orderBy, orderDir, onSort }: Props) {
   const localeDaData = useLocaleDeData();
   const t = useT();
+  const clientesLigado = useActiveOrg()?.cliente_pela_agenda === true;
   const del = useDeleteContact();
   const [alvo, setAlvo] = useState<Contact | null>(null);
   const [abrindo, setAbrindo] = useState<string | null>(null);
@@ -209,7 +212,7 @@ export function ContactsTable({ contacts, orderBy, orderDir, onSort }: Props) {
                 {c.tags.length === 0
                   ? <span className="text-muted-foreground text-xs">—</span>
                   : c.tags.map((tag) => (
-                      <Badge key={tag} variant="neutral">{tag}</Badge>
+                      <ChipDeEtiqueta key={tag} tag={tag} />
                     ))}
               </div>
             </TableCell>
@@ -222,6 +225,16 @@ export function ContactsTable({ contacts, orderBy, orderDir, onSort }: Props) {
               <div className="flex flex-wrap gap-1">
                 {c.is_anonymized && <Badge variant="destructive">{t("Anonimizado")}</Badge>}
                 {c.is_blocked && <Badge variant="warning">{t("Bloqueado")}</Badge>}
+                {/*
+                  Lê a COLUNA, nunca a tag, e só com a regra ligada: a tag
+                  `cliente` é removível à mão e pelo PATCH (que substitui `tags`
+                  por inteiro), e um selo que some porque alguém editou
+                  etiquetas mentiria sobre um fato. Desligada, a coluna está
+                  congelada e o selo mentiria do outro lado.
+                */}
+                {clientesLigado && c.first_service_at && (
+                  <Badge variant="secondary">{t("Cliente")}</Badge>
+                )}
                 {!c.is_anonymized && !c.is_blocked && (
                   <Badge variant="success">{t("Ativo")}</Badge>
                 )}

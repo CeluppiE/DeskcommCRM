@@ -126,7 +126,29 @@ describe("o card diz a verdade sobre a PARADA", () => {
 
   it("a faixa do kill switch aparece quando a instalação afrouxa a proteção", () => {
     // Um controle que o processo ignora é pior que controle nenhum.
+    //
+    // A faixa deixou de citar `AI_BUDGET_ENFORCEMENT=off` e passou a apontar a
+    // TELA (Comportamento, no Admin), porque a escolha deixou de morar só no
+    // `.env` — o `.env` virou piso, e quem manda é o banco (issue #1034). Cobrar
+    // o nome da variável aqui mandaria o leitor a um lugar onde mexer já não
+    // resolve; o que a faixa precisa entregar é o mesmo de antes: dizer que o
+    // controle não vale AGORA e para onde ir.
     montar(estado({ enforcement_mode: "bloquear", enforcement_env: "off" }));
-    expect(screen.getByText(/AI_BUDGET_ENFORCEMENT=off/)).toBeInTheDocument();
+    const faixa = screen.getByText(/proteção de gasto está desligada nesta instalação/iu);
+    expect(faixa.textContent ?? "").toMatch(/não vale/iu);
+    expect(
+      faixa.textContent ?? "",
+      "sem o destino, a pessoa sabe que o controle não vale e não sabe onde religar",
+    ).toMatch(/Comportamento/u);
+  });
+
+  it("no modo só-avisar, a faixa diz que a IA continua respondendo — e onde foi escolhido", () => {
+    // O par do caso acima: `avisar` é o estado em que o botão existe, a pessoa
+    // escolhe "Parar a IA" e nada para. Sem este caso, trocar o texto de um dos
+    // dois ramos passaria batido.
+    montar(estado({ enforcement_mode: "bloquear", enforcement_env: "avisar" }));
+    const faixa = screen.getByText(/proteção só avisa/iu);
+    expect(faixa.textContent ?? "").toMatch(/continuar respondendo/iu);
+    expect(faixa.textContent ?? "").toMatch(/Comportamento/u);
   });
 });

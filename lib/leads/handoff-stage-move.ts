@@ -14,7 +14,7 @@ import { registraFalhaDeAtividade } from "@/lib/leads/activity-write-failure";
  * ⚠️ OPT-IN POR PIPELINE, via `slug`, não `requires_human`. `requires_human`
  * já é usado por `checkG4Stage` no sentido INVERSO (lead JÁ está numa etapa
  * assim → dispara handoff) e mais de uma etapa pode carregar essa flag no
- * mesmo pipeline (ex.: "Repassado para o Fernando", que é atribuição a uma
+ * mesmo pipeline (ex.: "Repassado para o Fulano", que é atribuição a uma
  * PESSOA, não "precisa de humano agora"). `slug` é estável, único por
  * pipeline (`uniq_crm_stages_pipeline_slug`) e é exatamente o campo que este
  * schema já tem para apontar sem ambiguidade — different de `name`, que o

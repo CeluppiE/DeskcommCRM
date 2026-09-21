@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { isoLocalComOffset } from "./agora";
 
 /**
- * Regressão do defeito medido em produção (YADEA, 2026-09-02): `get-lead-context.ts`
+ * Regressão do defeito medido em produção (2026-09-02): `get-lead-context.ts`
  * entregava `sent_at` cru em UTC ao modelo, que comparava esse horário contra o
  * expediente LOCAL da oficina (09:00–18:00 America/Sao_Paulo) e concluía "fechada"
  * para uma mensagem enviada às 15:45 locais — porque via "18:45" no payload.

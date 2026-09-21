@@ -16,6 +16,7 @@ import { traduzir } from "@/lib/i18n/dicionario";
 import { CONVERSATION_TERMINAL_STATUSES } from "@/lib/schemas";
 import { orgTemAutomatico } from "@/lib/ai/agents/org-tem-automatico";
 import { comandosDaFila } from "@/lib/inbox/comando-da-conversa";
+import { aplicarMarcador } from "@/lib/inbox/marcador-da-conversa";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -50,8 +51,14 @@ export function filtrosAuxiliaresDaContagem(
   const filtros: FiltroDeContagem[] = [];
   const canal = sp.get("channel_session_id");
   if (canal) filtros.push(["channel_session_id", canal]);
-  const tag = sp.get("tag");
-  if (tag) filtros.push(["tag", tag]);
+  // O MARCADOR não entra nesta lista, e não é esquecimento: ele não é
+  // IGUALDADE numa coluna, é um `or=` sobre DUAS caixas — `conversations.tags`
+  // e o campo calculado do contato. `conversations` não tem coluna `tag` (`tag`
+  // é o nome do parâmetro da URL): com ele aqui, o laço lá embaixo pedia
+  // `.eq("tag", …)`, o PostgREST devolvia 42703 (`undefined_column`) e a rota
+  // INTEIRA respondia 500 — com um marcador filtrado, toda aba do Inbox ficava
+  // sem número, a "Fechadas" inclusive (#1223). Quem aplica o marcador é
+  // `aplicarMarcador`, a mesma régua que a lista usa.
   return filtros;
 }
 
@@ -87,6 +94,7 @@ export async function GET(req: NextRequest): Promise<Response> {
   const sp = req.nextUrl.searchParams;
   const auxiliares = filtrosAuxiliaresDaContagem(sp);
   const soNaoLidas = contagemSoNaoLidas(sp);
+  const marcador = sp.get("tag");
 
   // ⚠️ TODA contagem nasce daqui, e daqui já sai com `organization_id` E com os
   // filtros auxiliares. Herdar tira a opção de esquecer: não existe o caminho
@@ -97,6 +105,8 @@ export async function GET(req: NextRequest): Promise<Response> {
       .select("id", { count: "exact", head: true })
       .eq("organization_id", org);
     for (const [coluna, valor] of auxiliares) q = q.eq(coluna, valor);
+    // O marcador entra pela régua da LISTA — a mesma função, não uma segunda.
+    q = aplicarMarcador(q, marcador);
     if (soNaoLidas) q = q.gt("unread_count_for_assignee", 0);
     return q;
   };
@@ -112,7 +122,7 @@ export async function GET(req: NextRequest): Promise<Response> {
   // convenção da regra: assume que há automático.
   const automaticoDaOrg = await orgTemAutomatico(supabase, org);
 
-  const [fila, automatico, mine, all, closed] = await Promise.all([
+  const [fila, automatico, mine, all, closed, archived] = await Promise.all([
     // A FILA DEIXOU DE SER "sem dono + status de espera".
     //
     // Aquele par contava como trabalho humano pendente tudo que o robô estava
@@ -134,11 +144,23 @@ export async function GET(req: NextRequest): Promise<Response> {
     // A aba "Fechadas" existia SEM número nenhum. Num inbox antigo, é o número
     // que diz o tamanho do arquivo — e a sua ausência fazia a aba parecer um
     // lugar vazio. Mesma fábrica: herda organização e filtros.
-    countExact().in("status", CONVERSATION_TERMINAL_STATUSES),
+    //
+    // ⚠️ `eq("closed")`, e NÃO `in(TERMINAIS)` como antes. O par
+    // fechada/arquivada agora tem DUAS abas, e cada badge tem de contar
+    // exatamente a lista da sua aba: `in(TERMINAIS)` somava arquivadas (e, antes
+    // da 0222, resolvidas) no número de "Fechadas", que lista só
+    // `status='closed'` — o badge dizia 120 e a lista mostrava 40. Era a mesma
+    // classe de defeito que este arquivo já conserta desde a Fila, encontrada
+    // aqui no caminho (#923).
+    countExact().eq("status", "closed"),
+    // A aba "Arquivadas" (#923): a pasta do histórico, separada de "Fechadas"
+    // para que arquivar seja reversível e auditável sem se confundir com o
+    // encerramento do atendimento.
+    countExact().eq("status", "archived"),
   ]);
 
   const firstErr =
-    fila.error ?? automatico.error ?? mine.error ?? all.error ?? closed.error;
+    fila.error ?? automatico.error ?? mine.error ?? all.error ?? closed.error ?? archived.error;
   if (firstErr) {
     return fail("internal_error", firstErr.message, 500, { requestId });
   }
@@ -155,6 +177,7 @@ export async function GET(req: NextRequest): Promise<Response> {
       mine: mine.count ?? 0,
       all: all.count ?? 0,
       closed: closed.count ?? 0,
+      archived: archived.count ?? 0,
     },
     { requestId },
   );

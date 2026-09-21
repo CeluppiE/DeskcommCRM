@@ -53,11 +53,32 @@ function admin(casos: Array<Record<string, unknown>>, jaTemAviso: boolean, cap: 
           },
         };
       }
+      if (tabela === "passagens_de_atendimento") {
+        // O SEGUNDO BRAÇO desta rota (onda 11) varre as passagens que ninguém
+        // assumiu. Este dublê o deixa varrer NADA de propósito: o que os casos
+        // abaixo medem é o braço dos CASOS, e uma fixture de passagens aqui
+        // misturaria as duas contagens na mesma asserção. Quem mede o segundo
+        // braço é `tests/unit/cobrador-de-passagem-nao-reconhecida.test.ts`,
+        // que tem um caso próprio para "o braço dos CASOS continua de pé".
+        const c: Record<string, unknown> = {
+          select: () => c,
+          is: () => c,
+          lt: () => c,
+          order: () => c,
+          limit: async () => ({ data: [], error: null }),
+          update: () => c,
+          eq: () => c,
+          then: (r: (v: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(r),
+        };
+        return c;
+      }
       // agent_inbox_items
       return {
         select: () => {
           const c: Record<string, unknown> = {
             eq: () => c,
+            order: () => c,
+            limit: () => c,
             maybeSingle: async () => ({ data: jaTemAviso ? { id: "aviso-1" } : null }),
           };
           return c;
@@ -65,6 +86,14 @@ function admin(casos: Array<Record<string, unknown>>, jaTemAviso: boolean, cap: 
         insert: async (linha: Record<string, unknown>) => {
           cap.avisos.push(linha);
           return { error: null };
+        },
+        update: (patch: Record<string, unknown>) => {
+          cap.updates.push(patch);
+          const c: Record<string, unknown> = {
+            eq: () => c,
+            then: (r: (v: unknown) => unknown) => Promise.resolve({ error: null }).then(r),
+          };
+          return c;
         },
       };
     },

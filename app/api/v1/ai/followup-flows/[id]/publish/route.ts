@@ -18,6 +18,7 @@ import { ok, fail } from "@/lib/api/wrappers";
 import { audit } from "@/lib/audit";
 import { requireRole } from "@/lib/auth/require-role";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { carregaEtapasCitadas } from "@/lib/followup/etapas-citadas";
 import { validateFlowForPublish } from "@/lib/followup/validate-publish";
 import { publishFollowupFlowVersion } from "@/lib/followup/publish";
 import type { FlowGraph } from "@/lib/followup/graph-schema";
@@ -138,7 +139,11 @@ export async function POST(_req: NextRequest, ctx: RouteCtx): Promise<Response> 
   }
 
   const graph = pointer.draft_graph as unknown as FlowGraph;
-  const validation = validateFlowForPublish(graph);
+  // A regra de etapa guarda o `stage_id`, e só o banco diz se a etapa existe e
+  // está ativa — sem esta leitura, uma regra que nunca decide publicaria calada.
+  const citadas = await carregaEtapasCitadas(admin, activeOrg.orgId, graph.nodes);
+  if (!citadas.ok) return fail("internal_error", citadas.mensagem, 500, { requestId });
+  const validation = validateFlowForPublish(graph, { etapas: citadas.etapas });
   if (!validation.ok) {
     return fail("validation_failed", t("Fluxo reprovado na validação de publish."), 422, {
       requestId,

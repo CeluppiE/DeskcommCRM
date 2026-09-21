@@ -45,6 +45,7 @@
 
 import { DEFAULT_APP_NAME } from "@/lib/branding";
 import { env } from "@/lib/env";
+import { valorDaInstalacao } from "@/lib/instalacao/config";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -228,12 +229,16 @@ export async function marcaDaSaida(organizationId: string | null): Promise<Marca
  * de conta suspensa, quem suspendeu foi o revendedor — mandar o cliente dele
  * escrever para nós entrega o cliente e não resolve o problema dele.
  *
- * Só o `.env` por enquanto. A coluna que permitiria trocar isto pela tela
- * (`platform_branding.support_email`) exige migration + apêndice no
- * `baseline.sql`, e schema não entra nesta mudança — está declarado no handoff
- * desta fase. Quando entrar, esta função ganha a linha do banco ACIMA do
- * ambiente, na mesma ordem que a marca já usa.
+ * O que a nota anterior aqui pedia — "quando a coluna entrar, esta função ganha
+ * a linha do banco ACIMA do ambiente, na mesma ordem que a marca já usa" — é o
+ * que esta versão faz. A migration 0341 trouxe `platform_config`, que guarda uma
+ * linha por variável em vez de uma coluna por campo, e o resolvedor devolve a
+ * ordem certa: banco acima, arquivo de instalação embaixo.
+ *
+ * Virou `async` porque o banco exige espera. O alcance foi medido antes: são
+ * duas páginas de servidor, ambas já assíncronas.
  */
-export function emailDeSuporte(): string {
-  return env.SUPPORT_EMAIL.trim();
+export async function emailDeSuporte(): Promise<string> {
+  const { valor } = await valorDaInstalacao("SUPPORT_EMAIL");
+  return (valor ?? "").trim();
 }

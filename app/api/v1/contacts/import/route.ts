@@ -34,7 +34,8 @@ import {
   mapLinha,
   parseCsv,
 } from "@/lib/contacts/csv";
-import { contactCreateSchema, isValidCpf } from "@/lib/schemas";
+import { contactCreateSchemaDoPais } from "@/lib/schemas";
+import { perfilDaOrganizacao } from "@/lib/legal/perfil-do-pais";
 import { phoneLookupVariants } from "@/lib/channels/phone-variants";
 import { createClient } from "@/lib/supabase/server";
 
@@ -66,6 +67,13 @@ export async function POST(req: NextRequest): Promise<Response> {
   const user = authz.user;
   const orgId = authz.org.orgId;
   const t = (texto: string) => traduzir(texto, user.idioma);
+
+  // O documento do titular, na régua do PAÍS da organização (issue #1033): o
+  // cabeçalho aceito, a normalização do valor e a validação saem daqui. O país
+  // vem da coluna da organização — nunca do arquivo enviado.
+  const perfil = await perfilDaOrganizacao(supabase, orgId);
+  const doc = perfil.documento;
+  const schemaDoPais = contactCreateSchemaDoPais(perfil);
 
   let file: File;
   try {
@@ -116,7 +124,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     return fail("validation_failed", t("CSV vazio ou sem linhas de dados."), 422, { requestId });
   }
   const header = rows[0]!;
-  const mapeado = mapHeader(header, t);
+  const mapeado = mapHeader(header, t, doc);
   if (mapeado.motivo !== null) {
     return fail("validation_failed", `${t("Cabeçalho inválido:")} ${mapeado.motivo}.`, 422, {
       details: { header: header.join(", ") },
@@ -140,16 +148,20 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   for (let i = 0; i < dataRows.length; i++) {
     const linha = i + 2; // 1-based contando o cabeçalho — bate com o editor de planilhas.
-    const { contato, motivo } = mapLinha(dataRows[i]!, indices, t);
+    const { contato, motivo } = mapLinha(dataRows[i]!, indices, t, doc);
     if (motivo !== null) {
       errors.push({ linha, motivo });
       continue;
     }
-    if (contato.cpf && !isValidCpf(contato.cpf)) {
-      errors.push({ linha, motivo: t("CPF inválido: ") + `"${contato.cpf}"` });
+    if (contato.cpf && !doc.valida(contato.cpf)) {
+      // O texto sai do PERFIL: no Brasil continua "CPF inválido: …" (a mesma
+      // chave do dicionário), e país sem checksum público diz na mensagem que a
+      // conferência é de FORMA — prometer dígito verificado que não existe é o
+      // que a issue #1033 proíbe.
+      errors.push({ linha, motivo: t(doc.mensagemInvalido + ": ") + `"${contato.cpf}"` });
       continue;
     }
-    const parsed = contactCreateSchema.safeParse({ ...contato, source: SOURCE_IMPORT_CSV });
+    const parsed = schemaDoPais.safeParse({ ...contato, source: SOURCE_IMPORT_CSV });
     if (!parsed.success) {
       const primeiro = parsed.error.issues[0];
       errors.push({ linha, motivo: primeiro?.message ?? t("dados inválidos") });

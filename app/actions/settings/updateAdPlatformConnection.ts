@@ -58,10 +58,9 @@ export type UpdateAdPlatformConnectionResult =
 
 const entradaSchema = z.object({
   /**
-   * Só `meta_ads` hoje. `google_ads` fica FORA do enum de propósito: aceitar o
-   * cadastro de uma plataforma sem transporte deixaria o operador colar um token
-   * e esperar conversões que nunca sairiam — e o livro-razão diria
-   * `plataforma_sem_transporte` sem que ele tivesse como entender por quê.
+   * Só `meta_ads`. `google_ads` fica FORA do enum porque a credencial dele não
+   * é colada: chega pelo OAuth, e o cadastro de para onde reportar mora em
+   * `updateGoogleAdsConnection.ts`.
    */
   platform: z.literal("meta_ads"),
   dataset_id: z.string().trim().min(5).max(64).regex(/^\d+$/, "só dígitos"),

@@ -89,7 +89,7 @@ vi.mock("@/lib/agent-engine/edge/llm/credentials", () => ({
   })),
 }));
 
-import { deriveMessageMedia } from "@/workers/media-derive-worker";
+import { deriveMessageMedia, MARCADOR_NAO_LIDA } from "@/workers/media-derive-worker";
 import { deriveMediaText } from "@/lib/messaging/media/derive";
 import { DETALHE_TECNICO } from "@/lib/event-log/aviso-de-evento-morto";
 
@@ -149,6 +149,30 @@ describe("deriveMessageMedia", () => {
   });
 
   /**
+   * O `failed` sem marcador deixava o agente ver `[documento]` — "veio um
+   * arquivo", sem dizer que a leitura falhou — e responder sobre um conteúdo
+   * que ele nunca leu. Medido numa VPS em produção (17/09): PDF de catálogo sem
+   * camada de texto, extrator falhou, e o agente disse ao cliente que o material
+   * "parece ser de distribuidora/promocional".
+   */
+  it("a falha permanente entrega ao agente o marcador de mídia não lida", async () => {
+    messageRow.type = "document";
+    messageRow.media_mime = "application/pdf";
+    vi.mocked(deriveMediaText).mockRejectedValue(
+      new Error("pdfjs-dist extracted no text (possibly image-only PDF)"),
+    );
+
+    await deriveMessageMedia(eventRow(4));
+
+    expect(updateEqMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        media_derived_text: MARCADOR_NAO_LIDA,
+        media_derived_status: "failed",
+      }),
+    );
+  });
+
+  /**
    * DESISTIR CALADO ERA O DESFECHO MAIS COMUM DOS TRÊS.
    *
    * As recusas que o worker sabia explicar — modelo sem visão, provedor
@@ -185,11 +209,11 @@ describe("deriveMessageMedia", () => {
       expect(String(aviso.body)).toContain("claude-sonnet-5");
       // E o tipo tem que ser o que o operador chama de "isto", não `msg.type`.
       expect(String(aviso.title)).toContain("imagem");
-      // Nesta falha o agente NÃO recebeu o marcador de "não consegui
-      // interpretar" — a frase das recusas ("responde avisando que não conseguiu
-      // abrir o arquivo") seria mentira aqui.
+      // O turno que já correu seguiu sem o texto — isso o aviso continua
+      // dizendo. O que mudou é o DEPOIS: `markFailed` grava o marcador, então
+      // do próximo turno em diante o agente sabe que houve arquivo ilegível.
       expect(String(aviso.body)).toContain("O conteúdo do arquivo não chegou ao agente.");
-      expect(String(aviso.body)).not.toContain("responde avisando");
+      expect(String(aviso.body)).toContain("responde avisando");
       // E a frase do provedor vem no FIM, rotulada: é inglês de API, e quem lê
       // a Central não programa.
       const corpo = String(aviso.body);

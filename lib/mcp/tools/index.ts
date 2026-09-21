@@ -71,6 +71,7 @@ import {
   crmBookAppointment,
   crmCancelAppointment,
   crmConfirmAppointment,
+  crmFindAndBookAppointment,
   crmFindFreeSlots,
   crmListAppointments,
   crmListEventTypes,
@@ -79,6 +80,7 @@ import {
 } from "./agendamento";
 import {
   crmScheduleFollowup,
+  crmEnrollFollowupFlow,
   crmCancelFollowup,
   crmListFollowups,
   crmListAtRiskLeads,
@@ -130,6 +132,9 @@ export const allTools: ReadonlyArray<McpToolDefinition> = [
   crmListHumanCases,
   crmGetHumanCase,
   // write
+  // A que consulta E marca numa chamada só vem primeiro: quando o cliente já deu
+  // dia e hora, é o caminho curto, e é o que evita o turno morrer no meio (#831).
+  crmFindAndBookAppointment,
   crmBookAppointment,
   crmRescheduleAppointment,
   crmCancelAppointment,
@@ -150,6 +155,7 @@ export const allTools: ReadonlyArray<McpToolDefinition> = [
   crmSetWebhookSourceActive,
   crmSetAutomationRuleActive,
   crmScheduleFollowup,
+  crmEnrollFollowupFlow,
   crmCancelFollowup,
   crmCloseDemand,
   crmProposeReactivation,

@@ -491,17 +491,24 @@ export async function runDrainLoop(
         error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
       });
     }
-    const waitMs = drained > 0 ? knobs.intervalMs : knobs.idleIntervalMs;
+    if (signal.aborted) break;
+    // Lote CHEIO é sinal de backlog: há mais evento esperando do que caberia no
+    // lote, e pagar o intervalo antes de voltar só empurra a fila para frente.
+    // Ocioso e lote parcial mantêm o ritmo de sempre — este ramo não muda o
+    // custo de quem não tem atendimento nenhum.
+    const waitMs =
+      drained >= knobs.batchSize ? 0 : drained > 0 ? knobs.intervalMs : knobs.idleIntervalMs;
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, waitMs);
-      signal.addEventListener(
-        'abort',
-        () => {
-          clearTimeout(timer);
-          resolve();
-        },
-        { once: true },
-      );
+      // O listener é REMOVIDO no fim de cada espera. Sem isso, um loop de dias
+      // acumula um listener por tick no mesmo AbortSignal — vazamento que só
+      // aparece como memória crescendo no worker, sem erro nenhum.
+      const finish = (): void => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, waitMs);
+      signal.addEventListener('abort', finish, { once: true });
     });
   }
 }

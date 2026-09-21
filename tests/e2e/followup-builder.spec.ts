@@ -13,6 +13,8 @@ import * as path from "node:path";
 
 import { test, expect, type Page } from "@playwright/test";
 
+import { zoomAte } from "./utils/canvas-do-fluxo";
+
 import { afirmarAdminDeTenantPuro } from "./utils/precondicao";
 import { generateTotp, msUntilNextTotpWindow } from "./utils/totp";
 
@@ -261,8 +263,7 @@ test.describe("followup flow builder — canvas visual (Task 6.2)", () => {
 
     // fitView pode chegar ao maxZoom (2x) com poucos nós — zoom out garante
     // que todos os handles fiquem dentro do viewport pros drags de conexão.
-    const zoomOut = page.locator(".react-flow__controls-zoomout");
-    for (let i = 0; i < 5; i++) await zoomOut.click();
+    await zoomAte(page, 0.85);
 
     const triggerId = await page
       .locator('.react-flow__node[data-id^="trigger-"]')
@@ -305,8 +306,7 @@ test.describe("followup flow builder — canvas visual (Task 6.2)", () => {
     await page.getByTestId("palette-add-action").click();
     await page.getByTestId("palette-add-end").click();
 
-    const zoomOut = page.locator(".react-flow__controls-zoomout");
-    for (let i = 0; i < 5; i++) await zoomOut.click();
+    await zoomAte(page, 0.85);
 
     const triggerId = await page
       .locator('.react-flow__node[data-id^="trigger-"]')
@@ -434,8 +434,7 @@ test.describe("followup flow builder — canvas visual (Task 6.2)", () => {
     await page.getByTestId("palette-add-action").click();
     await page.getByTestId("palette-add-end").click();
 
-    const zoomOut = page.locator(".react-flow__controls-zoomout");
-    for (let i = 0; i < 5; i++) await zoomOut.click();
+    await zoomAte(page, 0.85);
 
     const triggerId = await page
       .locator('.react-flow__node[data-id^="trigger-"]')
@@ -591,8 +590,7 @@ test.describe("followup flow builder — canvas visual (Task 6.2)", () => {
 
     await page.getByTestId("palette-add-trigger").click();
     await page.getByTestId("palette-add-end").click();
-    const zoomOut = page.locator(".react-flow__controls-zoomout");
-    for (let i = 0; i < 5; i++) await zoomOut.click();
+    await zoomAte(page, 0.85);
     const triggerId = await page
       .locator('.react-flow__node[data-id^="trigger-"]')
       .getAttribute("data-id");
@@ -657,7 +655,8 @@ test.describe("followup flow builder — editor de condição de aresta / ai_cla
   /**
    * Clicks an edge's own condition-label background rect (always present —
    * every edge renders a label from Task 6.3's `edgesForRender`, defaulting to
-   * "Sempre") — a precise, always-solid hit target, instead of guessing where
+   * "Sempre" num nó de saída única e "Outros casos" num nó ramificado) — a
+   * precise, always-solid hit target, instead of guessing where
    * on the curved path the bounding-box center lands.
    */
   async function clickEdge(page: Page, edgeId: string): Promise<void> {
@@ -725,8 +724,7 @@ test.describe("followup flow builder — editor de condição de aresta / ai_cla
     // finishes its first measurement — settle it to a known, stable zoom BEFORE doing
     // any screen-space math below, or the 6 sequential palette adds keep moving the
     // goalposts mid-repositioning (see the 6.2 canvas test for the same caveat).
-    const zoomOut = page.locator(".react-flow__controls-zoomout");
-    for (let i = 0; i < 6; i++) await zoomOut.click();
+    await zoomAte(page, 0.7);
     await page.waitForTimeout(300);
 
     // 1b. Spread the 6 nodes into a real branching layout (source above target, siblings
@@ -741,7 +739,7 @@ test.describe("followup flow builder — editor de condição de aresta / ai_cla
     await moveNodeTo(page, end1Id, ...at(225, 620));
     await moveNodeTo(page, end2Id, ...at(650, 220));
 
-    // 2. Configure ai_classify classes = positivo, objecao (replacing the hot/cold default).
+    // 2. Configure ai_classify classes = positivo, objecao (no lugar do padrão Interessado/Sem interesse).
     await page.locator(`[data-testid="node-card-${classifyId}"]`).click();
     const panel = page.getByTestId("node-config-panel");
     await panel.getByLabel("Classes (separadas por vírgula)").fill("positivo, objecao");
@@ -807,8 +805,10 @@ test.describe("followup flow builder — editor de condição de aresta / ai_cla
     // edge-5 is already the "always" fallback by default — open it and confirm rather
     // than change it, proving the option is genuinely selected, not just left untouched.
     await clickEdge(page, "edge-5");
+    // "Outros casos", não "Sempre": a origem é o classificador, que já tem saída
+    // por classe — o motor só usa esta aresta quando nenhuma das outras serve.
     await expect(page.getByTestId("edge-config-panel").getByRole("combobox")).toContainText(
-      "Sempre",
+      "Outros casos",
     );
 
     await page.locator(".react-flow__pane").click({ position: { x: 20, y: 20 } });
@@ -829,7 +829,7 @@ test.describe("followup flow builder — editor de condição de aresta / ai_cla
     await expect(page.getByTestId("rf__edge-edge-2")).toContainText("positivo");
     await expect(page.getByTestId("rf__edge-edge-3")).toContainText("objecao");
     await expect(page.getByTestId("rf__edge-edge-4")).toContainText("Sem resposta");
-    await expect(page.getByTestId("rf__edge-edge-5")).toContainText("Sempre");
+    await expect(page.getByTestId("rf__edge-edge-5")).toContainText("Outros casos");
     await page.locator(".react-flow__controls-fitview").click();
     await page.waitForTimeout(400);
     await page.screenshot({
@@ -930,15 +930,26 @@ test.describe("followup flow selector no editor do agente (Task 7.2)", () => {
     const { data: created } = (await createAgentRes.json()) as {
       data: {
         agent: { id: string };
-        version: { id: string; followup: { enabled: boolean; flow_pointer_ids: string[] } };
+        version: {
+          id: string;
+          followup: {
+            enabled: boolean;
+            flow_pointer_ids: string[];
+            send_window: { start: string; end: string; weekdays: number[] } | null;
+          };
+        };
       };
     };
     const agentId = created.agent.id;
     const versionId = created.version.id;
 
-    // Nasce com o default aditivo (enabled=false, []) — prova que o schema novo
-    // não quebra a criação de um agent que nunca falou de follow-up.
-    expect(created.version.followup).toEqual({ enabled: false, flow_pointer_ids: [] });
+    // Nasce com o default aditivo (enabled=false, [], send_window=null) — prova
+    // que o schema novo não quebra a criação de um agent que nunca falou de follow-up.
+    expect(created.version.followup).toEqual({
+      enabled: false,
+      flow_pointer_ids: [],
+      send_window: null,
+    });
 
     // --- 3. abre o editor, habilita o toggle e seleciona o fluxo publicado ---
     await page.goto(`/app/ai/agents/${agentId}`);

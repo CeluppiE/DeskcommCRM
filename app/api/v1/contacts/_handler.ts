@@ -32,7 +32,7 @@ import { contactListQuerySchema } from "@/lib/schemas";
 type SB = SupabaseClient;
 
 const SELECT_COLS =
-  "id, organization_id, name, display_name, email, email_normalized, phone_number, cpf_hash, birthdate, is_blocked, blocked_reason, is_anonymized, anonymized_at, is_merged_into, merged_at, consent, tags, source, source_metadata, custom_fields, created_at, updated_at, last_activity_at";
+  "id, organization_id, name, display_name, email, email_normalized, phone_number, cpf_hash, birthdate, is_blocked, blocked_reason, is_anonymized, anonymized_at, is_merged_into, merged_at, consent, tags, source, source_metadata, custom_fields, created_at, updated_at, last_activity_at, first_service_at";
 
 interface CursorPayload {
   sort: string | null;
@@ -133,10 +133,16 @@ export async function listContactsHandler(
       // ⚠️ `display_name` ESTAVA DE FORA, e é a coluna que a tela MOSTRA.
       //
       // Contato que entra pelo WhatsApp nasce só com `display_name` (o pushName);
-      // `name` fica nulo até alguém editar à mão. `resolveContactName` e o resto
-      // da UI preferem `display_name` — então a busca ignorava exatamente o nome
-      // que o usuário vê e digita. Medido nesta instalação: 15 de 33 contatos
-      // têm `display_name` e nenhum `name`.
+      // `name` fica nulo até alguém editar à mão, e a busca ignorava exatamente
+      // o nome que o usuário vê e digita. Medido nesta instalação: 15 de 33
+      // contatos têm `display_name` e nenhum `name`.
+      //
+      // Quem decide o nome exibido é `nomeDoContato`/`rotuloDoContato`
+      // (lib/contacts/rotulo-do-contato.ts) — a ordem em vigor se lê ali, não
+      // aqui. Esta linha já afirmou que a UI prefere `display_name`, e a issue
+      // #906 inverteu a precedência sem que a frase acompanhasse. O que
+      // justifica a coluna no OR não é a ordem: é que ela é a ÚNICA preenchida
+      // em metade da base, então buscar sem ela devolve zero para quem existe.
       //
       // Achado por um turno de agente REAL (IA 360 · wave 2): pedido para marcar
       // um retorno para "Cliente Retorno E2E", o modelo chamou esta busca, levou

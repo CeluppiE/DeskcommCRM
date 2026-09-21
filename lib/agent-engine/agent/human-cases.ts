@@ -57,7 +57,10 @@ export type CaseEventKind =
   | 'resolved'
   | 'escalated'
   | 'cancelled'
-  | 'agent_noted';
+  | 'agent_noted'
+  // (migration 0292) A equipe foi avisada no WhatsApp de que este caso abriu.
+  // Escrito pelo handler do aviso DEPOIS do envio, com `actor_kind='system'`.
+  | 'alert_sent';
 
 /**
  * A tupla que o `z.enum` exige, derivada de `TIPOS_DE_CASO` — a fonte única do

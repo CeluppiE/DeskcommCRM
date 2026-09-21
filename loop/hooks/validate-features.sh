@@ -8,8 +8,42 @@ set -euo pipefail
 # Sessão humana / lane de features declarada explicitamente
 [ "${DESKCOMM_GOV_PLAN_EDIT:-0}" = "1" ] && exit 0
 
-# features.json não está no commit → nada a validar
-git diff --cached --name-only | grep -qx 'plan/features.json' || exit 0
+# features.json não está no commit → nada a validar.
+#
+# O pathspec NÃO é enfeite. Sem ele, `git diff --cached --name-only` despeja o
+# índice inteiro e o `grep -q` casa e FECHA O PIPE no meio: o git morre de
+# SIGPIPE, o `pipefail` propaga 141 e o `|| exit 0` engole. Medido em 18/09/2026:
+# num merge com 4663 arquivos encenados o hook saía 0 sem validar NADA, em
+# silêncio (exit 141 com pipefail; PIPESTATUS=(141 0) sem ele). Com o pathspec o
+# git imprime um nome só e a sonda fica honesta no mesmo estado.
+git diff --cached --name-only -- plan/features.json | grep -qx 'plan/features.json' || exit 0
+
+# ── O que chega pelo OUTRO LADO de um merge já aceito não é edição desta branch ──
+#
+# Num merge, HEAD é a ponta da MINHA branch e o outro lado é MERGE_HEAD, que as
+# três comparações abaixo ignoram. Então `old` = a versão velha da branch e
+# `new` = a versão que a main trouxe: a diferença era lida como edição do autor.
+# Medido: `git merge --no-commit --no-ff 1cd048310` (commit real da main que só
+# toca plan/features.json) → `git commit` recusado, blob do índice IDÊNTICO ao de
+# MERGE_HEAD, zero autoria minha. Mesma classe do guard de migration e do
+# freeze-invariants; irmão do caso 4/5 da issue #1161.
+#
+# Vem ANTES do teste de criação da linha seguinte de propósito: a main criar o
+# arquivo depois do ponto da branch dispara o outro caminho falso — medido com o
+# commit real que o criou.
+#
+# As três condições andam juntas, e é isso que impede o merge de virar lavanderia
+# de edição: (a) estar num merge, (b) o outro lado já ser alcançável por
+# `origin/main` — trabalho aceito, não branch de colega —, (c) o blob do índice
+# ser IDÊNTICO ao do outro lado, isto é, zero autoria minha no arquivo. Falha
+# qualquer uma → cai na verificação de sempre. Sem a ref `origin/main`, merge
+# octopus ou blob ilegível, a condição é falsa e a guarda segue fechada.
+if outro_lado=$(git rev-parse -q --verify MERGE_HEAD) \
+  && git merge-base --is-ancestor "$outro_lado" origin/main 2>/dev/null \
+  && [ "$(git rev-parse -q --verify ':plan/features.json' 2>/dev/null || echo ausente-no-indice)" \
+     = "$(git rev-parse -q --verify "${outro_lado}:plan/features.json" 2>/dev/null || echo ausente-no-outro-lado)" ]; then
+  exit 0
+fi
 
 command -v jq >/dev/null 2>&1 || {
   echo "pre-commit: jq é obrigatório para validar plan/features.json (brew install jq)." >&2

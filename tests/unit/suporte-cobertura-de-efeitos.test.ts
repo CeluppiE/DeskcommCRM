@@ -14,6 +14,26 @@ import { emBarraNormal } from "./helpers/caminho";
 // defeito vivo até aqui.
 function files(dir:string):string[]{return readdirSync(dir,{withFileTypes:true}).flatMap(item=>item.isDirectory()?files(join(dir,item.name)):[join(dir,item.name)]).map(emBarraNormal);}
 
+function mensagemDaGuardaDeSuporte(uncovered: string[]): string {
+ return [
+  "Handlers mutantes de app/api/v1 sem requireSupportWrite():",
+  ...uncovered.map(path => `  - ${path}`),
+  "",
+  "requireSupportWrite() é a guarda de EFEITO do acompanhamento administrativo: bloqueia escrita em support_readonly e não substitui requireRole/RBAC/MFA.",
+  "Chame a guarda antes do efeito e antes de usar service role. Implementação: lib/impersonate/support.ts.",
+  "Para um exemplo real, procure por requireSupportWrite( em app/api/v1/. Rotas de infraestrutura só ficam fora quando a exceção está explícita neste gate.",
+ ].join("\n");
+}
+
+it("a falha do gate ensina como corrigir requireSupportWrite",()=>{
+ const message=mensagemDaGuardaDeSuporte(["app/api/v1/exemplo/route.ts:POST"]);
+ expect(message).toContain("app/api/v1/exemplo/route.ts:POST");
+ expect(message).toContain("guarda de EFEITO");
+ expect(message).toContain("support_readonly");
+ expect(message).toContain("não substitui requireRole/RBAC/MFA");
+ expect(message).toContain("lib/impersonate/support.ts");
+});
+
 // Controle positivo: sem ele, uma varredura quebrada devolve zero arquivos e
 // zero é indistinguível de "está tudo em ordem" — foi assim que o separador de
 // caminho passou despercebido. Mesma doutrina de `helpers/varrer-codigo.ts`.
@@ -25,6 +45,11 @@ it("todo handler mutante do app declara guarda de suporte ou é infraestrutura i
  const uncovered:string[]=[];
  for(const path of files("app/api/v1").filter(p=>p.endsWith("/route.ts"))){
   if(/app\/api\/v1\/(cron|webhooks)\//.test(path)||path==="app/api/v1/system/agent/route.ts")continue; // segredo de máquina, sem actor/session cookie
+  // Provisionamento por sistema externo: Bearer do segredo da INSTALAÇÃO
+  // (TENANT_PROVISIONING_SECRET), sem cookie nem ator — a mesma natureza das
+  // linhas acima. Não há sessão de suporte para a guarda ler; chamá-la aqui
+  // seria um no-op que devolve 503 quando o GoTrue oscila.
+  if(path==="app/api/v1/tenants/provision/route.ts")continue;
   if(path.includes("/impersonate"))continue; // início/fim autenticam a posse e têm contrato próprio
   const source=ts.createSourceFile(path,readFileSync(path,"utf8"),ts.ScriptTarget.Latest,true);
   // DUAS FORMAS de exportar um handler, e o gate precisa das duas. A varredura
@@ -46,7 +71,7 @@ it("todo handler mutante do app declara guarda de suporte ou é infraestrutura i
   for(const [nome,texto] of trechos)
    if(!texto.includes("requireSupportWrite(")&&!texto.includes("methodNotAllowed("))uncovered.push(`${path}:${nome}`);
  }
- expect(uncovered).toEqual([]);
+ expect(uncovered, mensagemDaGuardaDeSuporte(uncovered)).toEqual([]);
 });
 it("Server Actions que resolvem tenant declaram efeito ou uma exceção pessoal/transição",()=>{
  const exceptions=new Set(["updateProfile.ts","trocarIdioma.ts","recoverOrganization.ts"]); // preferências próprias e recuperação sem org

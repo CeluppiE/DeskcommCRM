@@ -8,9 +8,12 @@ import type { NextConfig } from "next";
  *  - Initial bundle /app/inbox < 250KB gzipped
  */
 const nextConfig: NextConfig = {
-  // Self-host: gera .next/standalone pro container Docker (node server.js).
-  // Na Vercel (VERCEL=1) fica desligado — Next 16.3 + adapter + standalone
-  // quebra o onBuildComplete com ENOENT next-server.js.nft.json (#96646).
+  // Self-host: gera .next/standalone pro container Docker (node server.js) — é
+  // o que o estágio `runner` do Dockerfile copia, então é o modo de build deste
+  // repositório. O ramo de `process.env.VERCEL` é resíduo defensivo, não um modo
+  // suportado aqui: onde essa variável existe, o standalone precisa ficar
+  // desligado porque Next 16.3 + adapter + standalone quebra o onBuildComplete
+  // com ENOENT next-server.js.nft.json (#96646).
   output: process.env.VERCEL ? undefined : "standalone",
   /**
    * O `standalone` copia SÓ o que o file tracing detecta — e ele não detecta
@@ -31,6 +34,20 @@ const nextConfig: NextConfig = {
    * O glob passa pelo layout do pnpm (`.pnpm/@swc+helpers@<versão>/…`) porque é
    * onde o pacote realmente mora aqui; o `*` cobre o bump de versão seguinte
    * sem exigir que alguém lembre de editar esta linha.
+   *
+   * TERCEIRO padrão, medido numa instalação real em 2026-09-17: o próprio
+   * `pdfjs-dist` (35 MB / 554 arquivos em `.pnpm`) sai do standalone **inteiro**
+   * — 0 arquivos —, não só o binário nativo do canvas. `extractPdfText`
+   * (lib/ai/rag/extractors/pdf.ts) importa `"pdfjs-dist/legacy/build/pdf.mjs"`
+   * por STRING LITERAL, e mesmo assim o tracer não segue: esse subpath não
+   * está no mapa de `exports` do `package.json` do pacote, então o NFT não
+   * tem como validar a resolução e não inclui nenhum arquivo do pacote — não
+   * é o mesmo defeito parcial do `@swc/helpers` (que perdia 106 de 108
+   * arquivos), é ausência total. Efeito em produção: toda tentativa de
+   * ensinar o agente com PDF cai no catch de `PdfExtractError` com
+   * "Cannot find package 'pdfjs-dist'", e `lib/ai/rag/ingest/documento.ts`
+   * reembala isso na mensagem genérica de "só imagens escaneadas" — o
+   * operador não tinha como saber que o problema era o build, não o arquivo.
    */
   outputFileTracingIncludes: {
     "/**": [
@@ -51,6 +68,8 @@ const nextConfig: NextConfig = {
       // vez de para o diretório que os agrega, nenhum symlink é visitado.
       "./node_modules/.pnpm/@napi-rs+canvas@*/node_modules/@napi-rs/canvas/**",
       "./node_modules/.pnpm/@napi-rs+canvas-*/node_modules/@napi-rs/*/*.node",
+      // pdfjs-dist em si (ver comentário acima).
+      "./node_modules/.pnpm/pdfjs-dist@*/node_modules/pdfjs-dist/**",
     ],
   },
   reactStrictMode: true,
@@ -124,10 +143,11 @@ export default withSentryConfig(nextConfig, {
   tunnelRoute: "/monitoring",
 
   webpack: {
-    // Enables automatic instrumentation of Vercel Cron Monitors. (Does not yet work with App Router route handlers.)
-    // See the following for more information:
+    // Herança do wizard do Sentry (instrumentação automática de cron monitors).
+    // Inerte aqui: o bloco `webpack:` inteiro é ignorado pelo build de produção,
+    // que roda Turbopack (ver Dockerfile). Fica como resíduo defensivo, não como
+    // modo de build suportado por este repositório.
     // https://docs.sentry.io/product/crons/
-    // https://vercel.com/docs/cron-jobs
     automaticVercelMonitors: true,
 
     // Tree-shaking options for reducing bundle size

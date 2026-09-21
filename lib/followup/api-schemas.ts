@@ -58,6 +58,23 @@ export const triggerConfigSchema = z.discriminatedUnion("kind", [
 ]);
 export type TriggerConfig = z.infer<typeof triggerConfigSchema>;
 
+/**
+ * Instalar um modelo pronto (`lib/followup/modelos/`). O corpo é mínimo de
+ * propósito: nome, textos, prazos e política de handoff vêm do MODELO, nunca do
+ * cliente — quem manda o grafo é o catálogo, e um body que pudesse mandar o seu
+ * seria a mesma porta do PATCH com outro nome.
+ *
+ * `stage_id` só é lido por modelo de gatilho de etapa (`pedeEtapa`), e é
+ * conferido contra a organização ativa antes de gravar: etapa de outra org no
+ * body é o anti-pattern nº 10 do CLAUDE.md.
+ */
+export const instalarModeloSchema = z.strictObject({
+  model_id: z.string().trim().min(1).max(80),
+  stage_id: z.string().uuid().optional(),
+  /** Renomear na hora de instalar — duas clínicas na mesma instalação, dois nomes. */
+  name: z.string().trim().min(1).max(80).optional(),
+});
+
 export const patchFollowupFlowSchema = z.strictObject({
   name: z.string().trim().min(1).max(80).optional(),
   draft_graph: flowGraphSchema.optional(),

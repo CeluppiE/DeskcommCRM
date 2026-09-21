@@ -65,6 +65,7 @@ export const aiHandoffFromSentimentHandler: EventHandler = {
       conversationId,
       organizationId: row.organization_id,
       reason: "low_sentiment",
+      origem: "sentimento",
       leadId,
       metadata: {
         sentiment_score: sentimentScore,

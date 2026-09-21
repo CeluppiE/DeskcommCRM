@@ -22,10 +22,12 @@ import { motivoDoErro } from "./psql-transporte";
  * a migration 0157) e em nenhum teste: são 50 usos de `writeCountAs` na suíte, e
  * `grep 'update public.organizations' tests/` era vazio.
  *
- * **2. O read-modify-write do jsonb inteiro.** `settings` tem três donos com
- * gates diferentes — a aba Organização (admin), o PATCH de atendimento (manager)
- * e a régua de atrito (manager) — e os três leem o objeto INTEIRO, espalham em
- * memória e regravam o objeto inteiro, em round-trips separados. A perda é
+ * **2. O read-modify-write do jsonb inteiro.** `settings` tem vários donos com
+ * gates diferentes, e cada um lê o objeto INTEIRO, espalha em memória e regrava
+ * o objeto inteiro, em round-trips separados. Quem são hoje:
+ * `git grep -n "update({ settings" -- app lib workers` — a aba Organização saiu
+ * da lista no PR #1209, e é por isso que aqui fica o comando e não o número. A
+ * perda é
  * medida: `visibility_mode` volta de `own` para `all` sem erro em lugar nenhum, e
  * essa chave é lida DIRETO pela RLS (`fn_can_view_conversation`,
  * `fn_can_view_lead`). Um write de COR reverteria, em silêncio, uma decisão de

@@ -57,6 +57,7 @@ SEGREDO_SEGURO="$(printf '%s' "$INTERNAL_SECRET" | sed "s/'/'\\\\''/g")"
 # comentário, seria DADO — e crase em prosa dentro de aspas duplas o shell
 # EXECUTA. Foi o que quebrou o entrypoint na primeira tentativa desta linha.
 CRONS="
+* * * * *|240|api/v1/cron/prospecting
 * * * * *|25|api/v1/cron/agent-dispatcher
 * * * * *|25|api/v1/cron/followup-flow-worker
 * * * * *|45|api/v1/cron/event-log-drain
@@ -64,7 +65,7 @@ CRONS="
 * * * * *|25|api/v1/cron/recover-stuck-messages
 */5 * * * *|25|api/v1/cron/storage-redaction?limit=50
 */5 * * * *|25|api/v1/cron/snooze-watcher
-*/5 * * * *|25|api/v1/cron/attendant-heartbeat
+*/5 * * * *|60|api/v1/cron/handoff-devolucao
 */5 * * * *|60|api/v1/cron/webhook-log-retention
 */5 * * * *|45|api/v1/cron/channel-health
 */10 * * * *|60|api/v1/cron/contact-avatars
@@ -87,16 +88,30 @@ CRONS="
 7 * * * *|60|api/v1/cron/case-stale-watcher
 */30 * * * *|60|api/v1/cron/contact-phones
 17 * * * *|60|api/v1/cron/contact-proposals-watcher
+23 * * * *|60|api/v1/cron/followup-sem-agente
 # O ANIVERSÁRIO. De hora em hora, e não uma vez ao dia, porque quem decide o
 # momento é o relógio de parede de CADA organização: a rodada só age naquela
 # cujo fuso marca a hora de parabenizar. Uma varredura diária em UTC felicitaria
 # no dia errado metade do mundo e de madrugada boa parte do resto. Barato: quem
 # não configurou a automação não chega a ser varrido.
 7 * * * *|60|api/v1/cron/contact-birthdays
+# A DATA DO FUNIL (#989). Mesma cadência e mesmo motivo do aniversário: de hora
+# em hora, e quem decide o momento é o relógio de parede de CADA organização —
+# a rodada só age naquela que marca a hora da varredura. Minuto diferente do
+# aniversário para as duas não disputarem a mesma batida num self-host pequeno.
+23 * * * *|60|api/v1/cron/lead-date-field-due
+# O canal mudo (doc 11, decisão B): varredura de banco, sem rede, com régua em
+# DIAS. Diária e de madrugada porque o estado que ela lê muda em dias — de 5 em
+# 5 minutos seriam 288 varreduras para nada, e o aviso chegaria na mesma hora.
+50 5 * * *|60|api/v1/cron/canal-mudo-watcher
 0 12 * * *|60|api/v1/cron/lgpd-sla-watcher
 30 3 * * *|120|api/v1/cron/kb-conversations-batch
 15 4 * * *|60|api/v1/cron/sync-model-catalog
 40 4 * * *|120|api/v1/cron/data-retention
+# AS RECORRÊNCIAS. Uma vez ao dia é o bastante: o que ela gera é uma conta a
+# pagar, e a diferença entre nascer às 5h ou às 17h não muda nada para quem paga.
+# Barato: uma consulta por instalação, e quem não tem molde nenhum sai na hora.
+50 5 * * *|60|api/v1/cron/recurring-entries
 "
 
 # CRONTAB_PATH é ponto de injeção do teste (tests/shell/scheduler-entrypoint.test.sh).

@@ -21,6 +21,8 @@ import { temFerramentaDeAgenda } from "@/lib/agent-engine/agent/inbound-turn";
 // As duas frases medidas em produção que deram origem ao gate.
 const PROMESSA = "Vou verificar o horário e já te aviso!";
 const CONFIRMOU = "Prontinho, seu horário está confirmado para quinta!";
+/** As ferramentas de agenda do agente que só consulta. */
+const SO_CONSULTA = ["crm_find_free_slots"] as const;
 
 /**
  * Este arquivo mora em `tests/unit/` e não ao lado do gate por uma razão
@@ -42,7 +44,7 @@ const CONFIRMOU = "Prontinho, seu horário está confirmado para quinta!";
  */
 function ctx(over: {
   active: boolean;
-  podeMarcar: boolean;
+  ferramentas: readonly string[];
   toolCalledThisTurn: boolean;
   body: string;
 }): GateContext {
@@ -86,21 +88,21 @@ describe("temFerramentaDeAgenda", () => {
 describe("agendaStallGate no agente que só consulta", () => {
   it("veta a promessa de verificar sem ter consultado", () => {
     const v = agendaStallGate.evaluate(
-      ctx({ active: true, podeMarcar: false, toolCalledThisTurn: false, body: PROMESSA }),
+      ctx({ active: true, ferramentas: SO_CONSULTA, toolCalledThisTurn: false, body: PROMESSA }),
     );
     expect(v.pass).toBe(false);
   });
 
   it("veta afirmar que está confirmado — ele nem pode confirmar", () => {
     const v = agendaStallGate.evaluate(
-      ctx({ active: true, podeMarcar: false, toolCalledThisTurn: false, body: CONFIRMOU }),
+      ctx({ active: true, ferramentas: SO_CONSULTA, toolCalledThisTurn: false, body: CONFIRMOU }),
     );
     expect(v.pass).toBe(false);
   });
 
   it("passa depois de a consulta ter rodado no turno", () => {
     const v = agendaStallGate.evaluate(
-      ctx({ active: true, podeMarcar: false, toolCalledThisTurn: true, body: PROMESSA }),
+      ctx({ active: true, ferramentas: SO_CONSULTA, toolCalledThisTurn: true, body: PROMESSA }),
     );
     expect(v.pass).toBe(true);
   });
@@ -109,7 +111,7 @@ describe("agendaStallGate no agente que só consulta", () => {
     // Ensinar `crm_book_appointment` a quem não a tem faz o modelo tentar,
     // falhar, e a correção vira um segundo defeito.
     const v = agendaStallGate.evaluate(
-      ctx({ active: true, podeMarcar: false, toolCalledThisTurn: false, body: PROMESSA }),
+      ctx({ active: true, ferramentas: SO_CONSULTA, toolCalledThisTurn: false, body: PROMESSA }),
     );
     expect(v.pass).toBe(false);
     if (v.pass) return;
@@ -118,9 +120,14 @@ describe("agendaStallGate no agente que só consulta", () => {
     expect(v.reason).not.toContain("crm_reschedule_appointment");
   });
 
-  it("quem PODE marcar continua vendo as três ferramentas no veto", () => {
+  it("quem PODE marcar vê no veto a ferramenta de marcar que tem", () => {
     const v = agendaStallGate.evaluate(
-      ctx({ active: true, podeMarcar: true, toolCalledThisTurn: false, body: PROMESSA }),
+      ctx({
+        active: true,
+        ferramentas: ["crm_find_free_slots", "crm_book_appointment"],
+        toolCalledThisTurn: false,
+        body: PROMESSA,
+      }),
     );
     expect(v.pass).toBe(false);
     if (v.pass) return;

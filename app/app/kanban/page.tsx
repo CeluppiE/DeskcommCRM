@@ -38,13 +38,26 @@ export default async function KanbanPickerPage() {
   const supabase = await createClient();
   const { data } = await supabase
     .from("crm_pipelines")
-    .select("id, name, slug, description, position, is_default")
+    // `is_client_pipeline` entra: sem ela o selo "Clientes" não aparecia ao
+    // carregar a página e o botão sempre oferecia "Funil de clientes", mesmo no
+    // funil já marcado — só o corpo de um PATCH trazia a coluna.
+    //
+    // ⚠️ `is_archived` DEIXOU DE SER FILTRO E VIROU COLUNA (#979). Antes a
+    // consulta cortava os arquivados no banco, e o resultado era um funil
+    // invisível e indestrutível: quem arquivou não tinha como ver, tirar do
+    // arquivo nem excluir o que arquivou. A separação passou para a partição
+    // abaixo — a lista de trabalho continua só com os vivos.
+    .select("id, name, slug, description, position, is_default, is_client_pipeline, is_archived")
     .eq("organization_id", activeOrg.orgId)
-    .eq("is_archived", false)
     .order("position");
 
-  const funis = (data ?? []) as FunilDaLista[];
+  const todos = (data ?? []) as Array<FunilDaLista & { is_archived: boolean }>;
+  const funis = todos.filter((f) => !f.is_archived);
   const podeGerenciar = ROLE_RANK[activeOrg.role] >= ROLE_RANK.manager;
+  // O arquivo só vai para quem pode mexer nele: tirar do arquivo e excluir são
+  // `requireRole("manager")` nas rotas, e mostrar a gaveta a quem receberia 403
+  // seria prometer o que não se cumpre — mesmo critério de `podeGerenciar`.
+  const arquivados = podeGerenciar ? todos.filter((f) => f.is_archived) : [];
   // Importar planilha é ESCRITA DE OPERAÇÃO, não configuração: quem atende
   // sobe a lista que recebeu. Espelha o `requireRole("agent")` da rota.
   const podeImportar = ROLE_RANK[activeOrg.role] >= ROLE_RANK.agent;
@@ -65,7 +78,12 @@ export default async function KanbanPickerPage() {
         <h1 className="text-2xl font-semibold tracking-tight">{t("Funis")}</h1>
       </header>
 
-      <FunisClient funis={funis} podeGerenciar={podeGerenciar} podeImportar={podeImportar} />
+      <FunisClient
+        funis={funis}
+        arquivados={arquivados}
+        podeGerenciar={podeGerenciar}
+        podeImportar={podeImportar}
+      />
     </div>
   );
 }

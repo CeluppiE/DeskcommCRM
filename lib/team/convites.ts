@@ -14,6 +14,7 @@
  * STATUS é derivado, nunca coluna: `statusConvite()` decide a partir de
  * `revoked_at` / `accepted_at` / `expires_at`.
  */
+import type { EmailDeliveryError } from "@/lib/email/roteador";
 import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -88,6 +89,13 @@ export interface ResultadoEmissao {
   convite: ConviteDeTime;
   accept_url: string;
   email_dispatched: boolean;
+  /**
+   * Por que o e-mail não saiu, quando não saiu. Vocabulário de
+   * `lib/email/roteador.ts`. NÃO é gravado na linha do convite: é o desfecho
+   * desta emissão, e a linha guarda o estado (`email_dispatched`), não o
+   * motivo da última tentativa.
+   */
+  email_error?: EmailDeliveryError;
   /** true = renovou uma linha pendente que já existia (reenvio). */
   renovado: boolean;
 }
@@ -164,6 +172,7 @@ export async function emitirConvite(
     convite: row as ConviteDeTime,
     accept_url: emitido.accept_url,
     email_dispatched: emitido.email_dispatched,
+    email_error: emitido.email_error,
     renovado: !!pendente,
   };
 }
@@ -223,6 +232,7 @@ export async function reenviarConvite(
     convite: row as ConviteDeTime,
     accept_url: emitido.accept_url,
     email_dispatched: emitido.email_dispatched,
+    email_error: emitido.email_error,
     renovado: true,
   };
 }

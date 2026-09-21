@@ -59,7 +59,6 @@ describe("tenantSchema", () => {
       media_retention_days: 90,
       dpo_email: "dpo@acme.com",
       privacy_policy_url: "https://acme.com/privacy",
-      lost_reasons_extra: ["Sem orçamento"],
     });
     expect(r.success).toBe(true);
   });
@@ -71,12 +70,11 @@ describe("tenantSchema", () => {
       timezone: "UTC",
       locale: "pt-BR",
       media_retention_days: 5,
-      lost_reasons_extra: [],
     });
     expect(r.success).toBe(false);
   });
 
-  it("defaults lost_reasons_extra to empty array", () => {
+  it("não conhece mais `lost_reasons_extra` — o campo saiu do produto", () => {
     const r = tenantSchema.safeParse({
       display_name: "Acme",
       legal_name: "Acme",
@@ -84,9 +82,12 @@ describe("tenantSchema", () => {
       locale: "pt-BR",
       currency: "BRL",
       media_retention_days: 90,
+      lost_reasons_extra: ["Sem orçamento"],
     });
     expect(r.success).toBe(true);
-    if (r.success) expect(r.data.lost_reasons_extra).toEqual([]);
+    // Zod ignora chave desconhecida; o que importa é ela NÃO sair do parse —
+    // é isso que impede a action de voltar a gravá-la sem ninguém notar.
+    if (r.success) expect("lost_reasons_extra" in r.data).toBe(false);
   });
 
   /**

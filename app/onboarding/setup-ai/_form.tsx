@@ -60,6 +60,8 @@ export function SetupAiForm({ capacidades, conferencias }: Props) {
   const [naoPublicado, setNaoPublicado] = useState<string | null>(null);
   const [causa, setCausa] = useState<"canal" | "modelo" | "chave" | null>(null);
   const [provedor, setProvedor] = useState<string | null>(null);
+  // Provedor cuja chave a pessoa JÁ colou e que o provedor ainda não confirmou.
+  const [chaveEmVerificacao, setChaveEmVerificacao] = useState<string | null>(null);
   const [motivoDoModelo, setMotivoDoModelo] = useState<
     "catalogo_vazio" | "nenhum_com_ferramentas" | null
   >(null);
@@ -74,6 +76,7 @@ export function SetupAiForm({ capacidades, conferencias }: Props) {
           setNaoPublicado(null);
           setCausa(null);
           setProvedor(null);
+          setChaveEmVerificacao(null);
           setMotivoDoModelo(null);
           setRegrasNaoSalvas(null);
           const res = await createDefaultAgent(formData);
@@ -87,6 +90,9 @@ export function SetupAiForm({ capacidades, conferencias }: Props) {
           if (res?.publish_blocked_by === "chave") {
             setCausa("chave");
             setProvedor(res.provider ?? null);
+            // A chave colada (e ainda não confirmada) tem provedor PRÓPRIO: sem
+            // isto a tela pediria de novo uma chave que a pessoa já colou.
+            setChaveEmVerificacao(res.chave_em_verificacao ?? null);
             toast.warning(t("Atendente criado, mas ainda não está no ar."));
             return;
           }
@@ -226,11 +232,21 @@ export function SetupAiForm({ capacidades, conferencias }: Props) {
             {t("Seu atendente foi criado, mas ficou como")} <strong>{t("rascunho")}</strong>{" "}
             {t("— ele ainda não tem com o que pensar.")}
           </p>
-          <p className="text-sm">
-            {t("Não achei chave de")} {provedorLegivel(provedor, t)}{" "}
-            {t("nem cadastrada aqui, nem vinda da instalação. Cole a chave no campo acima («o cérebro dele») e crie o atendente de novo — ou cadastre em")}{" "}
-            <strong>{t("IA › Credenciais")}</strong>.
-          </p>
+          {chaveEmVerificacao ? (
+            // A chave EXISTE, está gravada, e o que falta é o provedor confirmar.
+            // Dizer "não achei chave" aqui é falso — e manda a pessoa colar de
+            // novo o que ela acabou de colar (#1007).
+            <p className="text-sm">
+              {t("A chave que você colou ainda não foi confirmada pelo provedor.")}{" "}
+              {t("Assim que ela for confirmada, publique de novo — não precisa colar outra.")}
+            </p>
+          ) : (
+            <p className="text-sm">
+              {t("Não achei chave de")} {provedorLegivel(provedor, t)}{" "}
+              {t("nem cadastrada aqui, nem vinda da instalação. Cole a chave no campo acima («o cérebro dele») e crie o atendente de novo — ou cadastre em")}{" "}
+              <strong>{t("IA › Credenciais")}</strong>.
+            </p>
+          )}
           {/*
             ⚠️ SEM ESTA SAÍDA O PASSO É UM BECO. O aviso irmão (o de modelo) já
             oferecia seguir, e este nasceu sem — quem instala sem chave nenhuma

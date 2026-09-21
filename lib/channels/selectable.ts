@@ -22,7 +22,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { nomeDoCanal } from "@/lib/channels/estado";
 
 import { ARCHIVED_AT, queryTolerantToMissingArchived } from "./archived";
-import { PROVIDERS_DE_MENSAGEM } from "./capabilities";
+import { PROVIDERS_DE_MENSAGEM, capabilitiesOf, transportaMensagem } from "./capabilities";
+import type { ProviderDeMensagem } from "./types";
 
 /** Um canal oferecível como destino, já com o rótulo resolvido para a tela. */
 export interface SelectableChannel {
@@ -30,9 +31,26 @@ export interface SelectableChannel {
   display_name: string;
   status: string;
   phone_number: string | null;
+  /**
+   * O canal manda TEXTO LIVRE a qualquer hora?
+   *
+   * É a pergunta que a conexão de avisos de caso precisa fazer, e ela é de
+   * CAPACIDADE, não de provedor: o aviso sai quando a IA trava, sem nenhuma
+   * janela de 24 horas aberta pela equipe — e nunca haverá uma, porque o número
+   * do suporte não conversa com ninguém. Um canal que exige modelo aprovado
+   * aceitaria a configuração e nunca entregaria um aviso.
+   *
+   * Sai daqui, e não de um `if` na tela, porque `docs/doctrine/restricao-de-
+   * canal.md` (invariante 1) proíbe nome de provedor fora de `lib/channels/` —
+   * e `pnpm lint:channels` reprova, inclusive em comentário. O campo é ADITIVO:
+   * quem já consumia `SelectableChannel` não muda uma linha.
+   */
+  aceitaMensagemLivre: boolean;
 }
 
-const COLUNAS = "id, display_name, status, phone_number, waha_session_name";
+// `provider` entra no `select` por causa de `aceitaMensagemLivre`. Ele é lido
+// aqui e MORRE aqui: o DTO leva a capacidade, nunca o nome do provedor.
+const COLUNAS = "id, display_name, status, phone_number, waha_session_name, provider";
 
 interface LinhaCanal {
   id: string;
@@ -40,6 +58,26 @@ interface LinhaCanal {
   status: string;
   phone_number: string | null;
   waha_session_name: string | null;
+  provider: string | null;
+}
+
+/**
+ * A capacidade de mandar texto livre, resolvida sem deixar o erro escapar.
+ *
+ * `capabilitiesOf` LANÇA para provedor fora da matriz — é o fail-closed certo no
+ * caminho de ENVIO. Aqui ele seria o desfecho errado: um clone que aplicou o
+ * baseline antes de puxar a imagem nova tem, na coluna, um provedor que este
+ * build não conhece, e um throw apagaria a lista INTEIRA de conexões — inclusive
+ * as que funcionam. `false` é a resposta conservadora e local: "não use ESTE
+ * canal para mandar recado".
+ */
+function aceitaMensagemLivre(provider: string | null): boolean {
+  if (!transportaMensagem(provider)) return false;
+  try {
+    return capabilitiesOf(provider as ProviderDeMensagem).freeformOutsideWindow;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -84,5 +122,6 @@ export async function listSelectableChannels(
     display_name: nomeDoCanal(c),
     status: c.status,
     phone_number: c.phone_number ?? null,
+    aceitaMensagemLivre: aceitaMensagemLivre(c.provider),
   }));
 }

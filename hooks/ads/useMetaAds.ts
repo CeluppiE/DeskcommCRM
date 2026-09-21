@@ -34,6 +34,14 @@ export interface CampanhasResposta {
   periodo: { from: string; to: string };
   account_id: string;
   lido_em: string;
+  /**
+   * Ressalvas da leitura, para a tabela poder explicar uma coluna vazia.
+   *
+   * Vazio é o caminho normal. Quando vem preenchido, o número que falta é
+   * AUSENTE (a plataforma recusou o campo), e não zero — a tabela mostra o
+   * motivo no hover do "—" em vez de deixar a célula sem explicação.
+   */
+  avisos: string[];
 }
 
 /** As contas alcançadas pelo token. Muda raramente — daí o `staleTime` alto. */

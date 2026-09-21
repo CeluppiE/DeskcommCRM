@@ -15,22 +15,43 @@ import { guardServiceEffect } from "@/lib/atendimento/fronteira-server";
  *   (b) conversa: status transiciona SÓ 'ai_handling'→'pending' (CASE — nunca pisa em
  *       claimed/closed) + bot_silenced_until='infinity' + last_handoff_at/reason;
  *   (c) cancela os crons PENDENTES do lead (follow-ups agendados não disparam após handoff);
- *   (d) cria agent_inbox_items(kind='handoff') com o resumo (dedup por episódio aberto).
+ *   (c2) grava a LINHA DE FATO em passagens_de_atendimento — o porquê, o que a IA
+ *        já tentou, o que o cliente quer e as palavras literais dele. Sem dedup:
+ *        uma passagem é uma passagem;
+ *   (d) cria/enriquece agent_inbox_items(kind='handoff', ref_kind='conversation')
+ *        com o corpo CURTO — o contexto mora na passagem, não no aviso.
  *
  * tenant/lead/conversation vêm da ROW do job (closure do run), NUNCA do payload (regra dura 1).
- * O resumo vai ao inbox (é PARA o humano assumir) — mas NUNCA a log (PII fora de log, regra 8).
+ * O contexto vai à passagem (é PARA o humano assumir) — mas NUNCA a log (PII fora de log, regra 8).
  */
 import { z } from 'zod';
 import type pg from 'pg';
 
 import { expectativaDeAtendimento } from '@/lib/escalacao/disponibilidade';
+import {
+  montarBriefingDaPassagem,
+  type BriefingDaPassagem,
+  type CheckpointParaBriefing,
+} from '@/lib/escalacao/briefing-da-passagem';
+import {
+  corpoCurtoDoAviso,
+  linhaDoAvisoAoCliente,
+  registrarPassagem,
+  type DesfechoDoAvisoDaPassagem,
+  type MotivoDaPassagem,
+  type OrigemDaPassagem,
+} from '@/lib/escalacao/passagem';
+import { traduzir } from '@/lib/i18n/dicionario';
+import { normalizarIdioma, type Idioma } from '@/lib/i18n/idiomas';
 import { ehOptOutProvavel } from '@/lib/opt-out/deteccao';
 import { emitAgentActivityForContact } from '@/lib/leads/agent-activity';
+
+import type { DesfechoDoAviso } from './aviso-de-escalacao';
 
 import type { Logger } from '../obs/logger';
 import { cancelPendingCronsForLead } from '../cron/scheduler';
 import { findForbiddenKey, zodIssuesSummary } from './lead-state';
-import { renderDeclaracaoParaHumano, type DeclaracaoDoTurno } from './declaracao';
+import type { DeclaracaoDoTurno } from './declaracao';
 
 /** Postgres `infinity`: o bot nunca reassume após handoff. */
 const SILENCE_INFINITY = 'infinity';
@@ -123,6 +144,24 @@ export async function performHumanHandoff(
     conversationSummary: string;
     inboxTitle?: string;
     /**
+     * Os fatos da passagem, para a LINHA de `passagens_de_atendimento`.
+     *
+     * OPCIONAL, e é escolha: `tests/invariants/escalacao-ciclo-humano.test.ts` é
+     * arquivo congelado e chama esta função com a assinatura antiga. Torná-lo
+     * obrigatório forçaria um bypass de invariante que esta entrega não precisa.
+     * Ausente = nenhuma linha é gravada, e o chamador é um caminho que ainda não
+     * declara a sua origem (hoje, só o harness de teste).
+     */
+    passagem?: {
+      origem: OrigemDaPassagem;
+      motivoCodigo: MotivoDaPassagem;
+      /** O briefing montado por `montarBriefingDaPassagem`. */
+      briefing: BriefingDaPassagem;
+      casoId?: string | null;
+      /** O idioma da ORGANIZAÇÃO, quando o chamador já o tem. Default: pt-BR. */
+      idioma?: Idioma;
+    };
+    /**
      * O desfecho do aviso que o chamador mandou ao lead ANTES desta passagem
      * (`avisarLeadDaEscalacao`). Opcional porque nem todo chamador é o motor de
      * conversa — o "Assumir eu" de um caso é acionado por uma pessoa que já está
@@ -133,7 +172,7 @@ export async function performHumanHandoff(
      * a resposta muda a primeira frase que ele digita. Falhar fechado na ação,
      * aberto na informação.
      */
-    avisoAoLead?: { avisado: boolean; porque?: string };
+    avisoAoLead?: DesfechoDoAviso;
     log: Logger;
   },
 ): Promise<void> {
@@ -168,21 +207,68 @@ export async function performHumanHandoff(
   await guardServiceEffect();
   await cancelPendingCronsForLead(db, ids.tenantId, ids.leadId);
 
-  // (d) inbox de escalação com o resumo da conversa. Dedup por episódio ABERTO (mesmo padrão
-  // do escalateJailbreakPromise): 2× no mesmo handoff aberto → 1 item.
+  // (c2) A LINHA DE FATO. Vem antes do aviso porque o aviso REMETE a ela: o
+  // corpo da Central diz "abra a conversa para ver o contexto", e o contexto é
+  // esta linha. Não deduplica — uma passagem é uma passagem, e duas seguidas são
+  // dois fatos; quem deduplica é o aviso, que é alerta e não registro.
+  //
+  // Dentro do guard de fronteira como os quatro efeitos acima: escrita fora dele
+  // pode gravar sobre um atendimento que já trocou de mãos.
+  if (opts.passagem !== undefined) {
+    await guardServiceEffect();
+    const gravou = await registrarPassagem(db, {
+      organizationId: ids.tenantId,
+      contactId: ids.leadId,
+      conversationId: ids.conversationId,
+      casoId: opts.passagem.casoId ?? null,
+      motor: 'engine',
+      origem: opts.passagem.origem,
+      motivoCodigo: opts.passagem.motivoCodigo,
+      briefing: opts.passagem.briefing,
+      ...(opts.avisoAoLead !== undefined ? { aviso: desfechoDaPassagem(opts.avisoAoLead) } : {}),
+    });
+    // Falhar fechado na AÇÃO, aberto na INFORMAÇÃO: a passagem já aconteceu
+    // (force_human gravado, conversa fora do automático). Derrubar o turno aqui
+    // replicaria tudo no retry. O erro não some — ele vira log, e o aviso da
+    // Central abaixo sai do mesmo jeito.
+    if (!gravou.gravada) {
+      opts.log.warn('passagem não registrada — o aviso sai, o contexto não', { erro: gravou.erro });
+    }
+  }
+
+  // (d) O AVISO na Central. Dois consertos no mesmo statement:
+  //
+  //  1. **`ref_kind` é `conversation`, não `contact`.** O dedup por CONTATO
+  //     fazia um cliente com duas conversas abertas render um aviso só — a
+  //     segunda ficava invisível. O destino da Central também passa a ser a
+  //     conversa, que é onde a pessoa responde.
+  //  2. **Segunda passagem ENRIQUECE, não é descartada.** O `where not exists`
+  //     puro descartava em silêncio: o sentimento chegava primeiro (sem
+  //     contexto), o pedido explícito chegava depois (com contexto) e o segundo
+  //     sumia. Agora ele vira ADENDO datado no item aberto.
+  //
+  // O corpo é CURTO e não carrega conversa — ver `corpoCurtoDoAviso`.
   await guardServiceEffect();
   await db.query(
-    `insert into agent_inbox_items (organization_id, kind, severity, title, body, ref_kind, ref_id)
-     select $1, 'handoff', 'critical', $2, $3, 'contact', $4
-     where not exists (
-       select 1 from agent_inbox_items
-       where organization_id = $1 and kind = 'handoff' and ref_kind = 'contact' and ref_id = $4 and status = 'open'
-     )`,
+    `with alvo as (
+       select id, body from agent_inbox_items
+        where organization_id = $1 and kind = 'handoff' and ref_kind = 'conversation'
+          and ref_id = $4 and status = 'open'
+        order by created_at desc limit 1
+     ), adendo as (
+       update agent_inbox_items i
+          set body = coalesce(i.body, '') || chr(10) || chr(10) || $3, severity = 'critical'
+         from alvo where i.id = alvo.id
+       returning i.id
+     )
+     insert into agent_inbox_items (organization_id, kind, severity, title, body, ref_kind, ref_id)
+     select $1, 'handoff', 'critical', $2, $3, 'conversation', $4
+      where not exists (select 1 from alvo)`,
     [
       ids.tenantId,
       opts.inboxTitle ?? 'Handoff humano solicitado — assumir a conversa',
-      `Motivo: ${opts.reason}. ${linhaDoAviso(opts.avisoAoLead)}Resumo da conversa até aqui:\n${opts.conversationSummary}`,
-      ids.leadId,
+      await corpoDaCentral(db, ids.tenantId, opts),
+      ids.conversationId,
     ],
   );
 
@@ -217,33 +303,121 @@ export async function performHumanHandoff(
     });
   }
 
-  // PII fora do log: só ids/motivo — nunca o resumo da conversa (regra dura 8).
+  // PII fora do log — e agora de verdade. A linha anterior logava `opts.reason`,
+  // que no caminho do caso escalado É O TEXTO QUE O ATENDENTE ESCREVEU sobre o
+  // cliente: o comentário "PII fora do log" já era falso quando foi escrito. O
+  // que sai agora é o código canônico do motivo, que é vocabulário fechado.
   opts.log.info('handoff humano aplicado (force_human + silêncio + crons cancelados + inbox)', {
-    reason: opts.reason,
+    motivo_codigo: opts.passagem?.motivoCodigo ?? 'nao_declarado',
+    origem: opts.passagem?.origem ?? 'nao_declarada',
   });
 }
 
 /**
- * A linha do aviso da Central que responde "essa pessoa sabe que estou vindo?".
- *
- * Ausente = o chamador não mandou aviso nenhum (caminho acionado por uma pessoa),
- * e aí o silêncio é honesto: nada a afirmar. Presente e falso = o cliente está
- * esperando SEM SABER, e o atendente precisa abrir a conversa se apresentando.
+ * Traduz o desfecho técnico do aviso para o vocabulário FECHADO que a linha da
+ * passagem guarda. `porque` (o código do gate) fica de fora: ele é diagnóstico,
+ * e a coluna é lida por uma tela que traduz.
  */
-function linhaDoAviso(aviso: { avisado: boolean; porque?: string } | undefined): string {
-  if (aviso === undefined) return '';
-  if (aviso.avisado) return 'O cliente JÁ FOI avisado de que uma pessoa vai assumir. ';
-  return `⚠️ O cliente NÃO foi avisado (${aviso.porque ?? 'motivo desconhecido'}) — ele está esperando sem saber. `;
+function desfechoDaPassagem(aviso: DesfechoDoAviso): DesfechoDoAvisoDaPassagem {
+  if (aviso.avisado) return { avisado: true };
+  return {
+    avisado: false,
+    ...(aviso.motivoCodigo !== undefined ? { motivoCodigo: aviso.motivoCodigo } : {}),
+  };
 }
 
-/** Whitelist EXATA do payload da tool (mesmo padrão .strict() da F2-10/F3-02). */
+/**
+ * O idioma da ORGANIZAÇÃO — ninguém está logado quando o motor escreve.
+ *
+ * Nunca lança: idioma é enfeite comparado à passagem, e um `select` que falhe
+ * não pode impedir o aviso de nascer. O default é o idioma do produto.
+ */
+async function idiomaDaOrganizacao(db: pg.Pool, tenantId: string, log: Logger): Promise<Idioma> {
+  try {
+    const { rows } = await db.query<{ locale: string | null }>(
+      'select locale from organizations where id = $1',
+      [tenantId],
+    );
+    return normalizarIdioma(rows[0]?.locale ?? null);
+  } catch (err) {
+    log.warn('idioma da organização não lido — aviso da Central em português', {
+      error: err instanceof Error ? err.message.slice(0, 120) : 'erro desconhecido',
+    });
+    return 'pt-BR';
+  }
+}
+
+/**
+ * O CORPO do aviso da Central. Curto, e sem conteúdo da conversa.
+ *
+ * ⚠️ MUDOU nesta entrega, e a versão antiga era `Motivo: <código cru>. <linha do
+ * aviso>Resumo da conversa até aqui:\n<resumo>`. Dois defeitos num texto só: o
+ * código cru (`requested_human`) aparecia para quem não fala inglês nem jargão,
+ * e o resumo da conversa ficava numa tabela que a rota da Central lê com o
+ * client de serviço e entrega a QUALQUER `agent` — inclusive a quem a política
+ * de visibilidade de conversa não deixaria abrir aquele atendimento. O contexto
+ * mudou de casa: ele mora na passagem, que é lida sob `fn_can_view_conversation`.
+ *
+ * **As duas frases do aviso ao cliente saem literalmente iguais às de antes** —
+ * `tests/invariants/handoff-avisa-o-lead.test.ts` casa `/JÁ FOI avisado/` num
+ * turno real, e rótulo visível é contrato.
+ *
+ * Sem `passagem` (o chamador legado), o corpo degrada para a forma antiga sem o
+ * resumo: é o único caso em que não há motivo canônico a traduzir.
+ */
+async function corpoDaCentral(
+  db: pg.Pool,
+  tenantId: string,
+  opts: {
+    reason: string;
+    avisoAoLead?: DesfechoDoAviso;
+    passagem?: { motivoCodigo: MotivoDaPassagem; idioma?: Idioma };
+    log: Logger;
+  },
+): Promise<string> {
+  const idioma = opts.passagem?.idioma ?? (await idiomaDaOrganizacao(db, tenantId, opts.log));
+  const t = (texto: string): string => traduzir(texto, idioma);
+  const aviso = opts.avisoAoLead === undefined ? null : desfechoDaPassagem(opts.avisoAoLead);
+  if (opts.passagem === undefined) {
+    const linha = linhaDoAvisoAoCliente(aviso, t);
+    return [`${t('Motivo')}: ${opts.reason}.`, ...(linha === null ? [] : [linha])].join(' · ');
+  }
+  return corpoCurtoDoAviso({ motivoCodigo: opts.passagem.motivoCodigo, aviso }, t);
+}
+
+/**
+ * Whitelist EXATA do payload da tool (mesmo padrão .strict() da F2-10/F3-02).
+ *
+ * ⚠️ **ESTE SCHEMA TEM UM ESPELHO** em `AGENT_TOOL_DEFS.request_human_handoff.
+ * inputSchema` (`inbound-turn.ts`), que é o largo que o SDK mostra ao modelo.
+ * Mexer só num dos dois faz o modelo ver um campo que esta whitelist recusa — e
+ * o desfecho é um erro de ENSINO a cada chamada. Os dois conjuntos de chaves são
+ * comparados por `tests/unit/passagem-tool-schema-espelhado.test.ts`.
+ *
+ * Os campos novos são o que uma pessoa lê ao assumir a conversa: hoje ela recebe
+ * um resumo montado do checkpoint e mais nada — nem o porquê, nem o que a IA já
+ * tentou, nem o que o cliente pediu com as palavras dele.
+ */
 export const requestHumanHandoffInputSchema = z.strictObject({
   reason: z.string().min(1).max(500).optional(),
+  por_que: z.string().min(1).max(500).optional(),
+  o_que_tentei: z
+    .array(
+      z.strictObject({
+        o_que: z.string().min(1).max(200),
+        desfecho: z.string().min(1).max(200).optional(),
+      }),
+    )
+    .max(6)
+    .optional(),
+  cliente_quer: z.string().min(1).max(300).optional(),
 });
 
 const PAYLOAD_TEACHING =
-  'Campo aceito: reason (por que passar ao humano) — opcional, nada além. Lead, organização e ' +
-  'conversa vêm do runtime, nunca do payload da tool.';
+  'Campos aceitos: por_que (por que você está passando, em uma frase), o_que_tentei (lista curta ' +
+  'do que você já tentou, com o desfecho de cada um), cliente_quer (o que a pessoa está pedindo, ' +
+  'nas palavras dela). `reason` ainda é aceito como sinônimo de por_que. Nada além disso. Lead, ' +
+  'organização e conversa vêm do runtime, nunca do payload da tool.';
 
 export type RequestHumanHandoffResult =
   | { ok: true; status: 'handoff_solicitado'; message: string }
@@ -260,7 +434,19 @@ export async function applyRequestHumanHandoff(
   opts: {
     conversationSummary: string;
     /** Ver `performHumanHandoff` — o desfecho do aviso vira linha no aviso da Central. */
-    avisoAoLead?: { avisado: boolean; porque?: string };
+    avisoAoLead?: DesfechoDoAviso;
+    /**
+     * O checkpoint durável e o que o cliente disse e ainda não foi respondido —
+     * o que a montagem do briefing precisa e que só o turno tem.
+     *
+     * Opcional porque o chamador de teste não tem turno; ausente, o briefing é o
+     * piso (só o que o modelo declarou).
+     */
+    contextoDoTurno?: {
+      checkpoint?: CheckpointParaBriefing | null;
+      pendentesDoCliente?: readonly string[];
+      declaracaoDoTurno?: DeclaracaoDoTurno | null;
+    };
     log: Logger;
   },
   rawInput: unknown,
@@ -274,9 +460,31 @@ export async function applyRequestHumanHandoff(
     return { ok: false, error: { code: 'invalid_payload', message: `payload inválido em request_human_handoff (${zodIssuesSummary(parsed.error)}). ${PAYLOAD_TEACHING}` } };
   }
 
+  // O que o MODELO declarou é dado NÃO CONFIÁVEL, e a montagem sabe disso: ela
+  // rotula os blocos de leitura da IA e cita a fala do cliente entre aspas.
+  // `por_que` vence `reason` porque `reason` é o sinônimo antigo — quem preenche
+  // os dois está declarando o mesmo campo duas vezes.
+  const declarado = parsed.data;
+  const porQue = declarado.por_que ?? declarado.reason ?? null;
+  const briefing = montarBriefingDaPassagem({
+    checkpoint: opts.contextoDoTurno?.checkpoint ?? null,
+    declaradoPeloModelo: {
+      ...(declarado.o_que_tentei !== undefined ? { tentativas: declarado.o_que_tentei } : {}),
+      cliente_quer: declarado.cliente_quer ?? null,
+    },
+    ...(opts.contextoDoTurno?.pendentesDoCliente !== undefined
+      ? { pendentesDoCliente: opts.contextoDoTurno.pendentesDoCliente }
+      : {}),
+    ...(opts.contextoDoTurno?.declaracaoDoTurno !== undefined
+      ? { declaracaoDoTurno: opts.contextoDoTurno.declaracaoDoTurno }
+      : {}),
+    motivo: { codigo: 'requested_human', texto: porQue },
+  });
+
   await performHumanHandoff(db, ids, {
-    reason: parsed.data.reason ?? 'requested_human',
-    conversationSummary: opts.conversationSummary,
+    reason: porQue ?? 'requested_human',
+    conversationSummary: briefing.body,
+    passagem: { origem: 'ferramenta_do_modelo', motivoCodigo: 'requested_human', briefing },
     ...(opts.avisoAoLead !== undefined ? { avisoAoLead: opts.avisoAoLead } : {}),
     log: opts.log,
   });
@@ -311,6 +519,18 @@ export async function applyRequestHumanHandoff(
 /**
  * Resumo curto da conversa para o inbox de escalação — a partir do checkpoint durável
  * (compromissos/objeções/próxima ação/resumo). Vai ao inbox (PARA o humano), nunca a log.
+ *
+ * ⚠️ ESTA FUNÇÃO NÃO MONTA MAIS NADA: ela é um ADAPTADOR FINO de
+ * `montarBriefingDaPassagem` (`lib/escalacao/briefing-da-passagem.ts`, migration
+ * 0291), chamado com SÓ o checkpoint. A assinatura fica porque quatro call sites
+ * e `tests/unit/declaracao-do-turno.test.ts` apontam para ela; o texto que sai é
+ * BYTE A BYTE o de antes, porque a montagem só acrescenta blocos quando recebe o
+ * que só a passagem enriquecida tem (motivo, tentativas, fala pendente, caso).
+ *
+ * Por que adaptador e não duas funções: enquanto havia duas montagens, o motor A
+ * produzia este texto e o motor B não produzia texto nenhum — quem assumia a
+ * conversa recebia coisas diferentes conforme o caminho, e ninguém media a
+ * diferença. Uma montagem só é o que impede a divergência de voltar.
  */
 export function buildHandoffSummary(
   previous: {
@@ -326,21 +546,5 @@ export function buildHandoffSummary(
     declaracao?: DeclaracaoDoTurno | null;
   } | null,
 ): string {
-  if (previous === null) {
-    return 'Sem resumo acumulado ainda (conversa recente) — abra a conversa no CRM para o contexto completo.';
-  }
-  const parts: string[] = [];
-  if (previous.rolling_summary.trim() !== '') parts.push(previous.rolling_summary.trim());
-  // A declaração vem ANTES dos campos antigos de propósito: quem assume uma
-  // conversa no meio precisa primeiro do que a pessoa quer e do que foi
-  // prometido a ela — é o que decide a próxima frase que ele vai digitar.
-  // Compromissos e objeções acumulados são contexto, não ação imediata.
-  const declarado = renderDeclaracaoParaHumano(previous.declaracao ?? null);
-  if (declarado !== '') parts.push(declarado);
-  if (previous.commitments.length > 0) parts.push(`Compromissos: ${previous.commitments.join('; ')}`);
-  if (previous.objections.length > 0) parts.push(`Objeções: ${previous.objections.join('; ')}`);
-  if (previous.next_action) parts.push(`Próxima ação: ${previous.next_action}`);
-  return parts.length === 0
-    ? 'Sem resumo acumulado ainda (conversa recente) — abra a conversa no CRM para o contexto completo.'
-    : parts.join('\n');
+  return montarBriefingDaPassagem({ checkpoint: previous }).body;
 }

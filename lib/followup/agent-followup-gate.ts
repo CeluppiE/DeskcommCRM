@@ -20,6 +20,39 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+/**
+ * OS GATILHOS QUE MORREM SEM AGENTE — a lista, com o produtor de cada um ao lado.
+ *
+ * Levantada no código, não presumida. Cada kind aqui tem um produtor que chama
+ * este gate e desiste quando ele devolve nada:
+ *
+ *   silence              → `lib/followup/silence-sweep.ts`
+ *   stage_change         → `lib/followup/gatilho-etapa.ts`
+ *   case_opened          → `lib/followup/gatilho-caso.ts`
+ *   appointment_no_show  → `fn_appointment_recover` (a MESMA condição em SQL:
+ *                          o `exists` sobre `ai_agent_versions` publicadas com
+ *                          `followup->'enabled'` e o ponteiro em
+ *                          `flow_pointer_ids`)
+ *
+ * ⚠️ `manual` e `webhook` NÃO entram, e a omissão é o que mantém o aviso da
+ * Central honesto. Os dois enrollam por `lib/followup/enroll.ts`, que resolve o
+ * agente só para PINAR no enrollment e segue com `agent_id = null` quando não
+ * acha nenhum — o fluxo funciona. Avisar sobre eles seria alarme falso, e
+ * alarme falso é o que ensina uma equipe a ignorar o alarme verdadeiro.
+ */
+export const GATILHOS_QUE_EXIGEM_AGENTE = [
+  "silence",
+  "stage_change",
+  "case_opened",
+  "appointment_no_show",
+] as const;
+
+export type GatilhoQueExigeAgente = (typeof GATILHOS_QUE_EXIGEM_AGENTE)[number];
+
+export function exigeAgente(kind: string): kind is GatilhoQueExigeAgente {
+  return (GATILHOS_QUE_EXIGEM_AGENTE as readonly string[]).includes(kind);
+}
+
 /** Um agente publicado da org com follow-up habilitado + os pointers que ele arma. */
 export interface EnabledFollowupAgent {
   agentId: string;

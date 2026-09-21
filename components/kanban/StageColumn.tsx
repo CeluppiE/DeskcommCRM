@@ -7,6 +7,7 @@ import type { Lead } from "@/lib/types/leads";
 import type { Stage } from "@/lib/kanban/types";
 import { buildCardInput } from "@/lib/kanban/card-state";
 import { intervaloDaColuna } from "@/lib/kanban/selecao";
+import { formatCents, MOEDA_PADRAO } from "@/lib/money";
 import { KanbanCard, type GestoDeSelecao } from "./KanbanCard";
 
 interface StageColumnProps {
@@ -35,18 +36,6 @@ interface StageColumnProps {
   onOpen?: (leadId: string) => void;
 }
 
-function formatBRL(cents: number): string {
-  try {
-    return new Intl.NumberFormat("pt-BR", {
-      style: "currency",
-      currency: "BRL",
-      maximumFractionDigits: 0,
-    }).format(cents / 100);
-  } catch {
-    return `R$ ${(cents / 100).toFixed(0)}`;
-  }
-}
-
 export function StageColumn({
   stage,
   leads,
@@ -62,6 +51,17 @@ export function StageColumn({
 }: StageColumnProps) {
   const t = useT();
   const totalCents = leads.reduce((sum, l) => sum + (l.value_cents ?? 0), 0);
+  // O total saía SEMPRE em R$: a coluna tinha a sexta cópia do formatador de
+  // dinheiro (`formatBRL`, locale e moeda em duro), e a moeda em duro é o que a
+  // cópia escondia. Numa organização em peso ou dólar o número estava certo e o
+  // símbolo mentia — o mesmo defeito que `formatCents` existe para acabar.
+  //
+  // A moeda vem do primeiro lead COM valor, não de um padrão: é o dado real da
+  // coluna. Somar moedas diferentes num total só já era limitação de hoje (nada
+  // agrupa por moeda, nem antes nem agora); o que muda é que o rótulo passa a
+  // dizer a verdade no caso comum, que é o board de moeda única. `MOEDA_PADRAO`
+  // só cobre a coluna sem nenhum lead com valor — onde o total nem aparece.
+  const moedaDoTotal = leads.find((l) => l.value_cents != null)?.currency ?? MOEDA_PADRAO;
 
   const idsVisiveis = leads.map((l) => l.id);
   const selecionadosAqui = idsVisiveis.filter((id) => selectedLeadIds?.has(id)).length;
@@ -138,7 +138,7 @@ export function StageColumn({
 
       {totalCents > 0 && (
         <div className="border-b border-border px-3 py-1.5 text-[11px] tabular-nums text-text-muted">
-          {formatBRL(totalCents)}
+          {formatCents(totalCents, moedaDoTotal)}
         </div>
       )}
 

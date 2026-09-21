@@ -56,6 +56,8 @@ const RAW: AtritoRaw = {
     esperas_caladas: 4,
     esperas_medidas: 80,
     espera_resposta_p90_s: 1800,
+    repeticao_pos_passagem: 4,
+    passagens_medidas: 10,
   },
   empresa: {
     intervencoes_por_demanda: 1.4,
@@ -65,6 +67,8 @@ const RAW: AtritoRaw = {
     vetos: 18,
     execucoes_medidas: 120,
     envios_por_ia: 600,
+    envios_por_automacao: 150,
+    envios_por_integracao: 75,
     envios_humano_no_sistema: 300,
     envios_humano_fora: 100,
     demandas_sem_proximo_passo: 6,
@@ -299,6 +303,8 @@ describe("zero lisonjeiro — ausência de dado é null, nunca 0", () => {
     const vazio = {
       ...RAW.empresa,
       envios_por_ia: 0,
+      envios_por_automacao: 0,
+      envios_por_integracao: 0,
       envios_humano_no_sistema: 0,
       envios_humano_fora: 0,
     };
@@ -356,5 +362,120 @@ describe("formatação", () => {
     [5400, "1h 30min"],
   ])("duração de %is é %s", (segundos, esperado) => {
     expect(formatarDuracao(segundos)).toBe(esperado);
+  });
+});
+
+/**
+ * O LAÇO DE RETORNO DA PASSAGEM (invariante 7, migration 0294).
+ *
+ * A pergunta que mede se o cartão da passagem serviu para alguma coisa: DEPOIS
+ * de a IA passar a conversa, o cliente precisou repetir o que já tinha dito? Se
+ * o briefing chegou a quem assumiu, a repetição cai. Se não chegou, ela não muda
+ * — e a feature é decoração cara.
+ *
+ * Ela é publicada como DANO do par `automacao`, encostada em "Passagens para
+ * humano": a eficiência ali empurra o sistema a automatizar mais, e o custo de
+ * automatizar mal é exatamente a pessoa repetindo o que já disse.
+ */
+describe("repetição depois da passagem — o laço de retorno", () => {
+  const pares = montarPares(RAW);
+  const automacao = pares.find((p) => p.chave === "automacao")!;
+  const medida = automacao.danos.find((d) => d.chave === "repeticao_pos_passagem");
+
+  it("é publicada no par da AUTOMAÇÃO, ao lado das passagens para humano", () => {
+    // Fora do par ela vira número solto num painel: sem a eficiência ao lado,
+    // ninguém sabe do que ela é o custo — e é justamente a regra 3.3 que este
+    // arquivo inteiro guarda.
+    expect(medida, "a medida do laço sumiu do par `automacao`").toBeDefined();
+    const chaves = automacao.danos.map((d) => d.chave);
+    expect(chaves).toContain("pedidos_de_humano");
+  });
+
+  it("é uma RAZÃO calculada na borda: 4 de 10", () => {
+    expect(medida!.unidade).toBe("razao");
+    expect(medida!.valor).toBeCloseTo(0.4, 6);
+  });
+
+  it("sem passagem em que o cliente voltou a falar, o número é `—`, nunca 0%", () => {
+    // AUSÊNCIA DE DADO É null. Um `0` aqui viraria "0% de repetição" numa
+    // organização onde ninguém voltou a falar depois de nenhuma passagem — a
+    // frase tranquilizadora que a falta de medição não autoriza, e o número que
+    // faria alguém declarar a feature um sucesso.
+    const vazio = montarPares({
+      ...RAW,
+      cliente: { ...RAW.cliente, repeticao_pos_passagem: 0, passagens_medidas: 0 },
+    });
+    const semDado = vazio
+      .find((p) => p.chave === "automacao")!
+      .danos.find((d) => d.chave === "repeticao_pos_passagem")!;
+    expect(semDado.valor).toBeNull();
+    expect(formatarMedida(semDado)).toBe("—");
+  });
+
+  it("a nota traz o numerador, o denominador e a RÉGUA — número sem régua não compara", () => {
+    // Limiar e janela precisam viajar com o número: se amanhã alguém mexer em
+    // qualquer um dos dois, o valor de hoje e o de então não são comparáveis, e
+    // o índice perde a única coisa que ele tinha.
+    expect(medida!.nota).toContain("4");
+    expect(medida!.nota).toContain("10");
+    expect(medida!.nota).toMatch(/0,7/);
+    expect(medida!.nota).toMatch(/24h/);
+  });
+
+  it("a nota declara que dois papéis veem números diferentes — e isso é de boa-fé", () => {
+    // `fn_atrito_metrics` é SECURITY INVOKER: um `agent` numa organização em
+    // `visibility_mode='own'` enxerga só as conversas dele. Sem esta ressalva,
+    // quem comparar o painel de duas pessoas vai concluir que um dos dois está
+    // errado — e nenhum está.
+    expect(medida!.nota).toMatch(/own/);
+  });
+});
+
+/**
+ * O NÚMERO DA AUTOMAÇÃO TEM LUGAR (#652) — o contrário dele mente.
+ *
+ * Quando o carimbo da automação saiu de `'ai'` (issue #652), `envios_por_ia`
+ * CAIU para quem usa regra. A queda é correta — o agente não escreveu aquelas
+ * mensagens —, mas sem um número próprio ela chegaria na tela como o agente
+ * encolhendo, sem nada que a explicasse. Este bloco prende o LUGAR do número
+ * novo: ele é publicado, com o valor que veio do banco, e não infla a conta do
+ * agente em nenhuma das duas pontas.
+ */
+describe("o número próprio da automação (#652)", () => {
+  it("`envios_por_automacao` é publicado no painel, em Contenção", () => {
+    const contencao = montarPares(RAW).find((p) => p.chave === "contencao");
+    expect(contencao, "Contenção sumiu do painel").toBeDefined();
+    const medida = contencao!.danos.find((d) => d.chave === "envios_por_automacao");
+    expect(
+      medida,
+      "o payload traz `envios_por_automacao` e o painel não mostra: a org com automação vê o 'por IA' cair sem explicação na tela",
+    ).toBeDefined();
+    expect(medida!.valor).toBe(150);
+    expect(medida!.unidade).toBe("contagem");
+    expect(formatarMedida(medida!)).toContain("150");
+  });
+
+  it("`envios_por_integracao` é publicado no painel, em Contenção", () => {
+    // Gêmeo do caso acima, e pelo mesmo motivo: sem ele o contador novo existe
+    // no payload, na função do banco e no tipo — e não aparece em tela nenhuma.
+    // Controle que não é lido é decoração, e decoração passa em typecheck.
+    const contencao = montarPares(RAW).find((p) => p.chave === "contencao");
+    const medida = contencao!.danos.find((d) => d.chave === "envios_por_integracao");
+    expect(
+      medida,
+      "o payload traz `envios_por_integracao` e o painel não mostra: a org com integração vê o 'por IA' cair sem explicação na tela",
+    ).toBeDefined();
+    expect(medida!.valor).toBe(75);
+    expect(medida!.unidade).toBe("contagem");
+    expect(formatarMedida(medida!)).toContain("75");
+  });
+
+  it("o número do agente não é inflado pela automação", () => {
+    const contencao = montarPares(RAW).find((p) => p.chave === "contencao")!;
+    expect(contencao.eficiencia.valor).toBe(600);
+    // 600 do agente sobre 600 + 300 + 100 de saídas COM dono entre agente e
+    // pessoa: a automação (150) não entra em nenhuma das duas pontas, senão o
+    // número do agente subiria por mensagem que ele não escreveu.
+    expect(taxaDeAutomacao(RAW.empresa)).toBeCloseTo(0.6, 6);
   });
 });
