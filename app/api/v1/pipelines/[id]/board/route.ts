@@ -179,19 +179,18 @@ async function avisaAmbiguas(
 ): Promise<void> {
   if (ambiguas.length === 0) return;
 
-  const { data: jaAbertos } = await supabase
-    .from("agent_inbox_items")
-    .select("ref_id")
-    .eq("organization_id", organizationId)
-    .eq("kind", "next_action_ambiguous")
-    .eq("status", "open")
-    .in(
-      "ref_id",
-      ambiguas.map((a) => a.contact_id),
-    );
-  const abertos = new Set(
-    ((jaAbertos ?? []) as Array<{ ref_id: string }>).map((r) => r.ref_id),
+  const { data: jaAbertos } = await emLotes<{ ref_id: string }>(
+    ambiguas.map((a) => a.contact_id),
+    (lote) =>
+      supabase
+        .from("agent_inbox_items")
+        .select("ref_id")
+        .eq("organization_id", organizationId)
+        .eq("kind", "next_action_ambiguous")
+        .eq("status", "open")
+        .in("ref_id", lote),
   );
+  const abertos = new Set(jaAbertos.map((r) => r.ref_id));
 
   const novos = ambiguas
     .filter((a) => !abertos.has(a.contact_id))
@@ -386,14 +385,16 @@ async function withMarcadoresDoContato(
   ];
   if (contactIds.length === 0) return { leads: leadsDoQuadro, error: null };
 
-  const { data, error } = await supabase
-    .from("contacts")
-    .select("id, tags, phone_number, email, custom_fields, is_anonymized")
-    .eq("organization_id", organizationId)
-    .in("id", contactIds);
-  if (error) return { leads: leadsDoQuadro, error: error.message };
-
-  const linhas = (data ?? []) as Array<{ id: string; tags: string[] | null } & LinhaDoContatoNoQuadro>;
+  const { data: linhas, error } = await emLotes<
+    { id: string; tags: string[] | null } & LinhaDoContatoNoQuadro
+  >(contactIds, (lote) =>
+    supabase
+      .from("contacts")
+      .select("id, tags, phone_number, email, custom_fields, is_anonymized")
+      .eq("organization_id", organizationId)
+      .in("id", lote),
+  );
+  if (error) return { leads: leadsDoQuadro, error };
   const leads = anexarDadosDoContato(leadsDoQuadro, linhas);
 
   const porContato = new Map<string, string[]>();
