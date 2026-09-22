@@ -179,7 +179,7 @@ export function DiasBloqueados({ podeEditar }: { podeEditar: boolean }) {
             <span className="block text-sm">{t("O que fazer")}</span>
             <select
               aria-label={t("O que fazer")}
-              className="mt-1 rounded-md border p-2"
+              className="mt-1 rounded-md border border-border bg-surface p-2 text-text"
               data-testid="modo-do-dia"
               value={modo}
               onChange={(e) => setModo(e.target.value === "abrir" ? "abrir" : "fechar")}

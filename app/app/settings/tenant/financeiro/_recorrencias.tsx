@@ -78,7 +78,7 @@ export function Recorrencias({
 
           <select
             aria-label={t("Entrada ou saída")}
-            className="min-h-11 rounded-md border p-2"
+            className="min-h-11 rounded-md border border-border bg-surface p-2 text-text"
             value={direcao}
             onChange={(e) => setDirecao(e.target.value as "in" | "out")}
           >
@@ -88,7 +88,7 @@ export function Recorrencias({
 
           <select
             aria-label={t("Conta")}
-            className="min-h-11 rounded-md border p-2"
+            className="min-h-11 rounded-md border border-border bg-surface p-2 text-text"
             value={contaId}
             onChange={(e) => setContaId(e.target.value)}
           >

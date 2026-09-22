@@ -108,7 +108,7 @@ export function CatalogoFinanceiro({ podeEditar }: { podeEditar: boolean }) {
             />
             <select
               aria-label={t("Tipo da conta")}
-              className="min-h-11 rounded-md border p-2"
+              className="min-h-11 rounded-md border border-border bg-surface p-2 text-text"
               value={tipoConta}
               onChange={(e) => setTipoConta(e.target.value)}
             >
@@ -163,7 +163,7 @@ export function CatalogoFinanceiro({ podeEditar }: { podeEditar: boolean }) {
             />
             <select
               aria-label={t("Conta de destino")}
-              className="min-h-11 rounded-md border p-2"
+              className="min-h-11 rounded-md border border-border bg-surface p-2 text-text"
               value={contaDaForma}
               onChange={(e) => setContaDaForma(e.target.value)}
             >
@@ -231,7 +231,7 @@ export function CatalogoFinanceiro({ podeEditar }: { podeEditar: boolean }) {
             */}
             <select
               aria-label={t("Entrada ou saída")}
-              className="min-h-11 rounded-md border p-2"
+              className="min-h-11 rounded-md border border-border bg-surface p-2 text-text"
               value={direcaoPlano}
               onChange={(e) => setDirecaoPlano(e.target.value as "in" | "out" | "")}
             >
