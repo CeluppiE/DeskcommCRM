@@ -1643,6 +1643,37 @@ STUB
 npm_rede_e2e "rede do NPM presente: install/update seguem"        segue 0
 npm_rede_e2e "rede do NPM sumiu (prune/down -v): morre explicando" morre 1
 
+echo "overlay local da VPS: docker-compose.test.yml (porta alternativa do app)"
+# Incidente real (srv1397672, 2026-09-18): a porta padrão do app (3000) estava
+# ocupada por outro projeto no mesmo host, e a porta alternativa foi publicada
+# por um overlay fora do git, sem flag em REVERSE_PROXY — existir no disco já é
+# o sinal. Um `--force-recreate` que esquecesse esse `-f` recriou o app sem a
+# porta publicada e derrubou o site inteiro. Por isso o teste varia a PRESENÇA
+# DO ARQUIVO, ao contrário dos de cima, que variam a variável de ambiente.
+tv_wd="$PWD"
+tv_dir="$(mktemp -d)"
+cd "$tv_dir"
+touch docker-compose.test.yml
+if dc_files | grep -q 'docker-compose.test.yml'; then
+  printf '  ✓ dc_files() entra o docker-compose.test.yml quando ele existe no diretório do projeto\n'
+else
+  printf '  ✗ dc_files() não entrou o docker-compose.test.yml presente no diretório (deu: %s)\n' "$(dc_files)"; fail=1
+fi
+if REVERSE_PROXY=traefik dc_files | grep -q 'docker-compose.traefik.yml.*docker-compose.test.yml'; then
+  printf '  ✓ com REVERSE_PROXY=traefik, o overlay local entra DEPOIS do do Traefik\n'
+else
+  printf '  ✗ com REVERSE_PROXY=traefik, a ordem/presença dos overlays saiu errada (deu: %s)\n' \
+    "$(REVERSE_PROXY=traefik dc_files)"; fail=1
+fi
+rm docker-compose.test.yml
+if dc_files | grep -q 'docker-compose.test.yml'; then
+  printf '  ✗ dc_files() menciona docker-compose.test.yml mesmo sem ele existir (vacuidade)\n'; fail=1
+else
+  printf '  ✓ sem o arquivo no diretório: dc_files() não o menciona\n'
+fi
+cd "$tv_wd"
+rm -rf "$tv_dir"
+
 echo "proxy reverso: quanta confiança a eleição merece"
 # A eleição por porta publicada traz a evidência (a coluna Ports diz ':80->'); a
 # varredura por modo host não traz nenhuma — em modo host a coluna é vazia para

@@ -23,6 +23,9 @@ REPO_DIR="${REPO_DIR:-deskcommcrm}"
 COMPOSE="docker-compose.prod.yml"
 COMPOSE_TRAEFIK="docker-compose.traefik.yml"
 COMPOSE_NPM="docker-compose.npm.yml"
+# Gêmea da de _common.sh — mesma regra: existir no disco já é o sinal, não
+# depende de REVERSE_PROXY. Ver o comentário longo lá.
+COMPOSE_TEST="docker-compose.test.yml"
 NONINTERACTIVE=0
 [ "${1:-}" = "--yes" ] && NONINTERACTIVE=1
 
@@ -30,18 +33,25 @@ NONINTERACTIVE=0
 # usar o _common.sh). As duas funções abaixo são gêmeas das de lá — se mexer
 # numa, mexa na outra.
 dc() {
+  local files
   case "${REVERSE_PROXY:-caddy}" in
-  traefik) docker compose -f "$COMPOSE" -f "$COMPOSE_TRAEFIK" "$@" ;;
-  npm)     docker compose -f "$COMPOSE" -f "$COMPOSE_NPM" "$@" ;;
-  *)       docker compose -f "$COMPOSE" "$@" ;;
+  traefik) files="-f $COMPOSE -f $COMPOSE_TRAEFIK" ;;
+  npm)     files="-f $COMPOSE -f $COMPOSE_NPM" ;;
+  *)       files="-f $COMPOSE" ;;
   esac
+  [ -f "$COMPOSE_TEST" ] && files="$files -f $COMPOSE_TEST"
+  # shellcheck disable=SC2086
+  docker compose $files "$@"
 }
 dc_files() {
+  local files
   case "${REVERSE_PROXY:-caddy}" in
-  traefik) printf -- '-f %s -f %s' "$COMPOSE" "$COMPOSE_TRAEFIK" ;;
-  npm)     printf -- '-f %s -f %s' "$COMPOSE" "$COMPOSE_NPM" ;;
-  *)       printf -- '-f %s' "$COMPOSE" ;;
+  traefik) files="-f $COMPOSE -f $COMPOSE_TRAEFIK" ;;
+  npm)     files="-f $COMPOSE -f $COMPOSE_NPM" ;;
+  *)       files="-f $COMPOSE" ;;
   esac
+  [ -f "$COMPOSE_TEST" ] && files="$files -f $COMPOSE_TEST"
+  printf -- '%s' "$files"
 }
 
 # ── Aparência ───────────────────────────────────────────────────────────────

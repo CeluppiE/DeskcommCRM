@@ -5,6 +5,16 @@ set -euo pipefail
 COMPOSE="docker-compose.prod.yml"
 COMPOSE_TRAEFIK="docker-compose.traefik.yml"
 COMPOSE_NPM="docker-compose.npm.yml"
+# Overlay LOCAL da VPS, fora do git — nenhuma instalação normal tem este
+# arquivo, e por isso ele não tem uma flag em REVERSE_PROXY: existir no disco
+# JÁ é o sinal. Existe quando a porta padrão do app (3000) está ocupada por
+# outro projeto no mesmo host e alguém publicou o app numa porta alternativa
+# à mão (caso real: 127.0.0.1:3100, ver docs/runbooks/nginx-proxy-buffer-502.md,
+# Causa 2). Sem entrar aqui automaticamente, um `--force-recreate` "normal"
+# (só com $COMPOSE) recria o app sem essa porta publicada, e cai 502 em TUDO —
+# foi o que aconteceu em produção em 2026-09-18, com o próprio kit apontado
+# como o comando a rodar.
+COMPOSE_TEST="docker-compose.test.yml"
 # Overlay que constrói as imagens no lugar de puxá-las. Existe no repo com
 # `pull_policy: never` nas três imagens e sai do MESMO commit que o `git
 # checkout` deixou no disco — é o caminho de quem não consegue usar as imagens
@@ -63,23 +73,37 @@ unset _deskcomm_chamador
 #
 # Todo `docker compose` do kit passa por aqui: com proxy externo, um comando sem
 # o override subiria o Caddy e ele iria bater de frente com o proxy da hospedagem.
+#
+# O overlay local ($COMPOSE_TEST) entra por FORA do case, depois dele: não é
+# uma opção de topologia de proxy como as três de cima, é um ajuste desta VPS
+# que se aplica em qualquer uma delas — inclusive quando REVERSE_PROXY nem
+# está setado.
 dc() {
+  local files
   case "${REVERSE_PROXY:-caddy}" in
-  traefik) docker compose -f "$COMPOSE" -f "$COMPOSE_TRAEFIK" "$@" ;;
-  npm)     docker compose -f "$COMPOSE" -f "$COMPOSE_NPM" "$@" ;;
-  *)       docker compose -f "$COMPOSE" "$@" ;;
+  traefik) files="-f $COMPOSE -f $COMPOSE_TRAEFIK" ;;
+  npm)     files="-f $COMPOSE -f $COMPOSE_NPM" ;;
+  *)       files="-f $COMPOSE" ;;
   esac
+  [ -f "$COMPOSE_TEST" ] && files="$files -f $COMPOSE_TEST"
+  # shellcheck disable=SC2086
+  docker compose $files "$@"
 }
 
 # A mesma lista de -f, como texto, para as mensagens que ensinam o comando ao
 # dono. Se a mensagem omitisse o override numa instalação com proxy externo, o
-# próprio dono derrubaria o site seguindo a instrução do kit.
+# próprio dono derrubaria o site seguindo a instrução do kit. Mesma regra do
+# $COMPOSE_TEST acima: se ele existe aqui, a mensagem tem que citá-lo também,
+# senão é o próprio kit ensinando o comando que causou o 502 de 2026-09-18.
 dc_files() {
+  local files
   case "${REVERSE_PROXY:-caddy}" in
-  traefik) printf -- '-f %s -f %s' "$COMPOSE" "$COMPOSE_TRAEFIK" ;;
-  npm)     printf -- '-f %s -f %s' "$COMPOSE" "$COMPOSE_NPM" ;;
-  *)       printf -- '-f %s' "$COMPOSE" ;;
+  traefik) files="-f $COMPOSE -f $COMPOSE_TRAEFIK" ;;
+  npm)     files="-f $COMPOSE -f $COMPOSE_NPM" ;;
+  *)       files="-f $COMPOSE" ;;
   esac
+  [ -f "$COMPOSE_TEST" ] && files="$files -f $COMPOSE_TEST"
+  printf -- '%s' "$files"
 }
 
 # ── QUEM FALA COM O BANCO E PODE SER PARADO ──────────────────────────────────
