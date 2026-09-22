@@ -86,7 +86,7 @@ export function RegrasDeComissao({
         <div className="flex flex-wrap items-end gap-2">
           <select
             aria-label={t("Pessoa")}
-            className="min-h-11 rounded-md border p-2"
+            className="min-h-11 rounded-md border border-border bg-surface p-2 text-text"
             value={pessoaId}
             onChange={(e) => setPessoaId(e.target.value)}
           >
@@ -100,7 +100,7 @@ export function RegrasDeComissao({
 
           <select
             aria-label={t("Serviço")}
-            className="min-h-11 rounded-md border p-2"
+            className="min-h-11 rounded-md border border-border bg-surface p-2 text-text"
             value={servicoId}
             onChange={(e) => setServicoId(e.target.value)}
           >
