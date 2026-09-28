@@ -577,9 +577,23 @@ traefik|npm)
   c_grn "✓ proxy externo (${REVERSE_PROXY}): o Caddy não é usado aqui — nada a recarregar"
   ;;
 *)
-  dc up -d --force-recreate --no-deps caddy >/dev/null 2>&1 \
-    && c_grn "✓ proxy recarregado com a configuração desta versão" \
-    || c_ylw "⚠ não consegui recriar o proxy — rode: docker compose $(dc_files) up -d --force-recreate caddy"
+  # Recriar o caddy pode colidir com a porta 80 ainda presa pelo container
+  # antigo (corrida de bind, não falta de imagem) — tentamos de novo antes de
+  # só avisar, porque o comando de fallback abaixo é exatamente o mesmo que
+  # o retry já tentou.
+  _proxy_ok=""
+  for _tentativa in 1 2 3; do
+    if dc up -d --force-recreate --no-deps caddy >/dev/null 2>&1; then
+      _proxy_ok=1
+      break
+    fi
+    sleep 2
+  done
+  if [ -n "$_proxy_ok" ]; then
+    c_grn "✓ proxy recarregado com a configuração desta versão"
+  else
+    c_ylw "⚠ não consegui recriar o proxy após 3 tentativas — rode: docker compose $(dc_files) up -d --force-recreate caddy"
+  fi
   ;;
 esac
 
