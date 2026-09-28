@@ -1,0 +1,10 @@
+{
+  "viewport": "1280x900",
+  "fila_na_aba": 3,
+  "selo": {
+    "dentro": true,
+    "alturaDoItem": 28,
+    "alturaDoVizinho": 28,
+    "fundo": "lab(48.4493 77.4328 61.5452)"
+  }
+}

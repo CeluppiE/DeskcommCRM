@@ -70,8 +70,26 @@ export interface ContextoProjetado {
     marcadores: string[];
   };
   ultima_decisao_humana: { sobre: string; decisao: 'aprovada' | 'recusada'; quando: string } | null;
+  /**
+   * N7: `LeadContext.last_proposal` já chegava resolvido, mas a allowlist não o
+   * repassava — nenhum turno via o campo, então um agente sem a ferramenta de
+   * catálogo oferecia de novo o que o cliente já tinha recusado. `status`
+   * traduzido (mesmo padrão de `ultima_decisao_humana`: vocabulário do banco
+   * não passa cru).
+   */
+  ultima_proposta: { numero_e_ano: string | null; status: string; motivo_recusa: string | null } | null;
   mensagens: MensagemProjetada[];
 }
+
+const ROTULO_STATUS_PROPOSTA: Record<string, string> = {
+  rascunho: 'rascunho, ainda não enviada',
+  enviada: 'enviada, aguardando resposta',
+  aceita: 'aceita pelo cliente',
+  recusada: 'recusada pelo cliente',
+  vencida: 'vencida sem resposta',
+  substituida: 'substituída por uma versão mais nova',
+  cancelada: 'cancelada',
+};
 
 /**
  * `is_blocked` NÃO entra, e não é esquecimento: quando ele é `true` o turno sequer
@@ -96,6 +114,17 @@ export function projetarContexto(ctx: LeadContext): ContextoProjetado {
             // Conversador precisa saber é se pode ou não retomar aquilo.
             decisao: ctx.last_human_decision.decision === 'approved' ? 'aprovada' : 'recusada',
             quando: ctx.last_human_decision.at,
+          },
+    ultima_proposta:
+      ctx.last_proposal == null
+        ? null
+        : {
+            numero_e_ano:
+              ctx.last_proposal.numero != null && ctx.last_proposal.ano != null
+                ? `${ctx.last_proposal.numero}/${ctx.last_proposal.ano}`
+                : null,
+            status: ROTULO_STATUS_PROPOSTA[ctx.last_proposal.status] ?? ctx.last_proposal.status,
+            motivo_recusa: ctx.last_proposal.decision_reason,
           },
     mensagens: ctx.messages.map((m) => {
       const base: MensagemProjetada = {

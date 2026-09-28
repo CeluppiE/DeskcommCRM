@@ -27,6 +27,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { env } from "@/lib/env";
 import { alvoDe, classificarFalhaDeAlcance, type FalhaDeAlcance } from "@/lib/net/alcance";
 import { validarConfigRedisRest } from "@/lib/redis-config";
+import { urlDoSupabaseNoServidor } from "@/lib/supabase/url-do-servidor";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -68,7 +69,11 @@ function motivoDoStatusHttp(status: number): MotivoDeFalha {
 
 async function checkSupabase(): Promise<Check> {
   const t0 = Date.now();
-  const url = env.NEXT_PUBLIC_SUPABASE_URL;
+  // A sonda pergunta ao MESMO endereço que o app usa para falar com o banco, e
+  // não ao público: com `SUPABASE_SERVER_URL` (#1082) preenchida, uma instalação
+  // com Kong privado não tem REST publicado — a URL pública daria `down` com o
+  // CRM inteiro funcionando ao lado. Sem a variável, é a pública, como sempre.
+  const url = urlDoSupabaseNoServidor(env.SUPABASE_SERVER_URL, env.NEXT_PUBLIC_SUPABASE_URL);
   try {
     // Ping leve via REST com anon key — não precisa de service_role pra health check.
     // Se chegar 200/401/empty body, conexão e API key estão OK.

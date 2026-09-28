@@ -45,8 +45,28 @@ const ORG = "11111111-1111-4111-8111-111111111111";
 const CONTATO = "22222222-2222-4222-8222-222222222222";
 const CONVERSA = "33333333-3333-4333-8333-333333333333";
 
+/**
+ * O cliente de banco que as GUARDAS de `avisarLeadDoCrm` consultam antes de
+ * escrever: "a IA já falou nesta conversa?" e "já houve aviso nas últimas
+ * 24 h?" (`tests/unit/aviso-so-quando-a-ia-falou.test.ts`). Com `{} as never` a
+ * pergunta lançaria `TypeError`, o catch devolveria `{avisado:false,
+ * porque:"TypeError"}`, e os casos abaixo — que são sobre o DESFECHO do envio,
+ * não sobre a guarda — reprovariam pelo motivo errado.
+ *
+ * O dublê responde "a IA já falou" (uma linha de saída da IA que não é aviso),
+ * que é a precondição destes casos: eles medem o que o desfecho vira DEPOIS de
+ * a guarda deixar passar.
+ */
+function bancoComFalaDaIa() {
+  const cadeia: Record<string, unknown> = {};
+  for (const m of ["select", "eq", "order"]) cadeia[m] = () => cadeia;
+  cadeia.limit = () =>
+    Promise.resolve({ data: [{ metadata: null, created_at: new Date().toISOString() }], error: null });
+  return { from: () => cadeia } as never;
+}
+
 function avisa() {
-  return avisarLeadDoCrm({} as never, {
+  return avisarLeadDoCrm(bancoComFalaDaIa(), {
     organizationId: ORG,
     conversationId: CONVERSA,
     contactId: CONTATO,

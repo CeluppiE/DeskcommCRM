@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { createClient } from "@supabase/supabase-js";
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./helpers/test";
 
 import { credenciaisSupabaseDeTeste } from "../../scripts/lib/env-de-teste";
 
@@ -116,7 +116,7 @@ async function entrar(page: Page, creds: Creds) {
   await page.goto("/login");
   await page.getByLabel(/e-?mail/i).fill(usuario.email);
   await page.getByLabel(/senha/i).fill(creds.password);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app(\/|$)/, { timeout: 20_000 });
   await page.goto("/app/agenda");
   await expect(page.getByTestId("tela-agenda")).toBeVisible({ timeout: 25_000 });
@@ -247,7 +247,7 @@ test.describe("a ocupação do Google na grade da agenda", () => {
     await expect(bloco).toHaveAttribute("data-arrastavel", "false");
 
     await page.screenshot({
-      path: path.join(RAIZ, ".superpowers/evidence/agenda-ocupacao-google-desenhada.png"),
+      path: path.join(RAIZ, "evidence/agenda-ocupacao-google-desenhada.png"),
       fullPage: false,
     });
   });
@@ -316,7 +316,7 @@ test.describe("a ocupação do Google na grade da agenda", () => {
     ).not.toContain(TITULO_SIGILOSO);
 
     await page.screenshot({
-      path: path.join(RAIZ, ".superpowers/evidence/agenda-ocupacao-google-mes.png"),
+      path: path.join(RAIZ, "evidence/agenda-ocupacao-google-mes.png"),
       fullPage: false,
     });
   });
@@ -402,7 +402,7 @@ test.describe("a ocupação do Google na grade da agenda", () => {
     await expect(meu).toContainText(/compromisso nosso qa/i);
 
     await page.screenshot({
-      path: path.join(RAIZ, ".superpowers/evidence/agenda-nosso-x-google.png"),
+      path: path.join(RAIZ, "evidence/agenda-nosso-x-google.png"),
       fullPage: false,
     });
   });

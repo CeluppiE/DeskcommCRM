@@ -452,17 +452,40 @@ decisão errada **para a faixa completa**, e a razão se mede antes de começar 
 própria logo abaixo):
 
 ```bash
-git fetch origin --force $(for n in $(gh pr list --state open --limit 100 --json number \
-  --jq '.[].number'); do printf "pull/%s/head:refs/tri/%s " "$n" "$n"; done)
-for n in $(git for-each-ref --format='%(refname:short)' refs/tri/ | sed 's#refs/tri/##'); do
-  git diff --name-only origin/main...refs/tri/$n | sed "s/^/$n\t/"
+# A população é a LISTA DE ABERTOS, nunca o `for-each-ref` de refs/tri/: uma
+# `refs/tri/N` é uma CÓPIA, ela sobrevive ao fechamento do PR (medido em
+# 19/09/2026: 323 refs/tri contra 35 PRs abertos, 288 delas de PR que não está
+# aberto) e ela pode estar VELHA. `--limit 1000`, e não 100 nem o padrão 30.
+git fetch --force origin $(for n in $(gh pr list --repo melgarafael/DeskcommCRM \
+  --state open --limit 1000 --json number --jq '.[].number'); do
+  printf "pull/%s/head:refs/tri/%s " "$n" "$n"; done)
+for n in $(gh pr list --repo melgarafael/DeskcommCRM --state open --limit 1000 \
+  --json number --jq '.[].number'); do
+  # `if d=$(…)` e não `git diff | sed || echo`: num cano o status é o do `sed`,
+  # e o `|| echo` nunca disparava.
+  if d=$(git diff --name-only origin/main...refs/tri/$n 2>/dev/null); then
+    printf '%s\n' "$d" | sed "s/^/$n\t/"
+  else
+    echo "$n	NAO MEDIDO: a cabeça não veio no fetch — refaz o fetch desse PR e meça de novo"
+  fi
 done | cut -f2 | sort | uniq -c | sort -rn | head
 ```
+
+O `for-each-ref --format='%(refname:short)' refs/tri/ | sed 's#refs/tri/##'` que
+estava aqui devolvia `tri/1005` (o `:short` já corta `refs/`) e o `git diff`
+seguinte saía com `fatal: ambiguous argument` — a sonda inteira devolvia vazio e
+317 linhas de erro. Se ele voltar, é com `--format='%(refname)'` e
+`sed 's#^refs/tri/##'`, e ainda assim a lista certa é a de ABERTOS
+(#1273).
 
 Medido em 14/09/2026, com 74 PRs abertos: `lib/i18n/dicionario.ts` tocado por **25** PRs,
 `supabase/migrations/MANIFEST.md` por **23**, `supabase/baseline.sql` por **21**. Ali todo mundo
 acrescenta no mesmo lugar, então **cada merge quebra o próximo** — e quem paga é o contribuinte
 seguinte, que recebe num PR limpo um conflito que não é dele.
+
+E a lista de PRs dessa integração é a de **ABERTOS**, nunca a de `refs/tri/`: a
+cópia local sobrevive ao fechamento do PR e pode estar velha (item 3-quinquies,
+acima; e a comparação `headRefOid` de `complemento.sh`).
 
 O caminho é uma **branch de integração**, com `git merge --no-ff` de cada head. Três coisas fazem
 isso funcionar, e cada uma já falhou quando ausente:
@@ -629,10 +652,17 @@ Nada disso é alcançável por teste: o defeito mora no **emit**, não no import
 
 ### O teto do CHANGELOG impõe o ritmo do trem: um lote, uma release
 
-`tests/unit/changelog-cabe-na-tela-da-vps.test.ts` reprova quando a seção que os fragmentos de
-`.changes/` produziriam passa de **30.000 bytes** — o corte que o `agent.sh` aplica sobre o arquivo
-tagueado. Além dele, o dono da VPS recebe o texto cortado no meio, ou pior: a tela troca o histórico
-por *"este histórico pode não alcançar a sua versão"*.
+A seção que os fragmentos de `.changes/` produziriam tem um teto em bytes — o corte que o
+`agent.sh` aplica sobre o arquivo tagueado. Além dele, o dono da VPS recebe o texto cortado no
+meio, ou pior: a tela troca o histórico por *"este histórico pode não alcançar a sua versão"*.
+
+**Quem mede isso é `pnpm release:acervo-cabe`, e ele NÃO roda em `pull_request`.** Até 20/09/2026 a
+medição vivia dentro de `tests/unit/changelog-cabe-na-tela-da-vps.test.ts`, portanto no `verify` —
+status check obrigatório — e reprovava o PR de quem não podia consertá-lo: com 43 fragmentos
+acumulados, os PRs #1377 e #1363 ficaram vermelhos sem tocar `.changes/`, e a mensagem mandava o
+contribuidor enxugar fragmento de terceiro. Hoje o `ci.yml` cobra o acervo fora de `pull_request`,
+onde quem vê o vermelho é quem pode pagá-lo cortando release — e o comando **avisa antes de
+estourar**, quando outro ciclo do tamanho do atual já não caberia.
 
 Num trem de lotes isso vira uma **regra de ordem**, não um defeito a consertar. Medido em 14/09:
 
@@ -646,16 +676,24 @@ O vermelho do lote 3 não é do lote 3: é dele **carregando os fragmentos do lo
 entra e a release é cortada, os 31 são consumidos e o seguinte volta a caber.
 
 > **Logo: cada lote corta a sua versão antes de o próximo entrar.** Não é preferência de processo —
-> é o que o teto do changelog permite. Empilhar quatro lotes e cortar uma release só reprova, e a
-> mensagem do teste ("enxugue o corpo dos fragmentos") aponta para o conserto errado nesse caso: o
-> problema não é fragmento gordo, é lote empilhado.
+> é o que o teto do changelog permite. Empilhar quatro lotes e cortar uma release só estoura o teto,
+> e o problema nunca é fragmento gordo: é lote empilhado.
 
-Antes de declarar vermelho num lote, confira se o vermelho some com o corte anterior:
+**Isto mudou de lugar, não de valor: o lote não fica mais vermelho por acervo cheio.** Como a
+medição saiu do `pull_request`, o PR de integração passa verde e o vermelho só aparece depois, no
+push da `main`. O remédio continua sendo o mesmo e continua sendo seu — então rode o comando **antes
+de mesclar o lote**, em vez de esperar o CI da `main` avisar:
 
 ```bash
 ls .changes/*.md | wc -l          # quantos fragmentos este lote carrega
 pnpm release:conferir             # e que versão eles produzem juntos
+pnpm release:acervo-cabe          # e se essa versão ainda cabe na tela da VPS
 ```
+
+O último sai com `::warning::` enquanto ainda há folga e com `::error::` quando já não há — nos dois
+casos o conserto é `pnpm release:cortar`, nunca subir o `head -c` do `agent.sh`: quem corta o texto é
+o script JÁ instalado na VPS do cliente, e subir o número aqui troca um vermelho honesto por um
+cliente sem aviso.
 
 ---
 
@@ -691,8 +729,16 @@ confere contra o **nome do arquivo** da migration, que é a fonte da verdade:
 
 ```bash
 git diff --name-only <base>..HEAD -- supabase/migrations/ | grep '\.sql$' \
-  | sed -E 's/.*_([0-9]{4})_.*/\1/' | sort | uniq -c | awk '$1>1{print "DUPLICADO: "$2}'
+  | sed 's#.*/##' | sed -nE 's#^[0-9]{14}_([0-9]{4})_.*#\1#p' \
+  | sort | uniq -c | awk '$1>1{print "DUPLICADO: "$2}'
 ```
+
+O `sed -E 's/.*_([0-9]{4})_.*/\1/'` que estava aqui é guloso nos DOIS sentidos:
+pega o **último** `_NNNN_` do nome (o slug, quando ele tem 4 dígitos) e, com nome
+duplicado, devolve o slug dos dois em vez do NNNN — a duplicata de 0326
+desaparecia do `uniq -d` (medido: `sed` guloso vazio, âncora `0326`). A âncora do
+nome canônico é a mesma de `scripts/migration-populacao.sh` (`pop_nnnn_de`) e
+do `scripts/checar-colisao-de-migration.sh` (#1273).
 
 **São TRÊS artefatos que acompanham o nome do arquivo, não dois.** O MANIFEST e o rótulo do
 apêndice no `baseline.sql` estão nos lugares onde se procura. O terceiro não: **teste que cita o
@@ -709,7 +755,7 @@ E confira as duas dimensões depois, porque `NNNN` único não garante timestamp
 
 ```bash
 ls supabase/migrations/*.sql | sed -E 's#.*/([0-9]+)_.*#\1#' | sort | uniq -d   # timestamps
-ls supabase/migrations/*.sql | sed -E 's/.*_([0-9]{4})_.*/\1/' | sort | uniq -d  # NNNN
+ls supabase/migrations/*.sql | sed 's#.*/##' | sed -nE 's#^[0-9]{14}_([0-9]{4})_.*#\1#p' | sort | uniq -d  # NNNN (sem a pasta, senão a âncora nunca casa; com a âncora do nome canônico; o `s/.*_…_.*/` guloso pegava o slug e perdia a duplicata — #1273)
 ```
 
 ---
@@ -1087,10 +1133,24 @@ Dois hooks locais desta casa disparam em merge da `main` sem que você tenha edi
 | invariantes congelados | o merge traz a versão da `main` de um arquivo de `tests/invariants/` | `git diff --quiet origin/main -- <arquivo>` → **exit 0** quer dizer que ficou IDÊNTICO ao da main: foi o merge, não você |
 | tripla da migration | ele examina só arquivo com status `A`, e um `git mv` entra como `R096` — então ele **passa de graça** na renumeração | conferir à mão contra `git log --all --name-only`, os PRs abertos e as outras branches |
 
+O NNNN que o hook confere é medido sobre a **população da pergunta** — a main do
+PRODUTO (o remoto que aponta para `melgarafael/DeskcommCRM`, com qualquer nome)
+mais `refs/heads` e `refs/remotes` — e não só sobre as branches locais, que era o
+recorte medido como errado na #1273. O que a população local NÃO cobre são os PRs
+abertos, e isso sai escrito na própria mensagem do hook, junto com o comando que
+cobre (`pnpm checar:colisao-de-migration`). As cópias de cabeça `refs/remotes/[<remoto>/]pr/N`
+ficam fora de propósito (sobrevivem ao fechamento do PR): o 0269 do PR aberto #965,
+que vivia só em `refs/remotes/origin/pr/965`, continua invisível ao hook — quem o
+pega é o `checar`, pela lista de abertos.
+
 O escape existe (`DESKCOMM_GOV_INVARIANTS_EDIT=1`, `DESKCOMM_GOV_MIGRATION_EDIT=1`) e é legítimo
 nesses dois casos — mas **a razão vai escrita no corpo do commit, com a medição**, nunca implícita
 no uso da variável. A linha do segundo caso é a mais importante: o hook da migration **não é rede
 para renumeração**, e quem lê a mensagem dele achando que é vai renumerar contra uma régua cega.
+O que mudou na #1273 é o RECORTE, não a rede: onde media só as branches locais, o hook mede a
+main do produto mais as remotas, e a mensagem passa a **nomear** o que ficou fora (os PRs abertos)
+e a dizer onde o teto foi medido. Ele segue sem rede — hook que trava commit por `gh` troca um
+risco raro por um travamento diário.
 
 ### E há o caso oposto, que é pior: o merge LIMPO não chama hook nenhum
 
@@ -1108,7 +1168,7 @@ o lote 2. Nenhuma guarda viu. Quem viu foi a sonda abaixo, rodada depois de mont
 **Num trem, a colisão de migration se mede na ÁRVORE montada, nunca se confia no hook:**
 
 ```bash
-ls supabase/migrations/*.sql | sed -E 's/.*_([0-9]{4})_.*/\1/'   | sort | uniq -d   # NNNN
+ls supabase/migrations/*.sql | sed 's#.*/##' | sed -nE 's#^[0-9]{14}_([0-9]{4})_.*#\1#p' | sort | uniq -d   # NNNN (sem a pasta + âncora do nome canônico — #1273)
 ls supabase/migrations/*.sql | sed -E 's#.*/([0-9]+)_.*#\1#'     | sort | uniq -d   # timestamp
 ```
 
@@ -1506,7 +1566,10 @@ O que **não** muda quando ela passa, porque não era ela que segurava:
 - **Nada entra sem gate verde na PRÉVIA do merge** (ou sem o argumento de 3-bis dizendo por que a
   prévia não pode divergir da branch). A autoridade recebida amplia o que você pode fazer, não o
   que você pode afirmar.
-- **Nada de UI entra sem prova pela tela.** DoD 12.
+- **Nada de UI entra sem prova pela tela.** DoD 12. E quando o caminho passa por um agente de IA, a
+  tela sozinha não fecha: o caso de aceite mede o **par** (tela pelo agente + ferramenta chamada
+  direto, com o mesmo texto cru), e discordância entre os dois significa que se mediu o modelo, não
+  a ferramenta — o defeito continua onde estava (lei em `docs/doctrine/prova-em-par.md`, #489).
 - **Nenhum PR é fechado em silêncio.** Fechar é a única ação verdadeiramente irreversível para o
   contribuidor — o código dele sobrevive num fork, mas a disposição de contribuir de novo, não.
   Todo fechamento sai com o motivo escrito e o crédito pelo que ele acertou. Quando há o que
@@ -2314,13 +2377,46 @@ Cada um destes foi cometido de verdade nesta casa, e é por isso que estão escr
     os seguintes sem tê-los mergeado.
 
     ```bash
-    # o que a main já tem
-    git ls-tree --name-only origin/main supabase/migrations/ | grep -oE "_0[0-9]{3}_" | sort -u | tail -1
-    # o que os PRs ABERTOS já reservaram
-    for P in $(gh pr list --state open --json number --jq '.[].number'); do
-      gh pr view $P --json files --jq '.files[].path' | grep -oE "_0[0-9]{3}_" | sed "s|^|#$P |"
-    done | sort -u
+    # A população da pergunta, inteira: main do produto + TODO PR aberto (inclusive
+    # de fork). O script declara o que mediu e o que não mediu, e sai 1 em colisão.
+    pnpm checar:colisao-de-migration
     ```
+
+    Se a leitura for manual, três coisas são obrigatórias, e cada uma corrige um
+    recorte medido que mentia: a lista de PRs precisa de `--limit 1000` (o padrão
+    do gh é **30** e ele corta calado — em 19/09/2026 eram 30 de 35, e a receita
+    via 12 dos 20 PRs com migration); a lista de arquivos tem de vir do git sobre a
+    cabeça buscada (`git diff --name-only --diff-filter=A <base>...refs/tri/N -- supabase/migrations`),
+    e não de `gh pr view --json files`, que corta em **100** arquivos por PR (o
+    #1180 tinha 223, e 8 migrations novas ficavam fora dos 100 primeiros); e o NNNN
+    sai com a âncora do nome canônico, `^[0-9]{14}_([0-9]{4})_`, aplicada ao NOME
+    sem a pasta — `_0[0-9]{3}_` sem âncora pega o número do slug. A variável de
+    repositório não é `origin/main`: é o remoto que aponta para
+    `melgarafael/DeskcommCRM`, com qualquer nome (#1273).
+
+    **No minuto de ALOCAR, o `checar` não basta:** ele mede o arquivo que o PR JÁ
+    acrescentou e, sem migration nova, responde `OK — nenhuma migration acrescentada`
+    sem número nenhum. O teto é a main **mais tudo em voo, nos dois universos (NNNN e
+    timestamp)**, e o que está em voo se enumera assim (cabeças ATUAIS dos abertos;
+    uma linha `NNNN timestamp #PR`, e `NAO MEDIDO #N` quando a cabeça não veio):
+
+    ```bash
+    abertos=$(mktemp)
+    gh pr list --repo melgarafael/DeskcommCRM --state open --limit 1000 --json number --jq '.[].number' > "$abertos"
+    git fetch -q --force origin $(sed 's#.*#pull/&/head:refs/tri/&#' "$abertos")
+    while read -r n; do
+      if a=$(git diff --name-only --diff-filter=A origin/main...refs/tri/$n -- supabase/migrations 2>/dev/null); then
+        printf '%s\n' "$a" | sed 's#.*/##' | sed -nE "s|^([0-9]{14})_([0-9]{4})_.*|\2 \1 #$n|p"
+      else
+        echo "NAO MEDIDO #$n (a cabeça não veio no fetch)"
+      fi
+    done < "$abertos" | sort
+    rm -f "$abertos"
+    ```
+
+    Maior NNNN: `sort -n | tail -1` sobre essa saída e sobre a da main; maior timestamp:
+    `sort -k2`. O próximo é o MAIOR + 1 nos dois (medido em 27/09/2026 com 16 abertos:
+    roda igual em zsh e bash).
 
     **E renumerar é três arquivos, não um.** O nome do `.sql`, o rótulo `-- ---- … (migration NNNN) ----`
     no apêndice do `baseline.sql`, e a linha do `MANIFEST.md`. No MANIFEST o número vem **colado ao slug**

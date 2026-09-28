@@ -50,7 +50,7 @@ import { EdgeConfigPanel } from "./EdgeConfigPanel";
 import { EtapasDoFluxoProvider, useEtapasDoFluxo } from "./EtapasDoFluxo";
 import { NodePalette } from "./NodePalette";
 import { PublishBar } from "./PublishBar";
-import { NODE_VISUALS } from "./nodes/nodeVisuals";
+import { NODE_VISUALS, configPadraoDaAcao } from "./nodes/nodeVisuals";
 import { TriggerNode } from "./nodes/TriggerNode";
 import { WaitNode } from "./nodes/WaitNode";
 import { ConditionNode } from "./nodes/ConditionNode";
@@ -59,6 +59,9 @@ import { MatchReplyNode } from "./nodes/MatchReplyNode";
 import { RepeatNode } from "./nodes/RepeatNode";
 import { ActionNode } from "./nodes/ActionNode";
 import { EndNode } from "./nodes/EndNode";
+import { CollectNode } from "./nodes/CollectNode";
+import { InternalTaskNode } from "./nodes/InternalTaskNode";
+import { SkillNode } from "./nodes/SkillNode";
 
 const EMPTY_GRAPH: FlowGraph = { nodes: [], edges: [] };
 const DND_MIME = "application/x-followup-node-type";
@@ -73,7 +76,14 @@ const nodeTypes: NodeTypes = {
   match_reply: MatchReplyNode,
   repeat: RepeatNode,
   action: ActionNode,
+  // `internal_task` estava na paleta, no schema, no publish e no motor — e não
+  // aqui (#1540): o React Flow caía no fallback da caixa desconhecida, sem
+  // rótulo e sem formulário. Completar o nó é esta linha mais o formulário do
+  // painel (`forms/InternalTaskForm`).
+  internal_task: InternalTaskNode,
   end: EndNode,
+  collect: CollectNode,
+  skill: SkillNode,
 };
 
 interface Props {
@@ -95,6 +105,11 @@ function FlowCanvasInner({ flowId, initialData }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState<RFNode>(initial.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<RFEdge>(initial.edges);
   const [savedGraph, setSavedGraph] = useState<FlowGraph>(initialData.draft_graph ?? EMPTY_GRAPH);
+  // As configurações do GRAFO (palavras-gatilho, teto de tentativas, prazo do
+  // roteiro) não vivem em nó nenhum: sem este estado, salvar o rascunho as
+  // apagava — `fromReactFlow` só conhece nós e arestas.
+  const [settings, setSettings] = useState<FlowGraph["settings"]>(initialData.draft_graph?.settings);
+  const surface = initialData.surface ?? "followup";
   // Continue after the largest persisted suffix. Starting again at 1 makes a
   // newly-created node/edge reuse an existing React Flow key and visually
   // replace a connection in older drafts.
@@ -105,7 +120,10 @@ function FlowCanvasInner({ flowId, initialData }: Props) {
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
-  const liveGraph = useMemo(() => fromReactFlow(nodes, edges), [nodes, edges]);
+  const liveGraph = useMemo(() => {
+    const base = fromReactFlow(nodes, edges);
+    return settings ? { ...base, settings } : base;
+  }, [nodes, edges, settings]);
   const dirty = useMemo(() => !graphsEqual(liveGraph, savedGraph), [liveGraph, savedGraph]);
 
   const markNodeErrors = useCallback(
@@ -213,19 +231,25 @@ function FlowCanvasInner({ flowId, initialData }: Props) {
     [setEdges, nodes],
   );
 
+  // O nó de ação nasce com o padrão do gatilho do fluxo. O callback depende só
+  // do `kind` (string), não do objeto `trigger_config`, que é novo a cada refetch.
+  const triggerKindRaw = flow?.trigger_config?.kind;
+  const triggerKind = typeof triggerKindRaw === "string" ? triggerKindRaw : undefined;
+
   const addNodeAt = useCallback(
     (type: NodeType, position: { x: number; y: number }) => {
       const visual = NODE_VISUALS[type];
       const id = `${type}-${nextId.current++}`;
+      const config = type === "action" ? configPadraoDaAcao(triggerKind) : visual.defaultConfig();
       const newNode: RFNode = {
         id,
         type,
         position,
-        data: { label: t(visual.defaultLabel), config: visual.defaultConfig() },
+        data: { label: t(visual.defaultLabel), config },
       };
       setNodes((nds) => nds.concat(newNode));
     },
-    [setNodes, t],
+    [setNodes, t, triggerKind],
   );
 
   const onPaletteAdd = useCallback(
@@ -314,7 +338,7 @@ function FlowCanvasInner({ flowId, initialData }: Props) {
         />
       )}
       <div className="flex flex-1 overflow-hidden">
-        <NodePalette onAdd={onPaletteAdd} />
+        <NodePalette onAdd={onPaletteAdd} surface={surface} />
         {/* Abaixo de `lg` a paleta fixa de 224px não cabe do lado do canvas —
             vira um drawer, disparado por este botão flutuante. */}
         <Sheet open={paletteOpen} onOpenChange={setPaletteOpen}>
@@ -322,6 +346,7 @@ function FlowCanvasInner({ flowId, initialData }: Props) {
             <SheetTitle className="sr-only">{t("Adicionar nó")}</SheetTitle>
             <NodePalette
               variant="mobile"
+              surface={surface}
               onAdd={(type) => {
                 onPaletteAdd(type);
                 setPaletteOpen(false);
@@ -400,6 +425,10 @@ function FlowCanvasInner({ flowId, initialData }: Props) {
                 onChange={(patch) => updateNodeData(selectedNode.id, patch)}
                 onDelete={() => deleteNode(selectedNode.id)}
                 ramosLigados={ramosLigadosDoSelecionado}
+                surface={surface}
+                flowId={flowId}
+                settings={settings}
+                onSettingsChange={setSettings}
               />
             </div>
           </aside>

@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/test";
 
 /**
  * A aba do navegador — o único pedaço da marca que aparece em TODA tela,
@@ -17,6 +17,34 @@ import { test, expect } from "@playwright/test";
  * spec não consome do teto de 60 logins/IP/300s que a suíte compartilha.
  */
 test.describe("o ícone e o título carregam a marca da instalação", () => {
+  test("o manifest usa o mesmo nome de instalação que a metadata do login", async ({ page }) => {
+    await page.goto("/login");
+    const nome = await page.locator('meta[name="application-name"]').getAttribute("content");
+    expect(nome).toBeTruthy();
+    const resposta = await page.request.get("/manifest.webmanifest");
+    expect(resposta.status()).toBe(200);
+    const manifest = await resposta.json();
+    expect(manifest.name).toBe(nome);
+    expect(manifest.short_name).toBe(nome);
+  });
+
+  test("o manifest oferece ícones reais de aplicativo antes do login", async ({ page }) => {
+    await page.goto("/login");
+    const manifest = await (await page.request.get("/manifest.webmanifest")).json();
+    expect(manifest.icons.map((icone: { sizes: string }) => icone.sizes)).toEqual([
+      "192x192",
+      "512x512",
+    ]);
+    for (const [indice, lado] of [192, 512].entries()) {
+      const resposta = await page.request.get(manifest.icons[indice].src, { maxRedirects: 0 });
+      expect(resposta.status()).toBe(200);
+      expect(resposta.headers()["content-type"]).toMatch(/^image\/png/);
+      const png = await resposta.body();
+      expect(png.readUInt32BE(16)).toBe(lado);
+      expect(png.readUInt32BE(20)).toBe(lado);
+    }
+  });
+
   test("GET /icon responde imagem para quem não entrou", async ({ request }) => {
     const res = await request.get("/icon", { maxRedirects: 0 });
 
@@ -39,10 +67,7 @@ test.describe("o ícone e o título carregam a marca da instalação", () => {
     page,
   }) => {
     await page.goto("/login");
-    const href = await page
-      .locator('link[rel~="icon"]')
-      .first()
-      .getAttribute("href");
+    const href = await page.locator('link[rel~="icon"]').first().getAttribute("href");
     expect(href, "nenhum <link rel=icon> no <head>").toBeTruthy();
     // `/icon` com ou sem query de cache-busting do Next.
     expect(new URL(href ?? "", "http://x").pathname).toBe("/icon");

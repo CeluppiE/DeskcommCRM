@@ -1,6 +1,10 @@
-// Flat config (ESLint 9 / eslint-config-next 16 — `next lint` foi removido no
-// Next 16; o script `lint` chama o eslint CLI direto). Migração 1:1 do antigo
-// .eslintrc.json.
+// Flat config (`next lint` foi removido no Next 16; o script `lint` chama o
+// eslint CLI direto). Migração 1:1 do antigo .eslintrc.json.
+// Carrega o @next/eslint-plugin-next DIRETO, nunca o preset do
+// eslint-config-next: os plugins que ele traz (react 7.37.5, import 2.32.0,
+// jsx-a11y 6.10.2) só declaram peer eslint até ^9, e o react quebra no ESLint
+// 10 — importar "eslint-config-next/core-web-vitals" aqui derruba o lint com
+// "contextOrFilename.getFilename is not a function" (#297).
 import { defineConfig, globalIgnores } from "eslint/config";
 import nextPlugin from "@next/eslint-plugin-next";
 import reactHooks from "eslint-plugin-react-hooks";

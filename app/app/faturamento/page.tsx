@@ -2,7 +2,9 @@ import { redirect } from "next/navigation";
 
 import { requireAuth, resolveActiveOrg } from "@/lib/auth/server";
 import { ROLE_RANK } from "@/lib/auth/types";
+import { moedaDaOrganizacao } from "@/lib/catalogo/moeda-da-org";
 import { traduzir } from "@/lib/i18n/dicionario";
+import { createClient } from "@/lib/supabase/server";
 
 import { Faturamento } from "./_client";
 
@@ -23,6 +25,12 @@ export const dynamic = "force-dynamic";
  * catálogo financeiro tem três listas numa página: registrar o aluguel e ver o
  * saldo do mês são o mesmo ato mental. Separá-los obrigaria a pular entre telas
  * para responder "já paguei isso?".
+ *
+ * A MOEDA DA ORGANIZAÇÃO vem daqui, do servidor, e não do relatório: ela não é
+ * uma conta, é a ordem dos blocos (a da casa primeiro) e a moeda do período sem
+ * movimento — sem ela, um mês vazio não teria em que moeda escrever "0,00".
+ * Enquanto a escrita não herdar a moeda da organização, as linhas nascem em
+ * BRL: o limite está descrito em `blocosPorMoeda` (_client.tsx).
  */
 export default async function Page() {
   const user = await requireAuth();
@@ -30,6 +38,7 @@ export default async function Page() {
   if (!org) redirect("/app");
 
   const t = (texto: string) => traduzir(texto, user.idioma);
+  const moedaDaOrg = await moedaDaOrganizacao(await createClient(), org.orgId);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
@@ -39,7 +48,7 @@ export default async function Page() {
           {t("Quanto entrou, de que forma, e quanto cada pessoa tem a receber.")}
         </p>
       </div>
-      <Faturamento podeLancar={ROLE_RANK[org.role] >= ROLE_RANK.agent} />
+      <Faturamento podeLancar={ROLE_RANK[org.role] >= ROLE_RANK.agent} moedaDaOrg={moedaDaOrg} />
     </div>
   );
 }

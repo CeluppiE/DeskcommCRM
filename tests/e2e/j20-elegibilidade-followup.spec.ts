@@ -26,7 +26,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./helpers/test";
 
 import { carregarEnvLocal } from "../../scripts/lib/env-de-teste";
 
@@ -77,7 +77,7 @@ async function login(page: Page, email: string): Promise<void> {
   await page.goto(`${APP_URL}/login`);
   await page.locator("#email").fill(email);
   await page.locator("#password").fill(creds.password);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app\//);
 }
 

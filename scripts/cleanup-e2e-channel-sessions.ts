@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
 import { anunciarDestino, credenciaisSupabaseDeTeste, destinoEhLocal } from "./lib/env-de-teste";
-import { NOMES_DE_SESSAO_E2E } from "./lib/sessoes-e2e";
+import { NOMES_DE_SESSAO_E2E } from "../lib/channels/sessoes-e2e";
 
 interface OpcoesDeLimpeza {
   allowRemote?: boolean;

@@ -5,6 +5,9 @@
  * declare suas capacidades no proprio arquivo sem que times paralelos colidam
  * no mesmo hunk. Client-safe: zero import de zod, supabase ou next/headers.
  */
+import type { ModuloOpcional } from "@/lib/instalacao/modulos";
+import type { CapacidadeDaOrganizacao } from "@/lib/organizacao/capacidades";
+
 import type { McpToolCategory } from "../../types";
 import type { ToolBundle, ToolRisk } from "../pacotes";
 
@@ -40,6 +43,21 @@ export interface McpToolCatalogEntry {
    * usar, e ela nunca dispara.
    */
   apenasHumano?: boolean;
+  /**
+   * Capacidade de um MODULO OPCIONAL da instalacao (`lib/instalacao/modulos.ts`).
+   * Com o modulo desligado ela nao e oferecida a ninguem — nem ao agente, nem
+   * ao cliente MCP externo, nem a tela que escolhe capacidades. Ver
+   * `deModuloDesligado` em `./index.ts`.
+   */
+  modulo?: ModuloOpcional;
+  /**
+   * Capacidade que a ORGANIZACAO liga para si (`lib/organizacao/capacidades.ts`).
+   * Desligada, a ferramenta nao e oferecida a ninguem daquela organizacao —
+   * nem ao agente, nem ao cliente MCP externo, nem a tela que escolhe
+   * capacidades — e o handler recusa por conta propria. Ver
+   * `deCapacidadeDesligada` em `./index.ts`.
+   */
+  capacidade?: CapacidadeDaOrganizacao;
 }
 
 /**

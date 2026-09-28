@@ -102,6 +102,7 @@ export async function apagarDadosOperacionaisDaOrganizacao(input: {
     actingAsPlatformAdmin: authUser.is_platform_admin,
     metadata: {
       counts: resultado.counts,
+      pdfs_removidos: resultado.pdfsRemovidos,
       ...(resultado.ok ? {} : { falhou_em: resultado.falha.tabela }),
     },
   });

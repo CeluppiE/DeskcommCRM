@@ -225,7 +225,7 @@ const MARCA_CONGELADA: Record<string, EntradaDeMarca> = {
     categoria: "PROTOCOLO",
     motivo:
       "é a guarda do contrato acima: este teste é o que reprova quem renomear o header. Trocar a string aqui para 'limpar a marca' desarmaria a única proteção que o contrato tem",
-    marcas: ["x-deskcomm-event", "x-deskcomm-signature", "x-deskcomm-signature"],
+    marcas: ["x-deskcomm-event", "x-deskcomm-signature", "x-deskcomm-signature", "x-deskcomm-signature"],
   },
   "lib/mcp/server.ts": {
     categoria: "PROTOCOLO",
@@ -804,6 +804,16 @@ type CategoriaDeHost =
 type EntradaDeHost = { categoria: CategoriaDeHost; motivo: string };
 
 const HOSTS_DECLARADOS: Record<string, EntradaDeHost> = {
+  "datamanager.googleapis.com": {
+    categoria: "FORNECEDOR",
+    motivo: "endpoint oficial da Google Data Manager API: recebe conversões e consulta o processamento na conta autorizada pela própria organização. O destino pertence ao fornecedor e não à instalação do CRM.",
+  },
+  // ── localização compartilhada: o link que abre o pino do cliente ──
+  "maps.google.com": {
+    categoria: "PLATAFORMA",
+    motivo:
+      "link de mapa que `lib/messaging/localizacao.ts` monta com as coordenadas do pino que o CLIENTE mandou pelo WhatsApp: é o que o atendente toca para ver o endereço de entrega e o que o agente lê. O código não chama o host; o celular abre o app de mapas. Trocar pelo domínio do revendedor não abriria mapa nenhum.",
+  },
   // ── prospecção (PR #963): destino de chamada do crawler ──
   "api.apify.com": {
     categoria: "FORNECEDOR",
@@ -822,6 +832,11 @@ const HOSTS_DECLARADOS: Record<string, EntradaDeHost> = {
     motivo:
       "endpoint da API da OpenAI (embeddings da busca e transcrição de áudio). É o destino do request: trocar pelo domínio do revendedor faria a chamada não chegar a lugar nenhum.",
   },
+  "api.typesafe.ai": {
+    categoria: "FORNECEDOR",
+    motivo:
+      "endpoint do System One (`lib/ai/decisao/cliente.ts`) — o modelo que devolve decisão tipada em vez de texto, usado hoje no medidor de clima da conversa e na validação da chave dele (`GET /v1/models`, em lib/ai/provider-validators.ts). É o destino do request, com a chave da PRÓPRIA organização: trocar pelo domínio do revendedor faria a chamada não chegar a lugar nenhum. Mesma razão das outras entradas de FORNECEDOR, e vale registrar que a allowlist de egress deriva DESTA base (`baseDaApiDoJev()`), então esconder o nome aqui quebraria também a contenção de saída.",
+  },
   "api.anthropic.com": {
     categoria: "FORNECEDOR",
     motivo:
@@ -836,6 +851,11 @@ const HOSTS_DECLARADOS: Record<string, EntradaDeHost> = {
     categoria: "FORNECEDOR",
     motivo:
       "endpoint da API da DeepSeek (OpenAI-compatível) no registry de produção, no runtime de ensaio, no validador de chave e na prova de crédito. É o destino do request, não texto de interface; trocar pelo domínio do revendedor faria a chamada não chegar.",
+  },
+  "router.requesty.ai": {
+    categoria: "FORNECEDOR",
+    motivo:
+      "endpoint da Requesty (roteador OpenAI-compatível) no registry de produção, no runtime de ensaio, no validador de chave e na prova de crédito. É o destino do request, não texto de interface.",
   },
   "generativelanguage.googleapis.com": {
     categoria: "FORNECEDOR",
@@ -881,6 +901,11 @@ const HOSTS_DECLARADOS: Record<string, EntradaDeHost> = {
     motivo:
       "endpoint padrão do adapter do canal de mensagens, com override por ZERNIO_API_BASE_URL. Fixo de propósito: instalação que não configura nada tem de funcionar.",
   },
+  "cloud.datafyapi.com.br": {
+    categoria: "FORNECEDOR",
+    motivo:
+      "endpoint padrão do canal parceiro que espelha a Cloud API (recorte do #1130), com override por DATAFY_API_BASE_URL. É o destino das chamadas de envio e de validação do token — e o canal só existe numa instalação que o liga (DATAFY_ENABLED).",
+  },
   // ── painel do fornecedor: texto de tela apontando para o endereço DELE ────
   "platform.openai.com": {
     categoria: "CONSOLE",
@@ -891,10 +916,20 @@ const HOSTS_DECLARADOS: Record<string, EntradaDeHost> = {
     categoria: "CONSOLE",
     motivo: "painel de chaves da Anthropic. Mesmo caso: é de onde a credencial do usuário sai.",
   },
+  "console.typesafe.ai": {
+    categoria: "CONSOLE",
+    motivo:
+      "painel onde o usuário gera a PRÓPRIA chave do Jev (`ondePegarAChave` de PROVEDORES_DE_DECISAO em lib/ai/pontos/provedores.ts). Endereço do fornecedor, não nosso.",
+  },
   "platform.deepseek.com": {
     categoria: "CONSOLE",
     motivo:
       "painel onde o usuário gera a PRÓPRIA chave da DeepSeek (`ondePegarAChave` em lib/ai/pontos/provedores.ts). Endereço do fornecedor, não nosso.",
+  },
+  "app.requesty.ai": {
+    categoria: "CONSOLE",
+    motivo:
+      "painel onde o usuário gera a PRÓPRIA chave da Requesty (`ondePegarAChave` em lib/ai/pontos/provedores.ts). Endereço do fornecedor, não nosso.",
   },
   "aistudio.google.com": {
     categoria: "CONSOLE",
@@ -1087,8 +1122,18 @@ describe("catraca de host de terceiro no código que embarca", () => {
     ).toEqual([
       "000000000000-xxxxxxxx.apps.googleusercontent.com",
       "aistudio.google.com",
+      // Decisão escrita: painel de chaves da Requesty, o mesmo caso dos outros
+      // CONSOLE (o link "Onde pegar a chave" da tela de Credenciais).
+      "app.requesty.ai",
       "console.anthropic.com",
+      // Decisão escrita: é o painel de chaves do Jev, o mesmo caso dos outros
+      // CONSOLE — o link "Onde pegar a chave" da tela de Credenciais.
+      "console.typesafe.ai",
       "deskcomm.app",
+      // Link que abre o pino que o CLIENTE mandou (`lib/messaging/localizacao.ts`).
+      // Mesma natureza do `wa.me` abaixo: o produto não fala com o host, quem
+      // abre é o celular do atendente. Crescimento escrito, como a regra pede.
+      "maps.google.com",
       "meet.google.com",
       "meusistema.com",
       "mi-gateway.ejemplo.com",

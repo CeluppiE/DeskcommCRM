@@ -280,10 +280,33 @@ export async function escolherDiaDesenhado(page: Page, dias: readonly string[]):
   let candidatos = await disponiveis();
   if (candidatos.length === 0) {
     await page.getByTestId("mes-seguinte").click();
-    await expect(
-      page.locator('[data-testid^="dia-"][data-disponivel="true"]').first(),
-      "nem o mês seguinte oferece dia — a consulta deveria ter pedido o mês visível",
-    ).toBeVisible({ timeout: 20_000 });
+    // ⚠️ ESPERA PELOS DIAS DA SEMANA DESENHADA, não por "algum dia disponível".
+    //
+    // O mês visível mora em DOIS estados: o `mes` do painel, que o clique troca
+    // na hora, e o `mesDoPainel` do `_client.tsx`, que decide a consulta e só
+    // troca no efeito `onMesVisivel`. No meio há um quadro com o mês novo na tela
+    // e os horários do mês VELHO por baixo — e a janela do mês velho vai até
+    // `endOfMonth + 1 dia` (`janelaDoMesVisivel`), então traz o dia 1º aceso
+    // sozinho. A espera antiga passava nesse quadro e a varredura lia só o dia 1º.
+    // Medido no trace do run 36292363538 (27/09 ~04h UTC, semana desenhada
+    // 04–10/out, 1º de outubro numa quinta): snapshot com só `dia-2026-10-01`
+    // disponível, `toBeVisible` verde em 2 ms, varredura vazia 17 ms depois, e o
+    // GET de outubro ainda pendente quando a spec reprovou.
+    //
+    // Nem a RESPOSTA do mês novo serve de portão: a chave de um mês futuro não
+    // depende de `agora`, e com o `staleTime` de 30 s o mês volta do cache sem
+    // requisição nenhuma (medido: `agenda-remarcar-e-cancelar`, que marca e
+    // remarca no mesmo mês, esperou 20 s por uma resposta que não vinha). O que
+    // não depende de rede nem de cache é o próprio critério: algum dia da semana
+    // desenhada aceso. O quadro de transição não acende nenhum deles.
+    await expect
+      .poll(disponiveis, {
+        timeout: 20_000,
+        message:
+          `nenhum dia da semana desenhada (${dias.join(", ")}) ficou disponível no painel ` +
+          "depois de avançar o mês — o alvo e a grade deixariam de falar do mesmo período",
+      })
+      .not.toEqual([]);
     candidatos = await disponiveis();
   }
 

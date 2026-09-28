@@ -14,6 +14,13 @@ set -uo pipefail
 raiz="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "✗ fora de um clone git"; exit 0; }
 cd "$raiz"
 
+# A POPULAÇÃO da unicidade de NNNN é a mesma dos hooks (#1273) e vive num lugar
+# só, `scripts/migration-populacao.sh`. Sem a biblioteca (clone antigo, ou a
+# cópia da skill de uma versão anterior), o pré-voo segue medindo o que media —
+# e a linha de migration DIZ que não achou a população nova.
+BIBLIOTECA="$raiz/scripts/migration-populacao.sh"
+[ -r "$BIBLIOTECA" ] && { . "$BIBLIOTECA" || true; }
+
 ok()   { printf '✓ %s\n' "$*"; }
 olhe() { printf '⚠ %s\n' "$*"; }
 trava(){ printf '✗ %s\n' "$*"; }
@@ -86,16 +93,79 @@ else
   tem_mani="$(echo "$diff_nomes" | grep -cx 'supabase/migrations/MANIFEST.md' || true)"
   [ "$tem_base" = 1 ] && ok "migration nova COM apêndice no baseline.sql" || trava "migration nova SEM apêndice em supabase/baseline.sql — o kit self-host aplica só o baseline; sem ele a mudança não chega em quem instalou"
   [ "$tem_mani" = 1 ] && ok "migration nova COM linha no MANIFEST.md" || trava "migration nova SEM linha em supabase/migrations/MANIFEST.md"
-  existentes="$(git ls-tree -r --name-only origin/main -- supabase/migrations | sed 's#^supabase/migrations/##')"
+  # A POPULAÇÃO da unicidade: a main do PRODUTO (o remoto que aponta para
+  # melgarafael/DeskcommCRM, com qualquer nome) mais `refs/heads` E
+  # `refs/remotes` (#1273). O `origin/main` de antes, num clone de fork, é a main
+  # DO FORK — que pode estar atrás da do principal, e aí o pré-voo dizia "NNNN
+  # livre" com exit 0 sobre um número que o principal já tinha (caso medido:
+  # fork parado em 0323, principal em 0324).
+  pop_base=""
+  if declare -F pop_main_do_produto >/dev/null 2>&1; then
+    pop_base="$(pop_main_do_produto || true)"
+    if [ -n "$pop_base" ] && ! git rev-parse -q --verify "${pop_base}^{commit}" >/dev/null 2>&1; then
+      pop_base=""
+    fi
+  fi
+  # pop_sem_produto=1: há remoto de GitHub (um fork) e nenhum é o principal. Aí
+  # nenhum "livre" sai com ✓: o fork pode estar atrás do principal, e o ✓ sobre
+  # ele é o "livre" falso da #1273. (Fixture sem remoto de GitHub só tem o que
+  # tem; biblioteca ausente já sai declarada acima.)
+  pop_sem_produto=0
+  if [ -z "$pop_base" ]; then
+    if declare -F pop_tem_remoto_de_github >/dev/null 2>&1 && pop_tem_remoto_de_github; then
+      pop_sem_produto=1
+    fi
+    pop_base="origin/main"
+    git rev-parse -q --verify "${pop_base}^{commit}" >/dev/null 2>&1 || pop_base=""
+  fi
+  pop_refs=""
+  if declare -F pop_refs_de_outrem >/dev/null 2>&1; then
+    pop_refs="$(pop_refs_de_outrem "$pop_base" 2>/dev/null || true)"
+  else
+    pop_refs="origin/main $(git for-each-ref --format='%(refname)' refs/heads refs/remotes 2>/dev/null || true)"
+    olhe "NÃO MEDIDO no formato novo: scripts/migration-populacao.sh AUSENTE — a unicidade abaixo sai sobre origin/main + refs/heads + refs/remotes (#1273)"
+  fi
+  [ -n "${pop_refs// /}" ] || pop_refs="HEAD"
+  pop_migs=""
+  if declare -F pop_migrations >/dev/null 2>&1; then
+    # O HEAD entra SEMPRE: `pop_refs_de_outrem` tira a ref cujo SHA é o do HEAD,
+    # e sem devolvê-lo aqui a migration que a PRÓPRIA branch já commitou sumia da
+    # conta — o próximo NNNN apontava para o número que a branch já usava. O
+    # próprio arquivo não é acusado: o `grep -vE` abaixo o tira.
+    pop_migs="$(pop_migrations $pop_refs HEAD 2>/dev/null || true)"
+  else
+    # Sem a biblioteca, a lista é a de sempre: "<ref> <nome>", montada na mão,
+    # para o `grep` de baixo achar a mesma coisa que achava antes.
+    for ref in $pop_refs HEAD; do
+      [ -n "$ref" ] || continue
+      arquivos="$(git ls-tree -r --name-only "$ref" -- supabase/migrations 2>/dev/null \
+        | sed 's#^supabase/migrations/##' || true)"
+      [ -n "$arquivos" ] && pop_migs="${pop_migs}$(awk -v r="$ref" '{ print r, $0 }' <<<"$arquivos")"$'\n'
+    done
+  fi
+  if [ "$pop_sem_produto" = 1 ]; then
+    olhe "NÃO MEDIDO contra a main do PRODUTO: nenhum remoto aponta para melgarafael/DeskcommCRM — a unicidade abaixo sai sobre '${pop_base:-nenhuma base}' e a cópia local. Corrija com: git remote add upstream https://github.com/melgarafael/DeskcommCRM.git && git fetch upstream"
+  fi
+  # "livre" sobre a base errada não é ✓: é ⚠ com o nome da régua.
+  livre() { if [ "$pop_sem_produto" = 1 ]; then olhe "$* (NÃO MEDIDO contra a main do produto)"; else ok "$*"; fi; }
   for m in $migs; do
     nome="$(basename "$m")"
     nnnn="$(sed -nE 's/^[0-9]{14}_([0-9]{4})_.+\.sql$/\1/p' <<<"$nome")"
     ts="$(sed -nE 's/^([0-9]{14})_[0-9]{4}_.+\.sql$/\1/p' <<<"$nome")"
     if [ -z "$nnnn" ]; then trava "'$nome' não segue <timestamp14>_<NNNN>_<slug>.sql"; continue; fi
-    cn="$(grep -E "^[0-9]{14}_${nnnn}_" <<<"$existentes" | grep -vx "$nome" || true)"
-    ct="$(grep -E "^${ts}_" <<<"$existentes" | grep -vx "$nome" || true)"
-    [ -z "$cn" ] && ok "NNNN $nnnn livre na origin/main" || trava "NNNN $nnnn já existe na origin/main ($cn) — renumere E troque o timestamp (date -u +%Y%m%d%H%M%S)"
-    [ -z "$ct" ] && ok "timestamp $ts livre na origin/main" || trava "timestamp $ts já existe na origin/main ($ct)"
+    # A âncora é a POSIÇÃO do nome canônico (`^[0-9]{14}_NNNN_`), e o `grep` roda
+    # sobre a LINHA INTEIRA ("<ref> <nome>") para o dono poder ser nomeado. O
+    # `^[0-9]{14}_${nnnn}_` sem o campo da ref casaria a linha errada em silêncio.
+    cn="$(grep -E "^[A-Za-z0-9_./-]+ [0-9]{14}_${nnnn}_.+\.sql$" <<<"$pop_migs" | grep -vE " ${nome}\$" || true)"
+    ct="$(grep -E "^[A-Za-z0-9_./-]+ ${ts}_[0-9]{4}_.+\.sql$" <<<"$pop_migs" | grep -vE " ${nome}\$" || true)"
+    dono="$(awk '{printf "%s(%s) ", $1, $2}' <<<"$cn" | sed 's/ $//')"
+    # "livre" sem dizer sobre QUAL população é a afirmação sem régua que a
+    # #1155 registrou — e o número que se renumera errado sai daqui.
+    pop_desc="$pop_base ∪ outras refs do clone"
+    [ -z "$cn" ] && livre "NNNN $nnnn livre em $pop_desc" \
+      || trava "NNNN $nnnn já existe em $pop_desc: $dono — renumere E troque o timestamp (date -u +%Y%m%d%H%M%S)"
+    [ -z "$ct" ] && livre "timestamp $ts livre em $pop_desc" \
+      || trava "timestamp $ts já existe em $pop_desc: $(awk '{printf "%s(%s) ", $1, $2}' <<<"$ct" | sed 's/ $//')"
     if grep -qiE 'create table' "$m" && ! grep -qiE 'enable row level security' "$m"; then
       olhe "'$nome' cria tabela sem 'enable row level security' — tabela tenant-aware exige RLS + policy tenant_isolation_<tabela>_all + entrada em tests/invariants/rls-isolation.test.ts"
     fi
@@ -103,7 +173,31 @@ else
       olhe "'$nome' cria função sem 'revoke execute … from public, anon' — função nova em public nasce exposta como RPC"
     fi
   done
-  olhe "colisão com PR ABERTO não é visível daqui: se acontecer, quem renumera é o mantenedor (é o combinado do template de PR)"
+  # O resto da população — os PRs ABERTOS, inclusive de fork — NÃO é medido aqui:
+  # o pré-voo não vai à rede. Declarar é o contrato; com o `gh` logado, o mesmo
+  # `gh pr list` do #1269 fecha a conta (issue #1273).
+  pop_teto="$(cut -d' ' -f2- <<<"$pop_migs" | sed -nE 's/^[0-9]{14}_([0-9]{4})_.*$/\1/p' | sort -n | tail -1)"
+  if [ -n "$pop_teto" ]; then
+    pop_prox="$(printf '%04d' $((10#$pop_teto + 1)))"
+    livre "próximo NNNN medido em $pop_desc: ${pop_prox} (teto ${pop_teto})"
+  else
+    nao "nenhum NNNN entrou na população medida (base '${pop_base:-nenhuma}'; PRs abertos fora daqui — use pnpm checar:colisao-de-migration)"
+  fi
+  # A fila de PRs abertos é do repositório do PRODUTO, com qualquer nome de
+  # remoto — é o mesmo cuidado do #1269: listar o fork devolve zero, e esse zero
+  # sairia como medição.
+  pop_repo="$(pop_repo_do_produto 2>/dev/null || true)"
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    if [ -n "$pop_repo" ]; then
+      pop_abertos="$(gh pr list --repo "$pop_repo" --state open --limit 1000 \
+        --json number --jq '.[].number' 2>/dev/null | grep -c . || true)"
+      ok "PRs abertos em $pop_repo: ${pop_abertos:-0} visível(is) — a prévia do número é 'pnpm checar:colisao-de-migration' (mede também as cabeças, inclusive de fork)"
+    else
+      olhe "PRs ABERTOS NÃO MEDIDOS: este clone não tem remoto do repositório principal. Quem mede: pnpm checar:colisao-de-migration"
+    fi
+  else
+    olhe "PRs ABERTOS (inclusive de fork) NÃO MEDIDOS: o gh não está logado aqui. Quem mede é o script: pnpm checar:colisao-de-migration"
+  fi
 fi
 
 # ── 4. Release: fragmento sim, CHANGELOG à mão não ──────────────────────────

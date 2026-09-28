@@ -1,5 +1,5 @@
 import { cache } from "react";
-import { lerInterface } from "@/lib/navigation/interface";
+import { combinarInterfaces } from "@/lib/navigation/interface";
 /**
  * Server-side auth helpers — load AuthUser, resolve active org, gate routes.
  *
@@ -27,12 +27,25 @@ interface RawMembershipRow {
   /** Só para ORDENAR — a lista decide qual organização fica ativa sem cookie. */
   accepted_at?: string | null;
   organizations: OrgJoin | OrgJoin[] | null;
+  /**
+   * As portas da EMPRESA, por embed PRÓPRIO (`organizations.interface_settings`,
+   * migration 0367). Ficam fora de `organizations(display_name, locale)` de
+   * propósito: aquele embed é o que a membership SEMPRE trouxe — nome e IDIOMA da
+   * empresa, lidos em toda navegação — e um jsonb novo ali faria a escolha de menu
+   * mexer no caminho de quem só precisa saber em que língua desenhar a tela.
+   */
+  interface_da_empresa: OrgJoinEmpresa | OrgJoinEmpresa[] | null;
 }
 
 interface OrgJoin {
   display_name: string;
   locale: string | null;
   timezone: string | null;
+}
+
+/** O mesmo `organizations`, alcançado por outro embed: só as portas da EMPRESA. */
+interface OrgJoinEmpresa {
+  interface_settings?: unknown;
 }
 
 /**
@@ -167,7 +180,14 @@ export const loadAuthUser = cache(async (): Promise<AuthUser | null> => {
       supabase
         .from("user_organizations")
         .select(
-          "organization_id, role, interface_settings, accepted_at, organizations(display_name, locale, timezone)",
+          // Dois embeds do MESMO `organizations`, como manda o PostgREST quando a
+          // mesma relação aparece duas vezes: `organizations(...)` continua sendo
+          // o que a membership sempre trouxe (nome, IDIOMA e FUSO da empresa — o
+          // idioma decide a tela inteira e não pode depender de um embed que a
+          // issue #1341 acabou de engordar), e o alias traz só as portas da EMPRESA.
+          // `timezone` veio do main (fuso da organização nas listas, #1290) e convive
+          // com o alias: um embed por relação, sem renomear o que já existia.
+          "organization_id, role, interface_settings, accepted_at, organizations(display_name, locale, timezone), interface_da_empresa:organizations(interface_settings)",
         )
         .eq("user_id", user.id)
         .is("revoked_at", null)
@@ -211,11 +231,16 @@ export const loadAuthUser = cache(async (): Promise<AuthUser | null> => {
   const memberships: UserOrgMembership[] = rows.map((row) => {
     const orgs = row.organizations;
     const org = Array.isArray(orgs) ? (orgs[0] ?? null) : orgs;
+    const empresas = row.interface_da_empresa;
+    const empresa = Array.isArray(empresas) ? (empresas[0] ?? null) : empresas;
     return {
       organization_id: row.organization_id,
       organization_name: org?.display_name ?? "—",
       role: row.role as Role,
-      interface_settings: lerInterface(row.interface_settings).settings,
+      // EMPRESA ∩ VÍNCULO (migration 0367): a empresa escolhe o universo de
+      // portas da instalação, o vínculo escolhe menos dentro dele. Até aqui o
+      // vínculo decidia sozinho, então a escolha da empresa não existia.
+      interface_settings: combinarInterfaces(empresa?.interface_settings, row.interface_settings),
       locale: org?.locale ?? null,
       timezone: org?.timezone ?? null,
     };
@@ -290,10 +315,18 @@ export async function requireAuth(): Promise<AuthUser> {
 /**
  * Returns true if the current session has at least one verified TOTP factor.
  * Use only in Server Components / Server Actions (cookie session).
+ *
+ * LANÇA quando não conseguiu ler os fatores. O `listFactors()` do auth-js não
+ * lança: ele chama `getUser()` pela rede e, se falhar, DEVOLVE
+ * `{ data: null, error }`. Ler só `data` transformava essa falha em "não tem
+ * fator" — e `mfaEmDivida` liberava a sessão `aal1` de quem TEM fator. Uma
+ * leitura que não aconteceu não pode virar resposta: quem decide acesso falha
+ * fechado (a exceção vira 500 na rota, nunca 200).
  */
 export const isMfaEnrolled = cache(async (): Promise<boolean> => {
   const supabase = await createClient();
-  const { data } = await supabase.auth.mfa.listFactors();
+  const { data, error } = await supabase.auth.mfa.listFactors();
+  if (error) throw error;
   return !!data?.totp?.some((f) => f.status === "verified");
 });
 

@@ -46,14 +46,14 @@ create role agent_worker login password '<gerada>' bypassrls; + grants do README
 ```bash
 # B1. transporte do código SEM push ao GitHub (git bundle — zero efeito externo)
 git bundle create /tmp/fusion.bundle vendaval-fusion                  # local
-scp -P 22022 -i ~/.ssh/fusion_testvps_ed25519 /tmp/fusion.bundle root@129.121.45.100:/opt/
+scp -P 22022 -i ~/.ssh/fusion_testvps_ed25519 /tmp/fusion.bundle root@203.0.113.10:/opt/
 ssh ... 'mkdir -p /opt/deskcomm-fusion && git clone -b vendaval-fusion /opt/fusion.bundle /opt/deskcomm-fusion/app'
 
 # B2. .env montado LOCALMENTE (segredos openssl gerados na hora + keys do Supabase
 #     novo + ANTHROPIC_API_KEY que o Maestro fornecer) e enviado com chmod 600:
 scp -P 22022 -i ~/.ssh/... /tmp/fusion-vps.env root@...:/opt/deskcomm-fusion/app/.env
 ssh ... 'chmod 600 /opt/deskcomm-fusion/app/.env && rm -f /opt/fusion.bundle'
-#     Valores-chave: NEXT_PUBLIC_APP_URL=http://129.121.45.100:18080
+#     Valores-chave: NEXT_PUBLIC_APP_URL=http://203.0.113.10:18080
 #     WAHA_WEBHOOK_BASE_URL=http://app:3000  (webhook interno pela rede do compose)
 #     AGENT_DISPATCH_CONSUMER=engine · WAHA key + sha512 · APP_IMAGE=deskcomm-app:vps
 
@@ -73,7 +73,7 @@ ssh ... 'cd /opt/deskcomm-fusion/app && docker compose -p deskcomm-fusion \
 ssh ... '... up -d app worker waha redis srh scheduler'
 
 # B6. verificações (read-only)
-curl http://129.121.45.100:18080/            # app 200
+curl http://203.0.113.10:18080/            # app 200
 ssh ... 'curl -s http://127.0.0.1:18787/healthz'   # worker ok contra o banco novo
 ssh ... 'docker compose -p deskcomm-fusion ... ps'  # tudo healthy; ss -tlnp → só as novas portas
 ```
@@ -81,7 +81,7 @@ ssh ... 'docker compose -p deskcomm-fusion ... ps'  # tudo healthy; ss -tlnp →
 ## FASE C — prova final (gates humanos)
 1. Sessão WAHA: eu crio via API (127.0.0.1:13030 por túnel ssh) → QR ao dono
    (Maestro serve a página, como na Fase 1).
-2. Dono loga na tela (http://129.121.45.100:18080/app, credencial do usuário de
+2. Dono loga na tela (http://203.0.113.10:18080/app, credencial do usuário de
    teste criado em A3) → cria/publica o agente.
 3. Mensagem real de outro número → resposta do agente → verificação no banco NOVO
    (job_queue/messages/before_send_traces) + Playwright da tela.

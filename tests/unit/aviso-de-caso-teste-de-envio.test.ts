@@ -48,6 +48,7 @@ function deps(patch: Partial<DepsDoAvisoDeTeste> = {}) {
     db: {
       carregaCanal: vi.fn(async () => canalSaudavel),
       marcaDaOrganizacao: vi.fn(async () => ({ nome: "Acme", idioma: "pt-BR" as const })),
+      destinoEhDaPropriaOrganizacao: vi.fn(async () => false),
     },
     transporte: {
       configurado: vi.fn(async () => true),
@@ -106,9 +107,10 @@ describe("o caminho feliz", () => {
     expect(ledger).toEqual([{ canal: CANAL, quando: AGORA }]);
   });
 
-  it("não escreve no registro de entregas — o `db` que ele recebe só tem DUAS leituras", async () => {
+  it("não escreve no registro de entregas — o `db` que ele recebe só tem TRÊS leituras", async () => {
     // ⚠️ A régua deste caso é o FIXTURE, e isso é deliberado: o `db` entregue ao
-    // módulo tem exatamente `carregaCanal` e `marcaDaOrganizacao`. Se alguém
+    // módulo tem exatamente `carregaCanal`, `marcaDaOrganizacao` e
+    // `destinoEhDaPropriaOrganizacao` — as três são leituras. Se alguém
     // acrescentar `deps.db.reivindicaEntrega(...)` ao caminho do teste, a
     // chamada estoura aqui com "is not a function" e este caso fica vermelho.
     //
@@ -117,7 +119,11 @@ describe("o caminho feliz", () => {
     // para ninguém confundir o alcance: sabotar a escrita da entrega NÃO
     // produz um unit vermelho por si só; produz um typecheck vermelho.
     const { deps: d } = deps();
-    expect(Object.keys(d.db).sort()).toEqual(["carregaCanal", "marcaDaOrganizacao"]);
+    expect(Object.keys(d.db).sort()).toEqual([
+      "carregaCanal",
+      "destinoEhDaPropriaOrganizacao",
+      "marcaDaOrganizacao",
+    ]);
     const r = await enviarAvisoDeTeste(d, entrada);
     expect(r.enviado).toBe(true);
   });
@@ -126,7 +132,11 @@ describe("o caminho feliz", () => {
 describe("as recusas, cada uma com o seu código", () => {
   it("canal removido ou arquivado", async () => {
     const semCanal = deps({
-      db: { carregaCanal: vi.fn(async () => null), marcaDaOrganizacao: vi.fn() },
+      db: {
+        carregaCanal: vi.fn(async () => null),
+        marcaDaOrganizacao: vi.fn(),
+        destinoEhDaPropriaOrganizacao: vi.fn(),
+      },
     } as Partial<DepsDoAvisoDeTeste>);
     await expect(enviarAvisoDeTeste(semCanal.deps, entrada)).resolves.toMatchObject({
       enviado: false,
@@ -139,6 +149,7 @@ describe("as recusas, cada uma com o seu código", () => {
       db: {
         carregaCanal: vi.fn(async () => ({ ...canalSaudavel, aceitaMensagemLivre: false })),
         marcaDaOrganizacao: vi.fn(),
+        destinoEhDaPropriaOrganizacao: vi.fn(),
       },
     } as Partial<DepsDoAvisoDeTeste>);
     await expect(enviarAvisoDeTeste(d.deps, entrada)).resolves.toMatchObject({
@@ -151,6 +162,7 @@ describe("as recusas, cada uma com o seu código", () => {
       db: {
         carregaCanal: vi.fn(async () => ({ ...canalSaudavel, status: "STOPPED" })),
         marcaDaOrganizacao: vi.fn(),
+        destinoEhDaPropriaOrganizacao: vi.fn(),
       },
     } as Partial<DepsDoAvisoDeTeste>);
     await expect(enviarAvisoDeTeste(d.deps, entrada)).resolves.toMatchObject({
@@ -198,6 +210,31 @@ describe("as recusas, cada uma com o seu código", () => {
       enviado: false,
       codigo: "espacamento",
     });
+  });
+
+  it("destino que voltou a ser número de uma conexão ATIVA da própria organização — não envia", async () => {
+    // O passo 11b do motor, repetido aqui: reativar a conexão cujo número é o
+    // destino não pode fazer o teste sair verde enquanto o aviso real é recusado.
+    const d = deps();
+    d.deps.db.destinoEhDaPropriaOrganizacao = vi.fn(async () => true);
+    const r = await enviarAvisoDeTeste(d.deps, entrada);
+    expect(r).toEqual({ enviado: false, codigo: "destino_da_propria_organizacao" });
+    expect(d.deps.db.destinoEhDaPropriaOrganizacao).toHaveBeenCalledWith(ORG, TELEFONE);
+    expect(d.deps.transporte.envia).not.toHaveBeenCalled();
+    expect(d.enviados).toEqual([]);
+    expect(d.ledger).toEqual([]);
+  });
+
+  it("a leitura do destino falhou — `indeterminado`, nunca um throw nem um envio às cegas", async () => {
+    const d = deps();
+    d.deps.db.destinoEhDaPropriaOrganizacao = vi.fn(async () => {
+      throw new Error("connection reset");
+    });
+    await expect(enviarAvisoDeTeste(d.deps, entrada)).resolves.toEqual({
+      enviado: false,
+      codigo: "indeterminado",
+    });
+    expect(d.enviados).toEqual([]);
   });
 
   it("destino que o canal não sabe endereçar", async () => {

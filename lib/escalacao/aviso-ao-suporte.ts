@@ -53,6 +53,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createHash } from "node:crypto";
 
+import { phoneLookupVariants } from "@/lib/channels/phone-variants";
 import type { EventRow } from "@/lib/event-log/dispatcher";
 import type { Idioma } from "@/lib/i18n/idiomas";
 import { logger } from "@/lib/logger";
@@ -187,6 +188,15 @@ export interface AvisoDb {
   /** Devolve quantas entregas `pendente` daquele caso viraram `cancelado`. */
   cancelaPendentesDoCaso(orgId: string, caseId: string): Promise<number>;
   carregaCanal(orgId: string, channelSessionId: string): Promise<CanalDoAviso | null>;
+  /**
+   * O número de destino é de uma conexão ATIVA desta organização AGORA?
+   *
+   * Não é um campo de `CanalDoAviso`: a pergunta é sobre o NÚMERO, não sobre a
+   * conexão que envia, e a resposta pode mudar entre definir o aviso e enviá-lo
+   * — é exatamente essa janela que ela fecha. Quem responde é uma consulta a
+   * `channel_sessions`, a MESMA que `fn_definir_aviso_de_caso` faz.
+   */
+  destinoEhDaPropriaOrganizacao(orgId: string, telefone: string): Promise<boolean>;
   avisaNaCentral(entrada: {
     organizationId: string;
     caseId: string;
@@ -445,6 +455,33 @@ export async function aplicaAvisoDeCaso(
       erro_codigo: pacing.motivo === "teto_diario" ? "teto_diario_do_numero" : null,
     });
     return retry(pacing.liberaEm, `pacing:${pacing.motivo}`);
+  }
+
+  // ── 11b. O destino ainda é de fora? ──────────────────────────────────────
+  //
+  // `fn_definir_aviso_de_caso` recusa um número de conexão DA PRÓPRIA
+  // ORGANIZAÇÃO — é o laço robô-com-robô. Essa pergunta acontece só ao DEFINIR,
+  // e a 0438 passou a ignorar a conexão ARQUIVADA (ela não envia e não recebe,
+  // então não fechava laço nenhum). Só que arquivar não apaga a linha: reativar
+  // é gravar `archived_at = null` de novo. Se o número daquela conexão já
+  // estava gravado como destino e a conexão voltar, nenhuma checagem roda outra
+  // vez — e o aviso sai para um número atendido por um agente desta organização.
+  //
+  // Por isso a pergunta é repetida AQUI, no envio: é a única hora em que se sabe
+  // que a conexão está ativa AGORA, e é um lugar só para todos os caminhos de
+  // volta (canal oficial, pareamento do onboarding, conclusão do pareamento
+  // por QR) em vez de uma guarda por caminho — a próxima forma de reativar
+  // nasceria sem ela.
+  if (await deps.db.destinoEhDaPropriaOrganizacao(orgId, cfg.telefone_destino)) {
+    return await condena(
+      deps,
+      orgId,
+      caso,
+      entrega,
+      "destino_da_propria_organizacao",
+      null,
+      agora,
+    );
   }
 
   // ── 12. O destino ────────────────────────────────────────────────────────
@@ -759,6 +796,38 @@ export function createSupabaseAvisoDb(admin: SupabaseClient): AvisoDb {
         archived_at: linha.archived_at,
         aceitaMensagemLivre: aceita,
       };
+    },
+
+    /**
+     * A MESMA pergunta que `fn_definir_aviso_de_caso` faz, feita de novo.
+     *
+     * A comparação é pelas DUAS grafias do nono dígito, como no SQL — comparar a
+     * string crua deixaria passar o número cadastrado com 9 e registrado sem (ou
+     * o contrário). `phoneLookupVariants` é a regra canônica do repo para isso,
+     * e usá-la aqui evita uma terceira cópia da mesma conta.
+     *
+     * Só conexão ATIVA conta (`archived_at is null`), que é o que a 0438 fixou:
+     * arquivada não envia nem recebe, então não fecha laço. A diferença em
+     * relação ao SQL é WHERE ela roda, não O QUE ela pergunta.
+     */
+    async destinoEhDaPropriaOrganizacao(orgId, telefone) {
+      const variantes = phoneLookupVariants(telefone).map((v) => v.replace(/\D/g, ""));
+      if (variantes.length === 0) return false;
+      // ⚠️ `organization_id` filtrado À MÃO: o client é o de service role, que
+      // BYPASSA a RLS. A organização vem da linha do `event_log`.
+      const { data, error } = await admin
+        .from("channel_sessions")
+        .select("id, phone_number")
+        .eq("organization_id", orgId)
+        .is("archived_at", null)
+        .not("phone_number", "is", null);
+      if (error) throw new Error(error.message);
+      return ((data ?? []) as Array<{ phone_number: string | null }>).some(
+        (linha) =>
+          linha.phone_number !== null &&
+          // Mesma normalização do SQL: só dígitos, dos dois lados.
+          variantes.includes(linha.phone_number.replace(/\D/g, "")),
+      );
     },
 
     async avisaNaCentral({ organizationId, caseId, titulo, corpo }) {

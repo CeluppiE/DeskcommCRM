@@ -29,6 +29,19 @@
  * banco — a função da marca substitui o objeto inteiro e apagaria o logo. Juntar
  * os dois no mesmo botão significaria segurar bytes em memória do navegador até
  * alguém clicar em Salvar, e perder o arquivo em toda navegação acidental.
+ *
+ * ── Por que o arquivo é AJUSTADO aqui antes de subir (issue #1655) ───────────
+ *
+ * O teto de 512 KB não sai: o logo vai inteiro para o navegador em toda página,
+ * sem `next/image` para redimensioná-lo (ver `lib/branding/logo.ts`). O que
+ * mudou é QUANDO a pessoa descobre isso. Antes, o PNG de estúdio — 1536×1024 com
+ * o logo ocupando só o meio, 2 MB — atravessava a rede e voltava recusado, e quem
+ * não sabe recortar imagem travava na tela ou subia um JPG de fundo branco, que
+ * vira caixa branca no tema escuro. Agora `ajustarLogo` recorta a margem
+ * transparente e, se ainda não couber, reduz a largura, tudo neste `<canvas>`
+ * (ver `lib/branding/ajuste-de-logo.ts` e `lib/branding/lona-do-navegador.ts`).
+ * O servidor continua recebendo só arquivo de até 512 KB — e continua sendo ele
+ * quem aplica o teto de verdade.
  */
 
 import { useRef, useState, useSyncExternalStore, useTransition } from "react";
@@ -37,7 +50,9 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { ajustarLogo } from "@/lib/branding/ajuste-de-logo";
 import { melhorFrenteSobre } from "@/lib/branding/contraste";
+import { lonaDoNavegador } from "@/lib/branding/lona-do-navegador";
 import { TAMANHO_MAXIMO_DO_LOGO } from "@/lib/branding/logo";
 import { REGUA_DO_PRODUTO } from "@/lib/branding/regua-do-produto";
 import { useT } from "@/hooks/i18n/useT";
@@ -74,12 +89,13 @@ interface Props {
    * este objeto num `useMemo` ou num módulo devolveria o defeito em silêncio —
    * é o que `tests/unit/marca-previa-do-logo-sem-refresh.test.tsx` (3) vigia.
    */
-  readonly logoDaCamada: { readonly url: string | null };
+  readonly logoDaCamada: { readonly url: string | null; readonly escuraUrl?: string | null };
   /**
    * O que o produto mostra quando esta camada não tem nada. `null` = ninguém tem
    * logo, e a interface aparece com o NOME em texto.
    */
   readonly logoHerdado: string | null;
+  readonly logoEscuroHerdado?: string | null;
   /** Uma frase dizendo de quem é o logo herdado ("do sistema", "da instalação"). */
   readonly origemDoHerdado: string;
   /** O nome em vigor — vira o `alt` da prévia e o texto do caso sem logo. */
@@ -95,10 +111,24 @@ const ERRO_EM_PORTUGUES: Record<string, string> = {
   rate_limited: "Muitas trocas seguidas. Tente de novo em alguns minutos.",
 };
 
+/**
+ * A frase da recusa por teto — a MESMA que a rota responde.
+ *
+ * Este texto é a chave do dicionário (`lib/i18n/dicionario.ts`), com tradução
+ * para os outros idiomas: escrever qualquer outra frase aqui faria a recusa no
+ * navegador dizer uma coisa e a do servidor, outra. A recusa acontece aqui
+ * SOMENTE quando o ajuste já tentou o recorte e a escada de larguras até o piso
+ * e nada coube — o teto continua de pé, e o servidor continua sendo quem o
+ * aplica de verdade (`app/api/v1/marca/logo/route.ts`).
+ */
+const RAZAO_DO_TETO =
+  "O logo precisa ter até 512 KB. Arquivo maior vai inteiro para o navegador em toda página.";
+
 export function CampoDeLogo({
   escopo,
   logoDaCamada,
   logoHerdado,
+  logoEscuroHerdado,
   origemDoHerdado,
   nomeEmVigor,
 }: Props) {
@@ -170,13 +200,18 @@ export function CampoDeLogo({
    * `logoDaCamada`, e o tipo dele existe por essa razão (ver os Props).
    */
   const [logoGravado, setLogoGravado] = useState<string | null>(logoDaCamada.url);
+  const [logoEscuroGravado, setLogoEscuroGravado] = useState<string | null>(
+    logoDaCamada.escuraUrl ?? null,
+  );
   const [ultimoDoServidor, setUltimoDoServidor] = useState(logoDaCamada);
   if (logoDaCamada !== ultimoDoServidor) {
     setUltimoDoServidor(logoDaCamada);
     setLogoGravado(logoDaCamada.url);
+    setLogoEscuroGravado(logoDaCamada.escuraUrl ?? null);
   }
 
   const emVigor = logoGravado ?? logoHerdado;
+  const escuroEmVigor = logoEscuroGravado ?? (logoGravado ? null : logoEscuroHerdado);
 
   /**
    * O `logo_url` que a rota acabou de gravar para ESTA camada.
@@ -189,9 +224,9 @@ export function CampoDeLogo({
    * DELETE não apagar a prévia.
    */
   async function logoDaResposta(resposta: Response): Promise<string | null | undefined> {
-    const corpo = (await resposta.json().catch(() => null)) as
-      | { data?: { logo_url?: string | null } }
-      | null;
+    const corpo = (await resposta.json().catch(() => null)) as {
+      data?: { logo_url?: string | null };
+    } | null;
     return corpo?.data?.logo_url;
   }
 
@@ -205,18 +240,47 @@ export function CampoDeLogo({
    * onde a mensagem certa depende de onde a pessoa está.
    */
   async function razaoDaFalha(resposta: Response): Promise<string> {
-    const corpo = (await resposta.json().catch(() => null)) as
-      | { error?: { code?: string; message?: string } }
-      | null;
+    const corpo = (await resposta.json().catch(() => null)) as {
+      error?: { code?: string; message?: string };
+    } | null;
     const codigo = corpo?.error?.code ?? "";
-    return t(ERRO_EM_PORTUGUES[codigo] ?? corpo?.error?.message ?? "Não consegui trocar o logo agora.");
+    return t(
+      ERRO_EM_PORTUGUES[codigo] ?? corpo?.error?.message ?? "Não consegui trocar o logo agora.",
+    );
   }
 
-  async function enviar(arquivo: File) {
+  async function enviar(arquivoEscolhido: File, tema: "claro" | "escuro" = "claro") {
     setEnviando(true);
     try {
+      /**
+       * O AJUSTE, AQUI E ANTES DO `FormData` — e não no servidor.
+       *
+       * O caso que trava a pessoa na tela (issue #1655): PNG de 1536×1024 com o
+       * logo ocupando só o meio, 2 MB. `ajustarLogo` recorta a margem 100%
+       * transparente no `<canvas>` deste navegador e, se ainda não couber, desce
+       * a largura pela escada 800 → 640 → 512 — sem decodificar bytes no
+       * servidor, que continua recebendo só arquivo de até 512 KB.
+       *
+       * A ordem dos três desfechos importa e está medida em
+       * `tests/unit/campo-de-logo-ajusta-antes-de-subir.test.tsx`:
+       *   - arquivo já dentro do teto → vai INTACTO (bytes idênticos aos que a
+       *     pessoa escolheu; nenhum reencode troca nitidez por nada);
+       *   - arquivo ajustado → sobe o ajustado, e a prévia abaixo mostra o
+       *     resultado porque é ele que o servidor grava e devolve;
+       *   - nem no piso coube → recusa AQUI, com a frase da rota, em vez de
+       *     subir megabytes para receber a recusa de volta;
+       *   - o motor indisponível (ambiente sem `createImageBitmap`) NÃO recusa:
+       *     manda o original e quem decide é o servidor, como antes.
+       */
+      const { arquivo, recusar } = await ajustarLogo(arquivoEscolhido, lonaDoNavegador);
+      if (recusar) {
+        toast.error(t(RAZAO_DO_TETO));
+        return;
+      }
+
       const corpo = new FormData();
       corpo.set("escopo", escopo);
+      corpo.set("tema", tema);
       corpo.set("file", arquivo);
       const resposta = await fetch("/api/v1/marca/logo", { method: "POST", body: corpo });
       if (!resposta.ok) {
@@ -225,7 +289,10 @@ export function CampoDeLogo({
       }
       toast.success(t("Logo atualizado."));
       const gravado = await logoDaResposta(resposta);
-      if (gravado !== undefined) setLogoGravado(gravado);
+      if (gravado !== undefined) {
+        if (tema === "escuro") setLogoEscuroGravado(gravado);
+        else setLogoGravado(gravado);
+      }
       startTransition(() => router.refresh());
     } finally {
       setEnviando(false);
@@ -235,10 +302,12 @@ export function CampoDeLogo({
     }
   }
 
-  async function remover() {
+  async function remover(tema: "claro" | "escuro" = "claro") {
     setEnviando(true);
     try {
-      const resposta = await fetch(`/api/v1/marca/logo?escopo=${escopo}`, { method: "DELETE" });
+      const resposta = await fetch(`/api/v1/marca/logo?escopo=${escopo}&tema=${tema}`, {
+        method: "DELETE",
+      });
       if (!resposta.ok) {
         toast.error(await razaoDaFalha(resposta));
         return;
@@ -247,7 +316,10 @@ export function CampoDeLogo({
       // A rota devolve `logo_url: null` — "esta camada ficou sem logo próprio" —,
       // e é isso que faz a prévia cair no herdado sem esperar o refresh.
       const gravado = await logoDaResposta(resposta);
-      if (gravado !== undefined) setLogoGravado(gravado);
+      if (gravado !== undefined) {
+        if (tema === "escuro") setLogoEscuroGravado(gravado);
+        else setLogoGravado(gravado);
+      }
       startTransition(() => router.refresh());
     } finally {
       setEnviando(false);
@@ -255,7 +327,11 @@ export function CampoDeLogo({
   }
 
   return (
-    <div className="space-y-4" data-campo-de-logo={escopo} data-hidratado={hidratado ? "" : undefined}>
+    <div
+      className="space-y-4"
+      data-campo-de-logo={escopo}
+      data-hidratado={hidratado ? "" : undefined}
+    >
       <div className="space-y-2">
         <Label htmlFor={`logo-${escopo}`}>{t("Logo")}</Label>
         <div className="flex flex-wrap items-center gap-3">
@@ -275,7 +351,12 @@ export function CampoDeLogo({
             className="max-w-xs text-sm file:mr-3 file:cursor-pointer file:rounded-sm file:border file:border-border file:bg-surface-elevated file:px-3 file:py-1.5 file:text-sm"
           />
           {logoGravado ? (
-            <Button type="button" variant="outline" onClick={() => void remover()} disabled={enviando}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void remover()}
+              disabled={enviando}
+            >
               {t("Remover")}
             </Button>
           ) : null}
@@ -284,6 +365,39 @@ export function CampoDeLogo({
           {t("PNG ou JPG, até")} {Math.round(TAMANHO_MAXIMO_DO_LOGO / 1024)}{" "}
           {t(
             "KB. Prefira fundo transparente. SVG não é aceito: ele pode executar código quando aberto direto pelo endereço da imagem.",
+          )}
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor={`logo-escuro-${escopo}`}>{t("Logo para o tema escuro (opcional)")}</Label>
+        <div className="flex flex-wrap items-center gap-3">
+          <input
+            id={`logo-escuro-${escopo}`}
+            type="file"
+            accept="image/png,image/jpeg"
+            disabled={enviando}
+            onChange={(e) => {
+              const arquivo = e.target.files?.[0];
+              if (arquivo) void enviar(arquivo, "escuro");
+              e.target.value = "";
+            }}
+            className="max-w-xs text-sm file:mr-3 file:cursor-pointer file:rounded-sm file:border file:border-border file:bg-surface-elevated file:px-3 file:py-1.5 file:text-sm"
+          />
+          {logoEscuroGravado ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void remover("escuro")}
+              disabled={enviando}
+            >
+              {t("Remover logo escuro")}
+            </Button>
+          ) : null}
+        </div>
+        <p className="text-xs text-text-muted">
+          {t(
+            "Use uma versão legível sobre fundo escuro. Ela aparece sem moldura branca. Sem ela, o logo padrão mantém a proteção de contraste. PNG ou JPG, até 512 KB.",
           )}
         </p>
       </div>
@@ -312,19 +426,12 @@ export function CampoDeLogo({
                 className="flex h-24 items-center justify-center rounded-sm border border-border px-4"
                 style={{ backgroundColor: fundo }}
               >
-                {emVigor ? (
-                  // O chip claro na aparência escura é o MESMO que a barra
-                  // lateral e a tela de entrada aplicam de verdade
-                  // (`components/shell/Sidebar.tsx`, `app/(public)/layout.tsx`):
-                  // esta prévia deixaria de ser prévia se mostrasse o logo cru
-                  // onde o app real desenha um chip por baixo. Aqui não dá pra
-                  // usar a variante `dark:` do Tailwind — as duas caixas
-                  // renderizam lado a lado no MESMO tema real, simulando os
-                  // dois via `style` — então a condição é o rótulo da caixa, não
-                  // o tema da página.
+                {(rotulo === t("Aparência escura") ? escuroEmVigor || emVigor : emVigor) ? (
+                  // A arte específica dispensa a moldura; o logo único conserva
+                  // a proteção do #659. A prévia simula ambos os temas lado a lado.
                   <span
                     className={
-                      rotulo === t("Aparência escura")
+                      rotulo === t("Aparência escura") && !escuroEmVigor
                         ? "rounded-md bg-white px-2 py-1 shadow-sm"
                         : undefined
                     }
@@ -337,7 +444,10 @@ export function CampoDeLogo({
                       de proporção desconhecida. */}
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
-                      src={emVigor}
+                      src={
+                        (rotulo === t("Aparência escura") ? escuroEmVigor || emVigor : emVigor) ??
+                        undefined
+                      }
                       alt={nomeEmVigor}
                       className="max-h-12 w-auto max-w-full object-contain"
                     />

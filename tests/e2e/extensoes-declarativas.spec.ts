@@ -9,7 +9,7 @@ import {
   type Page,
   type Request,
   type Response,
-} from "@playwright/test";
+} from "./helpers/test";
 
 import {
   criarAtoresDasExtensoes,
@@ -26,7 +26,7 @@ import {
 // verdadeira continua passando na hora.
 const expect = expectBase.configure({ timeout: 20_000 });
 
-const EVIDENCE = ".superpowers/evidence/extensoes-integracao/e2e";
+const EVIDENCE = "evidence/extensoes-integracao/e2e";
 const EXPECTED_ORGANIZATION_HEADER = "X-Expected-Organization-Id";
 const SCREENSHOTS = [
   { name: "extension-install-failure", path: `${EVIDENCE}/falha.png` },
@@ -65,7 +65,7 @@ async function login(page: Page, email: string, senha: string): Promise<void> {
   await page.goto("/login");
   await page.getByLabel(/e-?mail/i).fill(email);
   await page.getByLabel(/senha/i).fill(senha);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app(?:\/|$)/, { timeout: 60_000 });
 }
 

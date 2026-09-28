@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { montarPayloadDeInbound, truncar } from "./push_payload";
 import { enviarPushAoUsuario, enviarPushDaOrg } from "./web_push";
 import { vapidPronto } from "./vapid";
+import { pushDoAvisoDaCentral } from "./push-dos-avisos";
 import type { PushPayload } from "./push_payload";
 import { rotuloDoContato, SEM_NOME } from "@/lib/contacts/rotulo-do-contato";
 
@@ -67,6 +68,18 @@ async function handleInbound(row: EventRow): Promise<HandlerResult> {
   return { consumer_key: WEB_PUSH_INBOUND_KEY, status: "ok", detail: `sent:${sent}` };
 }
 
+/** Os avisos da Central que pedem gente — ver `./push-dos-avisos.ts`. */
+async function handleAvisoQuePedeGente(row: EventRow): Promise<HandlerResult> {
+  const id = typeof row.payload.item_id === "string" ? row.payload.item_id : row.entity_id;
+  if (!id) return { consumer_key: WEB_PUSH_INBOUND_KEY, status: "skipped", detail: "sem_alvo" };
+  const payload = await pushDoAvisoDaCentral(createAdminClient(), row.organization_id, id);
+  if (payload === null) {
+    return { consumer_key: WEB_PUSH_INBOUND_KEY, status: "skipped", detail: "aviso_fora_do_celular" };
+  }
+  const { sent } = await enviarPushDaOrg(row.organization_id, payload);
+  return { consumer_key: WEB_PUSH_INBOUND_KEY, status: "ok", detail: `sent:${sent}` };
+}
+
 async function leadBits(organizationId: string, leadId: string): Promise<{
   title: string;
   ownerUserId: string | null;
@@ -109,12 +122,21 @@ async function enviarParaUsuario(
 
 export const webPushInboundHandler: EventHandler = {
   key: WEB_PUSH_INBOUND_KEY,
-  events: ["message.received", "lead.assigned", "lead.won", "lead.lost", "user.mentioned"],
+  events: [
+    "message.received",
+    "lead.assigned",
+    "lead.won",
+    "lead.lost",
+    "user.mentioned",
+    // Os avisos que pedem gente (migration 0442) — ver `./push-dos-avisos.ts`.
+    "central.aviso_criado",
+  ],
   async handle(row): Promise<HandlerResult> {
     if (!vapidPronto()) {
       return { consumer_key: WEB_PUSH_INBOUND_KEY, status: "skipped", detail: "vapid_ausente" };
     }
     if (row.event_type === "message.received") return handleInbound(row);
+    if (row.event_type === "central.aviso_criado") return handleAvisoQuePedeGente(row);
 
     if (row.event_type === "user.mentioned") {
       const toUserId = typeof row.payload.to_user_id === "string" ? row.payload.to_user_id : null;

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { expect as expectBase, test, type Page } from "@playwright/test";
+import { expect as expectBase, test, type Page } from "./helpers/test";
 
 import { criarAtoresDasExtensoes, type AtoresDasExtensoes } from "./fixtures/catalogo-extensoes";
 
@@ -229,7 +229,7 @@ async function login(page: Page, email: string, senha: string): Promise<void> {
   await page.goto("/login");
   await page.getByLabel(/e-?mail/i).fill(email);
   await page.getByLabel(/senha/i).fill(senha);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app(?:\/|$)/, { timeout: 60_000 });
 }
 

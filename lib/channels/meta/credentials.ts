@@ -42,6 +42,8 @@ import { ARCHIVED_AT, queryTolerantToMissingArchived } from "../archived";
 import { graphVersion } from "@/lib/graph-version";
 import { decryptWebhookSecret } from "@/lib/webhooks/secrets";
 
+import { graphBaseUrl } from "./graph-base";
+
 export interface MetaCredentials {
   phoneNumberId: string;
   token: string;
@@ -58,6 +60,19 @@ export interface MetaCredsLookup {
   organizationId: string;
   /** `channel_sessions.meta_phone_number_id` — o `sessionRef` deste canal. */
   phoneNumberId: string;
+}
+
+/**
+ * Base da Graph API desta instalação — o "endpoint" que a tela de conexão mostra
+ * para o operador reaproveitar em outro sistema. Não é segredo (é o mesmo host
+ * público para todo mundo); o segredo é o token, que nunca sai daqui.
+ *
+ * É o `graphBaseUrl()` do canal (#817) com a versão da instalação. O host
+ * sobrescrito aparece na tela junto, e é o que deve aparecer: a tela de
+ * "para integrar" não pode prometer um endpoint que o produto não chama.
+ */
+export function metaGraphBase(): string {
+  return graphBaseUrl();
 }
 
 /**

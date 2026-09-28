@@ -173,7 +173,7 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     concurrency:
-      group: ${{ github.workflow }}-build-and-push-${{ matrix.name }}-${{ github.event.pull_request.number || github.ref }}
+      group: ${{ github.workflow }}-build-and-push-${{ matrix.name }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'pull_request' && github.run_attempt != '1' && format('-reentrada-{0}', github.event.pull_request.head.sha) || '' }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     permissions:
       contents: read
@@ -280,7 +280,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             APP_VERSION=${{ steps.ver.outputs.value }}
-          # Cache por imagem: as três têm camadas diferentes e um escopo único
+          # Cache por imagem: cada uma tem camadas diferentes, e um escopo único
           # faria uma sobrescrever o cache da outra a cada run.
           cache-from: type=gha,scope=${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.name }}
@@ -311,7 +311,7 @@ jobs:
     # comentário do e2e-parte no e2e.yml.
     runs-on: ${{ vars.EXECUTOR_PROPRIO == 'ligado' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && 'deskcomm-proprio' || 'ubuntu-latest' }}
     concurrency:
-      group: ${{ github.workflow }}-imagem-do-app-sobe-${{ github.event.pull_request.number || github.ref }}
+      group: ${{ github.workflow }}-imagem-do-app-sobe-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'pull_request' && github.run_attempt != '1' && format('-reentrada-{0}', github.event.pull_request.head.sha) || '' }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     permissions:
       contents: read
@@ -465,7 +465,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Apontar `stable` para esta versão, nas três imagens
+      - name: Apontar `stable` para esta versão, em todas as imagens do conjunto
         env:
           VERSAO: ${{ github.ref_name }}
         run: |
@@ -483,7 +483,7 @@ jobs:
               "${REGISTRY}/${dono}/${img}:${numero}"
             echo "::endgroup::"
           done
-          echo "stable agora aponta para ${numero} nas três imagens"
+          echo "stable agora aponta para ${numero} em todas as imagens do conjunto"
 
   # As imagens de FUNDO sobem — e o laço do event_log CARREGA? (issue #604)
   #
@@ -528,7 +528,7 @@ jobs:
     # comentário do e2e-parte no e2e.yml.
     runs-on: ${{ vars.EXECUTOR_PROPRIO == 'ligado' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && 'deskcomm-proprio' || 'ubuntu-latest' }}
     concurrency:
-      group: ${{ github.workflow }}-imagens-de-fundo-sobem-${{ github.event.pull_request.number || github.ref }}
+      group: ${{ github.workflow }}-imagens-de-fundo-sobem-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'pull_request' && github.run_attempt != '1' && format('-reentrada-{0}', github.event.pull_request.head.sha) || '' }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     # Só leitura, explícita: sem o bloco o GITHUB_TOKEN herda o default do
     # REPOSITÓRIO — configuração que vive fora do repo, muda num clique e não
@@ -796,9 +796,12 @@ jobs:
           docker logs sched 2>&1 | tail -20
 
   # Job de fachada: dá UM nome estável para a branch protection exigir. Sem ele,
-  # o required check teria que listar as três instâncias da matriz pelo nome
-  # gerado, e acrescentar uma quarta imagem um dia quebraria o gate em silêncio —
-  # o merge voltaria a passar sem que ninguém tivesse decidido isso.
+  # o required check teria que listar cada instância da matriz pelo nome gerado,
+  # e acrescentar uma imagem quebraria o gate em silêncio — o merge voltaria a
+  # passar sem que ninguém tivesse decidido isso.
+  #
+  # A previsão deste comentário foi MEDIDA: a quarta imagem
+  # (`deskcomm-voice-agent`, #677) chegou em 20/09/2026 e o gate não se mexeu.
   imagens-ok:
     if: always()
     runs-on: ubuntu-latest

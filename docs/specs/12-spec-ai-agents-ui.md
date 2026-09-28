@@ -194,6 +194,21 @@ Layout 2 colunas em desktop, stack em mobile.
 └───────────────────────────────────────┴──────────────────────────────────────┘
 ```
 
+### 3.2.1 Follow-up e retornos do agente
+
+Na edição da versão, a seção **Follow-up** expõe controles independentes:
+
+- `callback_enabled`: permite que o agente marque novos retornos prometidos. O
+  campo ausente em versões antigas é mostrado como habilitado. Desligá-lo oculta
+  a criação pontual pelo Conversador e Operador, sem retirar consulta ou
+  cancelamento de retornos existentes.
+- `enabled` e `flow_pointer_ids`: continuam controlando somente os fluxos
+  automáticos publicados. O controle de callbacks não desmarca esses campos nem
+  apaga a seleção de fluxos.
+
+O PATCH envia somente a propriedade alterada dentro de `followup`; o servidor
+preserva as demais propriedades da versão.
+
 ### 3.3 Validações de form (Zod, sincronizadas com Spec 10)
 
 | Campo | Regra | Mensagem |

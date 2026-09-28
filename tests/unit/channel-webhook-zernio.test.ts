@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
  * aceita o que não devia escreve lixo no banco de quem instalou, e ninguém
  * descobre até a conversa errada aparecer no inbox.
  */
+import { extrairAtribuicaoMeta } from "@/lib/channels/atribuicao-de-anuncio-oficial";
 import {
   parseZernioInbound,
   resolveZernioIdentity,
@@ -170,6 +171,54 @@ describe("eventos de DESFECHO", () => {
 
   it("message.sent é mensagem NOVA, não só desfecho — é o que faz o envio externo aparecer", () => {
     expect(status("message.sent")?.kind).toBe("message");
+  });
+
+  it("carrega a HORA do desfecho (statusAt), não a de chegada do webhook", () => {
+    expect(
+      status("message.read", { statusAt: "2026-09-24T14:24:23.000Z", timestamp: "2026-09-24T14:24:30.706Z" })
+        ?.statusAt,
+    ).toBe("2026-09-24T14:24:23.000Z");
+    // sem statusAt, o carimbo do evento é a melhor aproximação que existe
+    expect(status("message.delivered", { timestamp: "2026-09-24T16:10:38.088Z" })?.statusAt).toBe(
+      "2026-09-24T16:10:38.088Z",
+    );
+    expect(parseZernioInbound(payload())?.statusAt).toBeUndefined();
+  });
+});
+
+describe("clique em anúncio (Clique para o WhatsApp)", () => {
+  // A FORMA do evento real (24/09/2026): o `referral` mora em `metadata`, no nível
+  // do evento — não na mensagem. Valores sintéticos; as chaves são as que chegaram.
+  const referral = {
+    body: "Frete grátis para todo o país",
+    headline: "FRETE GRÁTIS",
+    ctwa_clid: "ARAkZ_sintetico",
+    source_id: "120200000000000001",
+    source_type: "ad",
+    source_url: "https://fb.me/sintetico",
+    media_type: "video",
+    video_url: "https://video.example/v.mp4",
+    thumbnail_url: "https://video.example/t.jpg",
+    welcome_message: { text: "Olá" },
+  };
+
+  it("lê o referral de metadata — é onde o Zernio o entrega", () => {
+    const r = parseZernioInbound(payload({ metadata: { referral } }));
+    expect(r?.referral).toEqual(referral);
+    expect(extrairAtribuicaoMeta(r?.referral)).toMatchObject({
+      sourceId: "ARAkZ_sintetico",
+      adId: "120200000000000001",
+      titulo: "FRETE GRÁTIS",
+    });
+  });
+
+  it("segue lendo as posições da Cloud API (mensagem e raiz) quando metadata não traz", () => {
+    expect(parseZernioInbound(payload({}, { referral }))?.referral).toEqual(referral);
+    expect(parseZernioInbound(payload({ referral }))?.referral).toEqual(referral);
+  });
+
+  it("mensagem que não veio de anúncio segue sem referral", () => {
+    expect(parseZernioInbound(payload({ metadata: {} }))?.referral).toBeNull();
   });
 });
 

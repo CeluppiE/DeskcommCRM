@@ -37,6 +37,27 @@ set +e   # os dois ligam `set -e`; aqui esperamos validadores falharem de propó
 
 fail=0
 
+# ── Sandbox de CHAVES DE IA: o ambiente de quem roda é uma SEGUNDA fonte que o
+# install.sh lê — e este caso instala SEM chave (issue #1570) ────────────────
+# `pendencia_da_ia` (install.sh:2012) decide o aviso da tela final lendo
+# AI_GATEWAY_API_KEY e a chave do provedor DIRETO DO AMBIENTE, não só do .env;
+# o caso "instalar SEM chave de IA" limpava apenas o .env (grep -v abaixo) e
+# deixava o ambiente de quem roda decidir o veredito. Medido em 24/09/2026: com
+# AI_GATEWAY_API_KEY exportada, a suíte reprova com a MESMA mensagem do run
+# 35948236372 — `✗ a tela final não avisa
+# que a IA ainda não atende`, 1 de 1 — porque o install grava a chave herdada
+# de volta no .env (`envq AI_GATEWAY_API_KEY`, install.sh:1702) e nenhum
+# assertion daqui cobra o gateway. Os outros três nomes contaminam ANTES:
+# ANTHROPIC_API_KEY → 2 vermelhos (provedor + `veio com valor`), OPENAI_API_KEY
+# → 2, OPENROUTER_API_KEY → 3 (contamina o AI_PROVIDER na entrevista).
+# Zerando as quatro aqui, TODO caso nasce sem chave e cada caso decide as
+# chaves que quer pelo .env que escreve — mesma hermetização que a linha
+# `SUPABASE_ACCESS_TOKEN=` já faz por chamada lá embaixo.
+# O passo do CI não exporta chave de IA (env: só VERIFY_INICIO e PNPM_HOME) e o
+# mesmo SHA passou na re-execução: isto hermetiza a suíte para quem roda com
+# chave no terminal, mas não é a causa da intermitência da #1570, que segue aberta.
+export ANTHROPIC_API_KEY= OPENAI_API_KEY= OPENROUTER_API_KEY= AI_GATEWAY_API_KEY=
+
 # ── Sandbox: a suíte NÃO pode escrever no crontab da máquina de quem a roda ──
 # Não é hipótese: os testes JÁ sujaram o crontab do mantenedor com 10 linhas
 # órfãs — uma delas um `curl` com Bearer batendo num domínio de exemplo a cada
@@ -407,7 +428,7 @@ TMP3="$(mktemp -d)"
 (
   MARCA="$TMP3/executou"
   mkdir -p "$TMP3/bin" "$TMP3/proj"
-  cp install.sh _common.sh "$TMP3/"
+  cp install.sh _common.sh _i18n.sh "$TMP3/"
   : > "$TMP3/proj/docker-compose.prod.yml"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$TMP3/bin/docker"; chmod +x "$TMP3/bin/docker"
   dublar_uname_amd64 "$TMP3/bin"
@@ -547,6 +568,10 @@ sim_ok "sim por extenso"         sim "sim"
 sim_ok "SIM em caixa alta"       sim "SIM"
 sim_ok "y (teclado em inglês)"   sim "y"
 sim_ok "yes"                     sim "yes"
+sim_ok "si (español)"            sim "si"
+sim_ok "sí com acento"           sim "sí"
+sim_ok "Sí maiúsculo"            sim "Sí"
+sim_ok "SÍ em caixa alta"        sim "SÍ"
 sim_ok "espaço em volta"         sim "  s  "
 sim_ok "Enter (vazio) é não"     nao ""
 sim_ok "n"                       nao "n"
@@ -572,6 +597,7 @@ gemea_ok() {  # gemea_ok <arquivo> <entrada> <sim|nao>
 for arquivo in install.sh _common.sh; do
   gemea_ok "$arquivo" "S"      sim
   gemea_ok "$arquivo" "sim"    sim
+  gemea_ok "$arquivo" "sí"     sim
   gemea_ok "$arquivo" "nao"    nao
   gemea_ok "$arquivo" ""       nao
 done
@@ -1731,7 +1757,7 @@ montar_vps() {
   # topo, igual ao `_common.sh`. Sem eles aqui, o script morre na LINHA 21 — antes
   # de qualquer mensagem — e todo cenario reporta "o update.sh nao chegou ao
   # banco / ao fim / ao up -d", que le como defeito do produto e e cenario faltando.
-  cp install.sh update.sh backup.sh _common.sh marca-emails.sh manutencao.sh "$raiz/"
+  cp install.sh update.sh backup.sh _common.sh _i18n.sh marca-emails.sh manutencao.sh "$raiz/"
   cp -R manutencao "$raiz/"
   : > "$VPS_PROJ/docker-compose.prod.yml"
   cat > "$raiz/bin/docker"
@@ -2147,6 +2173,23 @@ echo "packaging: a tag do git não basta — as imagens têm de existir"
 # GHCR nasce privado, e repositório público não muda isso.
 TMP_PRIV="$(mktemp -d)"
 (
+  # O remoto daqui é um FIXTURE local, como no teste de pinagem acima, e não o
+  # default do repositório. Enquanto o default apontava para o upstream (com
+  # tags), este caso dependia de rede e passava por acidente; num fork sem tag
+  # publicada a sonda de versão volta vazia, o install cai em `latest` e o aviso
+  # de build local nunca sai — o teste reprovava o fork por acidente de ambiente,
+  # não por defeito. Com o fixture a asserção é determinística.
+  origem="$TMP_PRIV/origem.git"
+  git init --quiet --bare "$origem"
+  (
+    cd "$TMP_PRIV" || exit 1
+    git clone --quiet "$origem" w 2>/dev/null
+    cd w || exit 1
+    echo x > a; git add -A; git -c user.email=t@t -c user.name=t commit --quiet -m init
+    git tag v1.0.0
+    git push --quiet origin HEAD --tags 2>/dev/null
+  )
+
   montar_vps "$TMP_PRIV/vps" "crmpriv" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DOCKER_LOG"
@@ -2155,9 +2198,10 @@ case "$1" in
 esac
 exit 0
 STUB
+  export REPO_URL="$origem"
   export DUBLE_GHCR=403          # pacote existe mas está PRIVADO
   saida="$(rodar install.sh --yes)"
-  unset DUBLE_GHCR
+  unset DUBLE_GHCR REPO_URL
 
   if ! printf '%s' "$saida" | grep -q "construídas neste servidor"; then
     printf '  ✗ com as imagens inalcançáveis, o instalador não avisou que ia construir aqui\n'
@@ -3391,7 +3435,7 @@ TMP_SITEURL="$(mktemp -d)"
   mkdir -p "$TMP_SITEURL/../supabase/templates" 2>/dev/null
   # Os modelos moram em ../supabase/templates relativo ao script.
   mkdir -p "$TMP_SITEURL/kit" "$TMP_SITEURL/supabase/templates"
-  cp "$KIT_AQUI/marca-emails.sh" "$KIT_AQUI/_common.sh" "$TMP_SITEURL/kit/"
+  cp "$KIT_AQUI/marca-emails.sh" "$KIT_AQUI/_common.sh" "$KIT_AQUI/_i18n.sh" "$TMP_SITEURL/kit/"
   cp "$KIT_AQUI/../supabase/templates/confirmation.html" \
      "$KIT_AQUI/../supabase/templates/recovery.html" "$TMP_SITEURL/supabase/templates/" || exit 1
 
@@ -3480,7 +3524,7 @@ TMP_RASCUNHO="$(mktemp -d)"
 (
   KIT_AQUI="$PWD"
   cd "$TMP_RASCUNHO" || exit 1
-  cp "$KIT_AQUI/install.sh" "$KIT_AQUI/_common.sh" . || exit 1
+  cp "$KIT_AQUI/install.sh" "$KIT_AQUI/_common.sh" "$KIT_AQUI/_i18n.sh" . || exit 1
   INSTALL_SH_LIB=1 . ./install.sh >/dev/null 2>&1
   set +e   # o install.sh liga `set -e`; aqui as sondas precisam poder sair != 0
 

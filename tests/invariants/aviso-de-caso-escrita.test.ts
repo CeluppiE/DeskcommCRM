@@ -326,6 +326,41 @@ describe("0292 — fn_definir_aviso_de_caso é a única porta, e ela confere o p
     sql(`update public.channel_sessions set phone_number = null where id = '${SESSAO_A}';`);
   });
 
+  it("conexão ARQUIVADA não conta — o número dela volta a ser um destino válido", () => {
+    // A conexão ATIVA com aquele número continua recusada: é o laço
+    // robô-com-robô que a checagem evita, e é o controle positivo deste caso.
+    // Sem ele, "a arquivada passou" também seria satisfeito por uma checagem
+    // que tivesse sido simplesmente apagada.
+    sql(`update public.channel_sessions set phone_number = '+5531966665555' where id = '${SESSAO_A}';`);
+    let ativa = "";
+    try {
+      sql(
+        `${comoMembro(ADMIN_A)}\nselect public.fn_definir_aviso_de_caso('${ORG_A}', null, '+5531966665555', null, true, false);`,
+      );
+    } catch (e) {
+      ativa = motivoDoErro(e);
+    }
+    expect(ativa, "a conexão ATIVA deixou de bloquear — o laço voltou a ser possível").toMatch(
+      /aviso_de_caso_numero_da_propria_org/i,
+    );
+
+    // A MESMA linha, ARQUIVADA. Ela não envia nem recebe, então o laço não
+    // acontece por causa dela — e contá-la bloqueava o número PARA SEMPRE,
+    // porque a conexão que já teve agente publicado não pode ser apagada.
+    sql(`update public.channel_sessions set archived_at = now() where id = '${SESSAO_A}';`);
+    const arquivada = sql(
+      `${comoMembro(ADMIN_A)}\nselect public.fn_definir_aviso_de_caso('${ORG_A}', null, '+5531966665555', null, true, false);`,
+    );
+    expect(
+      arquivada,
+      "a conexão arquivada continuou contando como número da própria organização",
+    ).toContain("trocou_numero");
+
+    sql(
+      `update public.channel_sessions set archived_at = null, phone_number = null where id = '${SESSAO_A}';`,
+    );
+  });
+
   it("número que JÁ É CLIENTE exige confirmação — e passa com ela", () => {
     // Configurar o número de um cliente como interno faz as mensagens DELE
     // pararem de chegar ao CRM. É recusa por padrão, e a tela pergunta antes de

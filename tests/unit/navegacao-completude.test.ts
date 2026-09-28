@@ -35,6 +35,10 @@ const NAV_ALLOWLIST: Record<string, string> = {
   "/app/ai/agents/new":
     "sub-fluxo de criar agente, alcançado pelo botão dentro da lista de Agentes",
   "/app/team/invite": "sub-fluxo de convite, alcançado de dentro de Equipe",
+  "/app/campaigns/new":
+    "sub-fluxo de criar campanha, alcançado pelo botão dentro da lista de Campanhas",
+  "/app/campaigns/settings":
+    "padrões de campanha da organização, alcançados pelo botão dentro da lista de Campanhas — é ajuste que se faz uma vez, não tela de uso diário",
   "/app/settings/tenant/whatsapp": "redirect legado para /app/connections; mantido por links salvos",
   "/app/settings/canal-oficial":
     "redirect para /app/connections?aba=oficial desde o PR #105 — conectar canal passou a ter um lugar só. Conexões é a porta; a aba é navegação interna dela",
@@ -42,6 +46,8 @@ const NAV_ALLOWLIST: Record<string, string> = {
     "redirect para /app/connections?aba=oficial&sub=templates — template da Meta só existe por causa do canal oficial, e vive como sub-aba dele",
   "/app/settings/atualizacao":
     "porta é o rodapé de versão (VersionFooter), que aparece justamente quando há versão nova — melhor que um card fixo. Além disso é só do dono do servidor (is_platform_admin), papel que o registro não modela",
+  "/app/proposals/novo":
+    "sub-fluxo de criação de proposta, alcançado pelo botão 'Nova proposta' em /app/proposals",
 };
 
 /** Deriva as rotas estáticas a partir dos arquivos de página que existem. */

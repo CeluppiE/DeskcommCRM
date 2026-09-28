@@ -1,7 +1,9 @@
-import type { FlowGraph, FlowEdge, FlowNode } from './graph-schema';
+import type { FlowGraph, FlowEdge, FlowNode, NodeType } from './graph-schema';
+import type { FollowupFlowSurface } from './api-schemas';
 import { branchIdForCondition, nodeBranches } from './graph-schema';
 import { rotuloDoRamo } from './rotulo-do-ramo';
 import type { NomesDeValor } from './vocabulario';
+import { capabilitiesOf, transportaMensagem, type ChannelProvider } from '../channels/capabilities';
 
 /**
  * Structural publish validator for follow-up flow graphs.
@@ -28,6 +30,11 @@ export const PUBLISH_ERROR_CODES = [
   'immune_wait_too_short',
   'cycle_without_wait',
   'max_steps_exceeded',
+  'no_fora_da_superficie',
+  'interno_com_envio',
+  'roteiro_ramificado',
+  'campo_repetido',
+  'roteiro_em_ciclo',
 ] as const;
 export type PublishErrorCode = (typeof PUBLISH_ERROR_CODES)[number];
 
@@ -50,6 +57,201 @@ export type PublishValidationResult =
 export interface ContextoDoPublish {
   /** Etapas da organização por `stage_id`, com o nome como a tela mostra («Etapa · Funil»). */
   etapas?: ReadonlyMap<string, { nome: string; arquivada: boolean }>;
+  /** Superfície do pointer. Ausente = follow-up (o que a coluna tem por padrão). */
+  surface?: FollowupFlowSurface;
+  /**
+   * Roteiro: o id do que está sendo publicado e, dos OUTROS roteiros ativos da
+   * empresa, para onde o "ao concluir" de cada um encadeia (versão publicada).
+   * Com os dois, a publicação que FECHARIA um ciclo A → B → A é recusada — é
+   * sempre a última publicação do ciclo que o fecha, então conferir só nela basta.
+   */
+  roteiro?: RoteiroDoPublish;
+  /**
+   * Alguma conexão da organização só aceita modelo APROVADO com a janela de 24 h
+   * fechada? Só aí o plano B (`fallback_template_id`) de uma mensagem por IA
+   * depois de 24 h de espera tem o que fazer — em runtime ele só sai com a janela
+   * fechada (`janelaFechada` em followup-turn.ts). Num canal sem janela, exigi-lo
+   * travaria o publish: o seletor do plano B só oferece modelos aprovados, e esse
+   * canal não os tem. Ausente = exige (o comportamento de antes).
+   */
+  exigeModeloForaDaJanela?: boolean;
+}
+
+/**
+ * `true` quando algum dos providers das conexões da organização recusa texto
+ * livre fora da janela. Provider que esta imagem não conhece (ou que não manda
+ * mensagem) não conta: por ele não sai follow-up nenhum.
+ */
+export function algumCanalExigeModeloForaDaJanela(providers: readonly (string | null)[]): boolean {
+  return providers.some(
+    (p) => transportaMensagem(p) && !capabilitiesOf(p as ChannelProvider).freeformOutsideWindow
+  );
+}
+
+export interface RoteiroDoPublish {
+  pointerId: string;
+  encadeamentos: ReadonlyMap<string, { nome: string; proximos: readonly string[] }>;
+}
+
+/** Para onde o "ao concluir" dos Fins de um grafo encadeia (ids de ponteiro). */
+export function proximosDoGrafo(graph: unknown): string[] {
+  const nodes = (graph as { nodes?: unknown } | null)?.nodes;
+  if (!Array.isArray(nodes)) return [];
+  return nodes.flatMap((n) => {
+    const fim = (n as { type?: unknown; config?: { ao_finalizar?: { tipo?: unknown; fluxo?: unknown } } }).config
+      ?.ao_finalizar;
+    return (n as { type?: unknown }).type === 'end' && fim?.tipo === 'proximo_fluxo' && typeof fim.fluxo === 'string'
+      ? [fim.fluxo]
+      : [];
+  });
+}
+
+/**
+ * Caminho do encadeamento que volta ao próprio roteiro (nomes, para a
+ * mensagem), ou `null`. Sem isto dois roteiros que se apontam recomeçam um ao
+ * outro a cada conclusão, e o cliente responde as mesmas perguntas sem fim.
+ */
+function cicloDoEncadeamento(
+  graph: FlowGraph,
+  roteiro: RoteiroDoPublish,
+): string[] | null {
+  const visitados = new Set<string>();
+  const busca = (id: string, caminho: string[]): string[] | null => {
+    if (id === roteiro.pointerId) return caminho;
+    if (visitados.has(id)) return null;
+    visitados.add(id);
+    const outro = roteiro.encadeamentos.get(id);
+    if (!outro) return null;
+    for (const prox of outro.proximos) {
+      const achou = busca(prox, [...caminho, roteiro.encadeamentos.get(prox)?.nome ?? 'este roteiro']);
+      if (achou) return achou;
+    }
+    return null;
+  };
+  for (const prox of proximosDoGrafo(graph)) {
+    const achou = busca(prox, [roteiro.encadeamentos.get(prox)?.nome ?? 'este roteiro']);
+    if (achou) return achou;
+  }
+  return null;
+}
+
+/**
+ * Os tipos de nó que cada superfície EXECUTA. É a mesma lista que a paleta do
+ * editor oferece: o que um motor não sabe rodar, a tela não deixa pôr.
+ *
+ * O roteiro de atendimento (`lib/followup/atendimento.ts`) percorre só
+ * início → pergunta/skill → fim, em linha. O relógio do follow-up nunca vê
+ * `collect`/`skill` — no motor dele, os dois são passagem (`node-handlers.ts`),
+ * e publicar um fluxo de retomada com pergunta seria fluxo com passo mudo.
+ * Na prova prática do #1130 a paleta do roteiro oferecia seis caixas que o motor
+ * recusava em silêncio; a recusa aqui é o erro que a pessoa lê no editor.
+ */
+export const NOS_DA_SUPERFICIE: Record<FollowupFlowSurface, readonly NodeType[]> = {
+  followup: ['trigger', 'wait', 'condition', 'ai_classify', 'match_reply', 'repeat', 'action', 'internal_task', 'end'],
+  crm_automation: ['trigger', 'wait', 'condition', 'ai_classify', 'match_reply', 'repeat', 'action', 'internal_task', 'end'],
+  atendimento: ['trigger', 'collect', 'skill', 'end'],
+};
+
+/**
+ * Os nós que ENVIAM mensagem ao cliente num follow-up (#1540).
+ *
+ * `action` é o envio (texto, IA ou template); `collect`/`skill` são de roteiro
+ * de atendimento — superfícies que não têm a marca "somente interno" e, num
+ * fluxo interno, já teriam sido recusadas por `no_fora_da_superficie`.
+ */
+const NOS_QUE_ENVIAM: readonly NodeType[] = ['action'];
+
+/**
+ * SOMENTE INTERNO (#1540): o fluxo marcou que não fala com o cliente, e tem nó
+ * de envio. Recusar na publicação é o único desfecho honesto — aceitar calado
+ * daria ao operador a tela dizendo "publicado" enquanto uma mensagem sairia
+ * para o cliente num fluxo que ele achava interno.
+ */
+function validarSomenteInterno(
+  graph: FlowGraph,
+  surface: FollowupFlowSurface,
+  errors: PublishValidationError[],
+): void {
+  if (surface === 'atendimento') return;
+  if (graph.settings?.somente_interno !== true) return;
+  const enviadores = new Set(NOS_QUE_ENVIAM);
+  for (const n of [...graph.nodes].sort(byId)) {
+    if (!enviadores.has(n.type)) continue;
+    errors.push({
+      node_id: n.id,
+      code: 'interno_com_envio',
+      message: `O fluxo é "somente interno" e a caixa "${n.label}" envia mensagem ao cliente — tire a marca "somente interno" ou troque a caixa por "Lembrete interno".`,
+    });
+  }
+}
+
+/** Regras do roteiro de atendimento que o grafo sozinho não carrega. */
+function validarSuperficie(
+  graph: FlowGraph,
+  surface: FollowupFlowSurface,
+  errors: PublishValidationError[],
+  roteiro?: RoteiroDoPublish,
+): void {
+  const permitidos = new Set<NodeType>(NOS_DA_SUPERFICIE[surface]);
+  for (const n of [...graph.nodes].sort(byId)) {
+    if (!permitidos.has(n.type)) {
+      errors.push({
+        node_id: n.id,
+        code: 'no_fora_da_superficie',
+        message:
+          surface === 'atendimento'
+            ? `A caixa "${n.label}" não é de roteiro de atendimento — use Pergunta, Skill e Fim.`
+            : `A caixa "${n.label}" é de roteiro de atendimento e não roda num follow-up.`,
+      });
+    }
+  }
+  if (surface !== 'atendimento') return;
+
+  const saidas = new Map<string, number>();
+  for (const e of graph.edges) {
+    saidas.set(e.source, (saidas.get(e.source) ?? 0) + 1);
+    if (e.condition.type !== 'always') {
+      errors.push({
+        node_id: e.source,
+        code: 'roteiro_ramificado',
+        message: 'No roteiro de atendimento as caixas são ligadas direto, sem condição.',
+      });
+    }
+  }
+  for (const [origem, n] of [...saidas.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    if (n > 1) {
+      errors.push({
+        node_id: origem,
+        code: 'roteiro_ramificado',
+        message: 'O roteiro de atendimento segue uma linha só: cada caixa liga em uma próxima.',
+      });
+    }
+  }
+  const chaves = new Map<string, string>();
+  for (const n of [...graph.nodes].sort(byId)) {
+    if (n.type !== 'collect') continue;
+    const dona = chaves.get(n.config.key);
+    if (dona !== undefined) {
+      errors.push({
+        node_id: n.id,
+        code: 'campo_repetido',
+        message: `O campo "${n.config.key}" já é perguntado em outra caixa — cada pergunta grava um campo diferente.`,
+      });
+    } else {
+      chaves.set(n.config.key, n.id);
+    }
+  }
+  if (roteiro) {
+    const ciclo = cicloDoEncadeamento(graph, roteiro);
+    if (ciclo) {
+      const fim = [...graph.nodes].sort(byId).find((n) => proximosDoGrafo({ nodes: [n] }).length > 0);
+      errors.push({
+        node_id: fim?.id ?? null,
+        code: 'roteiro_em_ciclo',
+        message: `O "ao concluir" volta a este roteiro pela cadeia (${['este roteiro', ...ciclo].join(' → ')}) — o cliente responderia as mesmas perguntas sem fim. Escolha outro roteiro ou "Nada".`,
+      });
+    }
+  }
 }
 
 const LONG_WAIT_THRESHOLD_MS = 86_400_000; // 24h
@@ -361,6 +563,9 @@ export function validateFlowForPublish(
 ): PublishValidationResult {
   const { nodes, edges } = graph;
   const errors: PublishValidationError[] = [];
+  const surface = contexto.surface ?? 'followup';
+  validarSuperficie(graph, surface, errors, contexto.roteiro);
+  validarSomenteInterno(graph, surface, errors);
   const etapas = contexto.etapas;
   const nomes: NomesDeValor = etapas ? { etapa: (id) => etapas.get(id)?.nome ?? null } : {};
   const nodesById = new Map(nodes.map((n) => [n.id, n]));
@@ -416,7 +621,8 @@ export function validateFlowForPublish(
       nodesById,
       outEdges
     );
-    for (const id of [...longWaitNodeIds].sort()) {
+    const exigeModelo = contexto.exigeModeloForaDaJanela !== false;
+    for (const id of exigeModelo ? [...longWaitNodeIds].sort() : []) {
       errors.push({
         node_id: id,
         code: 'long_wait_needs_template',

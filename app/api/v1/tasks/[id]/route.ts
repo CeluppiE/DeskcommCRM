@@ -118,7 +118,7 @@ export async function PATCH(req: NextRequest, ctx: Contexto): Promise<Response> 
       organizationId: authz.org.orgId,
       tarefa,
       tipo: "task_completed",
-      actorUserId: authz.user.id,
+      actor: { type: "user", id: authz.user.id },
     });
   }
 

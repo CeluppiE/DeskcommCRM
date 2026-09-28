@@ -39,7 +39,6 @@ vi.mock("@/lib/ai/gateway", () => ({
   DEFAULT_BOT_MODEL: "anthropic/claude-sonnet-4-6",
   gatewayConfig: () => ({ apiKey: "dublê" }),
   gatewayHeaders: () => ({}),
-  isAiGatewayConfigured: () => true,
   isEmbeddingProviderConfigured: () => false,
   // Resolvido via `resolverModeloDoPonto`; qualquer valor não-nulo serve, porque
   // quem consome é o `generateText` dublê logo abaixo.
@@ -144,7 +143,7 @@ function makeAdminStub(
                 organization_id: ORG_ID,
                 model: "anthropic/claude-sonnet-4-6",
                 system_prompt: "Você é um atendente.",
-                config: { confidence_threshold: 0 },
+                config: {},
                 guardrails: {},
                 active_kb_version_id: "99999999-9999-4999-8999-999999999999",
                 is_active: true,

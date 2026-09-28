@@ -74,6 +74,10 @@
 #        SIGPIPE, o `pipefail` propaga 141 e o `|| exit 0` engole — o hook saía 0 sem
 #        validar NADA. Este caso é o que impede o conserto de trocar um defeito por outro.
 #
+#   check-migration-triple.sh
+#     8. o NNNN e o timestamp já COMMITADOS na própria branch contam (MIG-PROPRIA), e a
+#        guarda contra a main e contra outra branch segue de pé (MIG-CONTROLE).
+#
 # Controle de vivacidade: os casos 2, 3, 4, 5, 6 e 7 são as asserções POSITIVAS (A, B+, D,
 # D2, R1, R1-LIMPO, R-VELHO, FECHADO-SEM-BASE, FURO-A, FURO-A-MH, FURO-B, COLEGA-DEL, MODO,
 # CITADO, SEM-REF, F-A, F-B+, F-CRIA-PRÓPRIA, F-BIG+). Um hook substituído por `exit 0` os
@@ -921,6 +925,56 @@ if [ "$encenados" -gt 3000 ] && [ "${posicao:-0}" -lt 10 ]; then ok "F-BIG+: $en
 else falha "F-BIG+: volume >3000 e match na posição <10" "encenados=$encenados posicao=${posicao:-nenhuma} — o caso não estressa o pipe"; fi
 r=$(rodar "$fbig" validate-features.sh)
 assert_exit "$(exit_de "$r")" 1 "F-BIG+: em merge grande o hook AINDA valida — a sonda não falha aberta"
+
+# ── check-migration-triple.sh · o que a PRÓPRIA branch já commitou conta (#1776) ──
+# `pop_refs_de_outrem` tira da conta a ref cujo SHA é o do HEAD, e o hook não devolvia
+# o HEAD: a 0411 que a branch JÁ commitou sumia da população, e a segunda 0411 (e o
+# carimbo repetido) passava calada. Na main de antes (`git branch`) ela bloqueava.
+printf '\ncheck-migration-triple.sh — a própria branch está na população\n'
+pmig="$TMP/pmig"; mkdir -p "$pmig/supabase/migrations"
+git -C "$pmig" init -q -b main
+printf 'select 1;\n' > "$pmig/supabase/migrations/20260801000000_0410_da_main.sql"
+printf -- '-- baseline\n' > "$pmig/supabase/baseline.sql"
+printf '| 0410 |\n' > "$pmig/supabase/migrations/MANIFEST.md"
+commitar "$pmig" "0410 na main"
+git -C "$pmig" checkout -q -b colega
+printf 'select 1;\n' > "$pmig/supabase/migrations/20260802000000_0413_do_colega.sql"
+commitar "$pmig" "0413 do colega"
+git -C "$pmig" checkout -q main
+m="$TMP/m-propria"; preparar "$m" "$pmig" main
+mkdir -p "$m/scripts"; cp "$RAIZ/scripts/migration-populacao.sh" "$m/scripts/"
+tripla() { # $1 = clone, $2 = nome em supabase/migrations/
+  printf 'select 1;\n' > "$1/supabase/migrations/$2"
+  printf -- '-- apêndice %s\n' "$2" >> "$1/supabase/baseline.sql"
+  printf '| `%s` |\n' "$2" >> "$1/supabase/migrations/MANIFEST.md"
+  git -C "$1" add -A
+}
+tripla "$m" 20260910000000_0411_primeira.sql
+r=$(rodar "$m" check-migration-triple.sh)
+assert_exit "$(exit_de "$r")" 0 "MIG-PROPRIA: a primeira 0411 da branch passa (número livre)"
+commitar "$m" "0411 primeira"
+tripla "$m" 20260910010000_0411_segunda.sql
+r=$(rodar "$m" check-migration-triple.sh)
+assert_exit "$(exit_de "$r")" 1 "MIG-PROPRIA: 0411_primeira commitada + 0411_segunda encenada: BLOQUEIA"
+assert_contains "$(saida_de "$r")" "já existe em: HEAD(20260910000000_0411_primeira.sql)" "MIG-PROPRIA: e o dono nomeado é a própria branch"
+git -C "$m" reset -q --hard HEAD
+tripla "$m" 20260910000000_0412_mesmo_carimbo.sql
+r=$(rodar "$m" check-migration-triple.sh)
+assert_exit "$(exit_de "$r")" 1 "MIG-PROPRIA: carimbo da migration já commitada, repetido: BLOQUEIA"
+assert_contains "$(saida_de "$r")" "TIMESTAMP 20260910000000 de '20260910000000_0412_mesmo_carimbo.sql' já existe em: HEAD" "MIG-PROPRIA: e acusa o timestamp contra a própria branch"
+git -C "$m" reset -q --hard HEAD
+tripla "$m" 20260910020000_0410_de_novo.sql
+r=$(rodar "$m" check-migration-triple.sh)
+assert_exit "$(exit_de "$r")" 1 "MIG-CONTROLE: a 0410 da main encenada de novo segue bloqueada"
+git -C "$m" reset -q --hard HEAD
+tripla "$m" 20260910030000_0413_meu.sql
+r=$(rodar "$m" check-migration-triple.sh)
+assert_exit "$(exit_de "$r")" 1 "MIG-CONTROLE: a 0413 de outra branch segue bloqueada"
+assert_contains "$(saida_de "$r")" "origin/colega(20260802000000_0413_do_colega.sql)" "MIG-CONTROLE: e o dono nomeado é a branch do colega"
+git -C "$m" reset -q --hard HEAD
+tripla "$m" 20260910040000_0414_livre.sql
+r=$(rodar "$m" check-migration-triple.sh)
+assert_exit "$(exit_de "$r")" 0 "MIG-CONTROLE: e um número de fato livre passa"
 
 printf '\nhooks-nao-acusam-a-main: %s casos, %s falha(s)\n' "$casos" "$falhas"
 [ "$falhas" -eq 0 ] || exit 1

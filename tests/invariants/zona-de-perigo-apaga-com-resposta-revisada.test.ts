@@ -173,10 +173,13 @@ describe("apagar dados operacionais alcança quem já enviou resposta revisada",
     ).toBe("<null>");
   });
 
-  it("a Zona de perigo apaga as seis raízes e a resposta revisada vai junto", () => {
-    // A MESMA ordem de `lib/settings/apagar-dados-operacionais.ts`. A primeira
-    // linha é a que a issue #949 relata recusada pelo banco (23503) quando
-    // existia rascunho apontando para a mensagem.
+  it("a Zona de perigo apaga as raízes (sem propostas, fora do escopo deste arquivo) e a resposta revisada vai junto", () => {
+    // A MESMA ordem de `lib/settings/apagar-dados-operacionais.ts`, sem a raiz
+    // `crm_proposals` — o que o reset faz com a pasta de PDFs no bucket e com
+    // as linhas de proposta é de outro arquivo (`proposta-contador-sobrevive-ao-
+    // apagamento.test.ts` e a unidade de `zona-de-perigo-apaga-so-a-propria-org`).
+    // A primeira linha é a que a issue #949 relata recusada pelo banco (23503)
+    // quando existia rascunho apontando para a mensagem.
     sql(`delete from public.messages where organization_id = '${ORG}';`);
     sql(`delete from public.conversations where organization_id = '${ORG}';`);
     sql(`delete from public.calendar_appointments where organization_id = '${ORG}';`);

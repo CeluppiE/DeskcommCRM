@@ -1,9 +1,9 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { sendMessageHandler } from '@/app/api/v1/messages/_handler';
 import type { HandlerCtx } from '@/lib/api/handlers/types';
 import type { SendMessageInput } from '@/lib/schemas';
+import { criarDubleDoHandler } from '@/tests/helpers/duble-do-handler';
 
 vi.mock('@/lib/supabase/admin', () => ({
   createAdminClient: () => ({ storage: { from: () => ({ createSignedUrl: vi.fn() }) } }),
@@ -65,102 +65,22 @@ function conversationRow(): Row {
 }
 
 /**
- * Fake com uma TABELA (não uma linha só): o desfecho deste caso é "quantas
- * linhas sobraram", então um fake de linha única responderia sempre 1 e o teste
- * passaria sem tocar no defeito.
+ * O dublê é o COMPARTILHADO (`tests/helpers/duble-do-handler.ts`): ele monta a
+ * tabela `messages` de verdade — aqui com as linhas que já estavam antes do
+ * envio — e a devolve viva. O desfecho deste caso é "quantas linhas sobraram",
+ * então um dublê de linha única responderia sempre 1 e o teste passaria sem
+ * tocar no defeito.
  */
-function makeSupabase(preexistentes: Row[] = []) {
-  const messages: Row[] = [...preexistentes];
-
-  const filtrar = (filtros: Array<(r: Row) => boolean>) => messages.filter((r) => filtros.every((f) => f(r)));
-
-  const from = (table: string) => {
-    if (table === 'conversations') {
-      // Encadeável sem limite: ver o comentário irmão em `contacts` logo abaixo.
-      // A consulta da conversa filtra por id E por `organization_id`.
-      const cadeiaConv: Record<string, unknown> = {
-        eq: () => cadeiaConv,
-        maybeSingle: async () => ({ data: conversationRow(), error: null }),
-      };
-      return {
-        select: () => cadeiaConv,
-        update: () => ({ eq: async () => ({ error: null }) }),
-      };
-    }
-    if (table === 'contacts') {
-      // Ver o comentário irmão em `messages-handler-desfechos`: encadeável sem
-      // limite, porque a consulta filtra por id E por organização.
-      const cadeiaContacts: Record<string, unknown> = {
-        eq: () => cadeiaContacts,
-        then: (resolve: (v: { error: null }) => unknown) =>
-          Promise.resolve({ error: null }).then(resolve),
-      };
-      return { update: () => cadeiaContacts } as never;
-    }
-    if (table !== 'messages') throw new Error(`fake: tabela inesperada '${table}'`);
-
-    return {
-      insert: (row: Row) => {
-        const nova: Row = { id: `msg-${messages.length + 1}`, external_id: null, ack: null, error_code: null, error_message: null, ...row };
-        messages.push(nova);
-        return { select: () => ({ single: async () => ({ data: { ...nova }, error: null }) }) };
-      },
-      update: (patch: Row) => {
-        const filtros: Array<(r: Row) => boolean> = [];
-        const q = {
-          eq(col: string, val: unknown) {
-            filtros.push((r) => r[col] === val);
-            return q;
-          },
-          select: () => ({
-            maybeSingle: async () => {
-              const alvos = filtrar(filtros);
-              // O unique (organization_id, external_id) é a regra de banco de que
-              // este desfecho depende: sem ela, gravar o id numa linha quando
-              // outra já o tem passaria batido.
-              const externo = patch.external_id as string | undefined;
-              if (externo) {
-                const colide = messages.some(
-                  (r) => r.organization_id === ORG && r.external_id === externo && !alvos.includes(r),
-                );
-                if (colide) {
-                  return { data: null, error: { code: '23505', message: 'duplicate key value violates "messages_org_external_id_unique"' } };
-                }
-              }
-              alvos.forEach((r) => Object.assign(r, patch));
-              return { data: alvos[0] ? { ...alvos[0] } : null, error: null };
-            },
-          }),
-        };
-        return q;
-      },
-      delete: () => {
-        const filtros: Array<(r: Row) => boolean> = [];
-        const q = {
-          eq(col: string, val: unknown) {
-            filtros.push((r) => r[col] === val);
-            return q;
-          },
-          neq(col: string, val: unknown) {
-            filtros.push((r) => r[col] !== val);
-            return q;
-          },
-          in(col: string, vals: unknown[]) {
-            filtros.push((r) => vals.includes(r[col]));
-            return q;
-          },
-          then(resolve: (v: { error: null }) => unknown) {
-            for (const alvo of filtrar(filtros)) messages.splice(messages.indexOf(alvo), 1);
-            return Promise.resolve({ error: null }).then(resolve);
-          },
-        };
-        return q;
-      },
-    };
-  };
-
-  const client = { from, rpc: async () => ({ error: null }) };
-  return { supabase: client as unknown as SupabaseClient, messages };
+function dubleCom(preexistentes: Row[] = []) {
+  const { supabase, mensagens } = criarDubleDoHandler({
+    conversation: conversationRow(),
+    mensagensIniciais: preexistentes,
+    // O índice único (organization_id, external_id) é a regra de banco da qual
+    // este desfecho depende: sem ele, gravar o id numa linha quando outra já o
+    // tem passaria batido.
+    indiceUnicoMensagem: true,
+  });
+  return { supabase, messages: mensagens };
 }
 
 /** A linha que o webhook cria quando o eco chega antes do envio terminar. */
@@ -201,7 +121,7 @@ afterEach(() => {
 describe('eco do próprio envio na janela em que a linha ainda não tem external_id', () => {
   it('o eco que chegou primeiro não deixa a frase duplicada', async () => {
     wahaRespondendo(BARE);
-    const { supabase, messages } = makeSupabase([ecoDoWebhook()]);
+    const { supabase, messages } = dubleCom([ecoDoWebhook()]);
 
     await sendMessageHandler(supabase, ctx, input);
 
@@ -214,7 +134,7 @@ describe('eco do próprio envio na janela em que a linha ainda não tem external
     // `sent_via`, que é o que a tela usa para dizer quem falou. Ficar com a do
     // webhook apagaria a autoria.
     wahaRespondendo(BARE);
-    const { supabase, messages } = makeSupabase([ecoDoWebhook()]);
+    const { supabase, messages } = dubleCom([ecoDoWebhook()]);
 
     await sendMessageHandler(supabase, ctx, input);
 
@@ -229,7 +149,7 @@ describe('eco do próprio envio na janela em que a linha ainda não tem external
     // ainda daria 1 linha — por isso ele também confere que a linha é a do envio
     // e que ela recebeu o id.
     wahaRespondendo(BARE);
-    const { supabase, messages } = makeSupabase();
+    const { supabase, messages } = dubleCom();
 
     await sendMessageHandler(supabase, ctx, input);
 
@@ -251,7 +171,7 @@ describe('o que a correção NÃO pode apagar', () => {
       external_id: 'true_5531999998888@c.us_3EB0OUTRAMENSAGEM99',
       body: 'vou verificar e ja te falo',
     });
-    const { supabase, messages } = makeSupabase([outraMensagem]);
+    const { supabase, messages } = dubleCom([outraMensagem]);
 
     await sendMessageHandler(supabase, ctx, input);
 
@@ -268,7 +188,7 @@ describe('o que a correção NÃO pode apagar', () => {
     // colisão dentro do único lugar onde ela seria mesmo a nossa mensagem.
     wahaRespondendo(BARE);
     const deOutraConversa = ecoDoWebhook({ id: 'outro-1', conversation_id: OUTRA_CONV });
-    const { supabase, messages } = makeSupabase([deOutraConversa]);
+    const { supabase, messages } = dubleCom([deOutraConversa]);
 
     await sendMessageHandler(supabase, ctx, input);
 
@@ -280,10 +200,81 @@ describe('o que a correção NÃO pode apagar', () => {
     // mesmo id seria outra coisa — e apagá-la seria perder envio de verdade.
     wahaRespondendo(BARE);
     const doCrm = ecoDoWebhook({ id: 'crm-1', sent_via: 'ai' });
-    const { supabase, messages } = makeSupabase([doCrm]);
+    const { supabase, messages } = dubleCom([doCrm]);
 
     await sendMessageHandler(supabase, ctx, input);
 
     expect(messages.find((m) => m.id === 'crm-1'), 'apagou uma linha que não era eco de dispositivo').toBeDefined();
+  });
+});
+
+describe('o eco que entra ENTRE a limpeza e o carimbo do id (#1855)', () => {
+  /**
+   * Com o eco gravando o id curto (bare) — o mesmo que o envio grava —, a
+   * colisão no unique `(organization_id, external_id)` passou a poder cair do
+   * lado do ENVIO: a limpeza do eco e o UPDATE que carimba o id são duas
+   * chamadas, e o eco que o webhook insere entre elas ocupa o id primeiro. O
+   * UPDATE volta `23505`, e ignorar esse erro deixava a linha do envio em
+   * `queued`, sem id — sem ack e à mercê de um reenvio.
+   *
+   * O dublê não tem relógio: o eco é injetado logo depois do DELETE, que é
+   * exatamente a ordem que a corrida produz.
+   */
+  function ecoEntraDepoisDaLimpeza(
+    supabase: ReturnType<typeof dubleCom>['supabase'],
+    messages: Row[],
+    eco: Row,
+  ) {
+    const from = supabase.from.bind(supabase);
+    let injetado = false;
+    (supabase as unknown as { from: (t: string) => unknown }).from = (tabela: string) => {
+      const q = from(tabela) as unknown as { delete?: () => { then: PromiseLike<unknown>['then'] } };
+      if (tabela !== 'messages' || !q.delete) return q;
+      const del = q.delete.bind(q);
+      q.delete = () => {
+        const cadeia = del();
+        const then = cadeia.then.bind(cadeia);
+        cadeia.then = (ok, falha) =>
+          then((v) => {
+            if (!injetado) {
+              injetado = true;
+              messages.push(eco);
+            }
+            return ok ? ok(v) : v;
+          }, falha) as never;
+        return cadeia;
+      };
+      return q;
+    };
+  }
+
+  it('o envio fica `sent` com o id, e a frase aparece uma vez só', async () => {
+    wahaRespondendo(BARE);
+    const { supabase, messages } = dubleCom();
+    ecoEntraDepoisDaLimpeza(supabase, messages, ecoDoWebhook({ external_id: BARE }));
+
+    await sendMessageHandler(supabase, ctx, input);
+
+    const daMensagem = messages.filter((m) => m.external_id === BARE);
+    expect(daMensagem, 'a mesma frase ficou duas vezes, ou nenhuma linha ficou com o id').toHaveLength(1);
+    expect(daMensagem[0]!.sent_via, 'sobrou o eco do webhook, não a linha do envio').toBe('user');
+    expect(daMensagem[0]!.status).toBe('sent');
+  });
+
+  it('se o id segue ocupado por linha que não é eco, o envio fica `sent` sem id — nunca preso em `queued`', async () => {
+    // Uma linha de OUTRA conversa com o mesmo id não é apagada (o escopo da
+    // limpeza é a conversa). O unique recusa de novo; a mensagem já saiu, então
+    // o desfecho é o do watchdog: `sent`, sem o id.
+    wahaRespondendo(BARE);
+    const { supabase, messages } = dubleCom([
+      ecoDoWebhook({ id: 'outro-1', conversation_id: OUTRA_CONV, external_id: BARE }),
+    ]);
+
+    await sendMessageHandler(supabase, ctx, input);
+
+    const doEnvio = messages.find((m) => m.sent_via === 'user')!;
+    expect(doEnvio.status, 'a mensagem que saiu ficou presa em queued').toBe('sent');
+    expect(doEnvio.external_id).toBeNull();
+    expect(messages.find((m) => m.id === 'outro-1')).toBeDefined();
   });
 });

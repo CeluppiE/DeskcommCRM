@@ -27,6 +27,8 @@
  * defeito de white-label que este épico inteiro existe para fechar.
  */
 
+import { baseDoStorage, urlPublicaDoLogo } from "./logo";
+
 /**
  * A primeira letra ou dígito de `nome`, em caixa alta. `null` quando o nome não
  * tem nenhum — aí o ícone é só a cor da marca.
@@ -40,4 +42,29 @@ export function letraDoIcone(nome: string): string | null {
     if (/\p{L}|\p{N}/u.test(caractere)) return caractere.toUpperCase();
   }
   return null;
+}
+
+/** A rota que desenha o ícone (cor + inicial) — o padrão sem arquivo subido. */
+export const ICONE_DESENHADO = "/icon";
+
+/**
+ * Para onde o `<link rel="icon">` aponta.
+ *
+ * Com `favicon_path` gravado (migration 0443), é a URL pública do ARQUIVO que o
+ * operador subiu em `/admin/marca`. O `<head>` não baixa nada: quem pede a
+ * imagem é o navegador, do mesmo storage de onde o logo já é servido. Isso
+ * preserva o motivo de `app/icon.tsx` não buscar `logo_url` — nenhuma
+ * requisição de saída do servidor, e o caminho é validado por CHECK no banco
+ * (prefixo `platform/`, uuid, png|jpg), nunca uma URL digitada.
+ *
+ * Sem arquivo, ou sem base de storage conhecida, cai no ícone desenhado.
+ * `base` explícito pelo mesmo motivo de `logoDaCamada`: testar sem `process.env`.
+ */
+export function iconeDaAba(
+  faviconPath: string | null | undefined,
+  base: string = baseDoStorage(),
+): string {
+  const caminho = (faviconPath ?? "").trim();
+  if (caminho.length === 0 || base.length === 0) return ICONE_DESENHADO;
+  return urlPublicaDoLogo(caminho, base);
 }

@@ -38,7 +38,7 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./helpers/test";
 import { createClient } from "@supabase/supabase-js";
 
 const svc = createClient(
@@ -118,7 +118,7 @@ async function entrar(page: Page, email: string): Promise<void> {
   await page.goto("/login");
   await page.locator("#email").fill(email);
   await page.locator("#password").fill(SENHA);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/(app|onboarding|get-started)/, { timeout: 30_000 });
 }
 

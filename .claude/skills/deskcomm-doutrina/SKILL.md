@@ -51,6 +51,12 @@ Verde de teste não é prova de comportamento. Sabote a linha que você corrigiu
 fica **vermelha** — teste que não reprova não guarda nada. E declare o que **não** mediu: é o campo
 que separa medição de relato.
 
+E se o caminho de usuário que você provou passa por um **agente de IA**, o verde do agente não é
+prova da camada de baixo: todo caso de aceite que atravessa o agente **vem em par** com a medição
+direta da ferramenta, com o **mesmo texto cru** — o par é a unidade — e as duas medições só contam
+quando concordam. Discordância entre os dois significa que você mediu o modelo. Lei em
+[`docs/doctrine/prova-em-par.md`](../../../docs/doctrine/prova-em-par.md).
+
 ## Não-objetivos
 
 Não lista comandos de fluxo — não existem `/fix-bug` nem `/add-module` neste repo. Não descreve

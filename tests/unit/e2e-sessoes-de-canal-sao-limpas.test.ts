@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { NOMES_DE_SESSAO_E2E, ehNomeDeSessaoE2E } from "@/scripts/lib/sessoes-e2e";
+import { NOMES_DE_SESSAO_E2E, ehNomeDeSessaoE2E } from "@/lib/channels/sessoes-e2e";
 
 const RAIZ = process.cwd();
 const ler = (p: string) => readFileSync(join(RAIZ, p), "utf8");

@@ -6,6 +6,10 @@ import {
   formatCents,
   MOEDAS_SERVIDAS,
   MOEDA_PADRAO,
+  simboloDaMoeda,
+  formatValorDoNegocio,
+  somaPorMoeda,
+  formatSomaPorMoeda,
 } from "./money";
 
 describe("parseReaisToCents", () => {
@@ -78,6 +82,11 @@ describe("formatCents", () => {
     // Angola — `formatadorDa` maximiza `und-AO` para `pt-AO` e é o ICU que
     // decide, não uma tabela nossa.
     expect(semNbsp(formatCents(24990, "AOA"))).toBe("249,90 Kz");
+    // Euro: moeda sem país. A maximização de `und-EU` daria `€249.90`, a
+    // convenção irlandesa; Portugal, Espanha, França, Alemanha e Itália
+    // escrevem assim.
+    expect(semNbsp(formatCents(24990, "EUR"))).toBe("249,90 €");
+    expect(semNbsp(formatCents(149700, "EUR"))).toBe("1497,00 €");
   });
 
   /**
@@ -151,7 +160,109 @@ describe("MOEDAS_SERVIDAS — a lista que a tela oferece", () => {
     expect(MOEDAS_SERVIDAS).toContain("USD");
   });
 
+  it("serve o euro, com o símbolo que o seletor mostra", () => {
+    expect(MOEDAS_SERVIDAS).toContain("EUR");
+    expect(simboloDaMoeda("EUR")).toBe("€");
+  });
+
   it("e o padrão de quem não escolheu segue sendo o real", () => {
     expect(MOEDA_PADRAO).toBe("BRL");
+  });
+});
+
+describe("formatValorDoNegocio — a régua do negócio é ×100 em qualquer moeda", () => {
+  const semNbsp = (t: string) => t.replace(/[\u00a0\u202f]/g, " ");
+
+  it("⭐ guarani: 12.500.000 no negócio é ₲125.000, não cem vezes mais", () => {
+    expect(semNbsp(formatValorDoNegocio(12_500_000, "PYG"))).toBe("Gs. 125.000");
+    expect(semNbsp(formatValorDoNegocio(25_000_000, "PYG"))).toBe("Gs. 250.000");
+  });
+
+  it("em moeda de duas casas coincide com formatCents", () => {
+    expect(semNbsp(formatValorDoNegocio(24990, "BRL"))).toBe(semNbsp(formatCents(24990, "BRL")));
+  });
+
+  it("sem centavos é o formato do card: real continua como sempre foi", () => {
+    expect(semNbsp(formatValorDoNegocio(125_000, "BRL", { semCentavos: true }))).toBe("R$ 1.250");
+    expect(semNbsp(formatValorDoNegocio(12_500_000, "PYG", { semCentavos: true }))).toBe("Gs. 125.000");
+  });
+});
+
+describe("somaPorMoeda — cada moeda no seu balde (#1531)", () => {
+  type Item = { cents: number | null; moeda: string };
+  const somar = (itens: Item[]) =>
+    somaPorMoeda(
+      itens,
+      (i) => i.cents,
+      (i) => i.moeda,
+    );
+
+  it("soma dentro da moeda e nunca entre moedas", () => {
+    const soma = somar([
+      { cents: 100, moeda: "BRL" },
+      { cents: 200, moeda: "EUR" },
+      { cents: 300, moeda: "BRL" },
+    ]);
+    expect([...soma]).toEqual([
+      ["BRL", 400],
+      ["EUR", 200],
+    ]);
+  });
+
+  it("sem valor não entra nem cria a moeda; zero cria", () => {
+    const soma = somar([
+      { cents: null, moeda: "USD" },
+      { cents: 0, moeda: "BRL" },
+    ]);
+    expect(soma.has("USD")).toBe(false);
+    expect(soma.get("BRL")).toBe(0);
+  });
+});
+
+describe("formatSomaPorMoeda", () => {
+  it("com uma moeda só é exatamente o formatador", () => {
+    const soma = new Map([["BRL", 24990]]);
+    expect(formatSomaPorMoeda(soma, formatValorDoNegocio)).toBe(formatValorDoNegocio(24990, "BRL"));
+  });
+
+  it("a régua é de quem chama: o mesmo guarani sai certo ou 100× conforme o formatador", () => {
+    const soma = new Map([["PYG", 12_500_000]]);
+    expect(semNbsp(formatSomaPorMoeda(soma, formatValorDoNegocio))).toBe("Gs. 125.000");
+    expect(semNbsp(formatSomaPorMoeda(soma, formatCents))).toBe("Gs. 12.500.000");
+  });
+
+  it("ordem: `primeira` e depois as demais em ordem alfabética", () => {
+    const soma = new Map([
+      ["USD", 10000],
+      ["EUR", 10000],
+      ["BRL", 10000],
+    ]);
+    expect(semNbsp(formatSomaPorMoeda(soma, formatCents, { primeira: "USD" }))).toBe(
+      "$100.00 + R$ 100,00 + 100,00 €",
+    );
+    // `primeira` fora da soma é ignorada — não inventa uma parcela zerada.
+    expect(semNbsp(formatSomaPorMoeda(soma, formatCents, { primeira: "MXN" }))).toBe(
+      "R$ 100,00 + 100,00 € + $100.00",
+    );
+  });
+
+  it("⭐ símbolo repetido leva o código; símbolo único não", () => {
+    const pesoEDolar = new Map([
+      ["MXN", 150000],
+      ["USD", 10000],
+    ]);
+    expect(semNbsp(formatSomaPorMoeda(pesoEDolar, formatCents))).toBe(
+      "$1,500.00 MXN + $100.00 USD",
+    );
+
+    const realEEuro = new Map([
+      ["BRL", 10000],
+      ["EUR", 10000],
+    ]);
+    expect(semNbsp(formatSomaPorMoeda(realEEuro, formatCents))).toBe("R$ 100,00 + 100,00 €");
+  });
+
+  it("soma vazia é texto vazio", () => {
+    expect(formatSomaPorMoeda(new Map(), formatCents)).toBe("");
   });
 });

@@ -7,7 +7,7 @@
  * 4. define a senha nova → volta ao login com banner de sucesso
  * 5. prova: senha ANTIGA falha, senha NOVA entra
  */
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/test";
 import { createClient } from "@supabase/supabase-js";
 
 import {
@@ -92,12 +92,12 @@ test("recuperar senha: forgot → e-mail → nova senha → login com a nova", a
   // 5a. Senha ANTIGA tem que falhar
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Senha").fill(oldPassword);
-  await page.getByRole("button", { name: "Entrar" }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await expect(page.getByText("Email ou senha incorretos.")).toBeVisible();
 
   // 5b. Senha NOVA entra
   await page.getByLabel("Senha").fill(newPassword);
-  await page.getByRole("button", { name: "Entrar" }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/(app|onboarding)\//, { timeout: 30_000 });
   await expect(page).not.toHaveURL(/\/login/);
 });

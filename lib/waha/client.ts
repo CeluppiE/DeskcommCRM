@@ -489,8 +489,10 @@ export class WahaClient {
    * completo, que é o formato certo. E citar o que o cliente disse é o caso que
    * importa — quem responde "em cima" está respondendo a ele.
    *
-   * Por isso o id vai como está, sem reconstrução: inventar o prefixo a partir
-   * da direção acertaria o caso que já funciona e chutaria no resto.
+   * Por isso o id vai como está, sem reconstrução AQUI. Quem completa o bare é
+   * o adapter (`idCompletoDaMensagem`, `lib/channels/adapters/waha.ts`), pela
+   * mesma regra de editar e apagar: o que fica gravado bare é só o que é nosso
+   * (`fromMe`) — o envio e, desde o #1855, o eco do celular.
    */
   async sendMessage(
     session: string,
@@ -510,6 +512,27 @@ export class WahaClient {
     });
     if (!res.ok) throw new Error(`waha_${res.status}`);
     return res.json();
+  }
+
+  /** O id completo identifica a mensagem no WAHA; o id curto do sendText não basta. */
+  async editMessage(session: string, chatId: string, messageId: string, text: string): Promise<void> {
+    const path = `/api/${encodeURIComponent(session)}/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}`;
+    const res = await this.fetchComTeto(`${this.baseUrl}${path}`, {
+      method: "PUT",
+      headers: { "X-Api-Key": this.apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw new Error(`waha_${res.status}`);
+  }
+
+  /** Sem `forMe`: para mensagem enviada, WAHA revoga para todos. */
+  async deleteMessage(session: string, chatId: string, messageId: string): Promise<void> {
+    const path = `/api/${encodeURIComponent(session)}/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}`;
+    const res = await this.fetchComTeto(`${this.baseUrl}${path}`, {
+      method: "DELETE",
+      headers: { "X-Api-Key": this.apiKey },
+    });
+    if (!res.ok) throw new Error(`waha_${res.status}`);
   }
 
   /**

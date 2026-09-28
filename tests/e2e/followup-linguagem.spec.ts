@@ -18,7 +18,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { test, expect, type Locator, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "./helpers/test";
 
 import { VALORES_DE_WIRE_NA_TELA_PROIBIDOS } from "../support/enums-do-grafo";
 
@@ -46,7 +46,7 @@ async function login(page: Page, email: string, senha: string): Promise<void> {
   await page.goto("/login");
   await page.locator("#email").fill(email);
   await page.locator("#password").fill(senha);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app\//, { timeout: PRAZO_SOB_CARGA });
 }
 

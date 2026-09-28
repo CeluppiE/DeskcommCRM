@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { createClient } from "@/lib/supabase/server";
+import { IdiomaProvider } from "@/lib/i18n/IdiomaProvider";
 import { normalizarIdioma } from "@/lib/i18n/idiomas";
 import { traduzir } from "@/lib/i18n/dicionario";
 
@@ -17,7 +18,7 @@ import { traduzir } from "@/lib/i18n/dicionario";
  * Esta é a página estática, alcançável por URL.
  */
 export default async function InternalErrorPage() {
-  // Rota fora da árvore de `app/app/layout.tsx` — sem `IdiomaProvider`, então
+  // Rota fora da árvore de `app/app/layout.tsx` — sem o `IdiomaProvider` de lá, então
   // resolve o idioma direto, como `admin/forbidden/page.tsx`. Quem cai aqui
   // pode até ser o próprio Supabase falhando, por isso `user` é opcional e a
   // ausência de sessão não impede a página de renderizar.
@@ -30,21 +31,23 @@ export default async function InternalErrorPage() {
   );
 
   return (
-    <main className="flex min-h-screen items-center justify-center p-8">
-      <Card className="w-full max-w-md p-8 text-center">
-        <h1 className="text-2xl font-semibold">{traduzir("500 — Erro interno", idioma)}</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          {traduzir(
-            "Algo quebrou do nosso lado. Já registramos o ocorrido; tente de novo em instantes.",
-            idioma,
-          )}
-        </p>
-        <div className="mt-6 flex justify-center gap-2">
-          <Button asChild>
-            <Link href="/">{traduzir("Voltar", idioma)}</Link>
-          </Button>
-        </div>
-      </Card>
-    </main>
+    <IdiomaProvider locale={idioma}>
+      <main className="flex min-h-screen items-center justify-center p-8">
+        <Card className="w-full max-w-md p-8 text-center">
+          <h1 className="text-2xl font-semibold">{traduzir("500 — Erro interno", idioma)}</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {traduzir(
+              "Algo quebrou do nosso lado. Já registramos o ocorrido; tente de novo em instantes.",
+              idioma,
+            )}
+          </p>
+          <div className="mt-6 flex justify-center gap-2">
+            <Button asChild>
+              <Link href="/">{traduzir("Voltar", idioma)}</Link>
+            </Button>
+          </div>
+        </Card>
+      </main>
+    </IdiomaProvider>
   );
 }

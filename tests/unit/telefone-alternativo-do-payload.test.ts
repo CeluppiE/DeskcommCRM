@@ -13,8 +13,8 @@ import { telefoneAlternativoDe, type WahaPayload } from "@/lib/waha/ingest";
  */
 
 const REAL_INBOUND: WahaPayload = {
-  id: "false_70192801575156@lid_3A60443E83484256AF03",
-  from: "70192801575156@lid",
+  id: "false_100000000000001@lid_3A60443E83484256AF03",
+  from: "100000000000001@lid",
   fromMe: false,
   body: "oi, tudo bem?",
   timestamp: 1_760_000_000,
@@ -23,9 +23,9 @@ const REAL_INBOUND: WahaPayload = {
     key: {
       id: "3A60443E83484256AF03",
       fromMe: false,
-      remoteJid: "70192801575156@lid",
+      remoteJid: "100000000000001@lid",
       participant: "",
-      remoteJidAlt: "558183647258@s.whatsapp.net",
+      remoteJidAlt: "5511900000001@s.whatsapp.net",
       addressingMode: "lid",
     },
   },
@@ -42,7 +42,7 @@ const REAL_ACK: WahaPayload = {
 
 describe("telefoneAlternativoDe", () => {
   it("tira o telefone de um chat @lid — o achado que destravou o passo 2", () => {
-    expect(telefoneAlternativoDe(REAL_INBOUND)).toBe("+558183647258");
+    expect(telefoneAlternativoDe(REAL_INBOUND)).toBe("+5511900000001");
   });
 
   it("payload sem `_data` devolve null em vez de estourar", () => {
@@ -65,7 +65,7 @@ describe("telefoneAlternativoDe", () => {
     // reencontro E endereço de envio. O contato passaria a "ter telefone" sendo
     // um número que não disca.
     expect(
-      telefoneAlternativoDe({ _data: { key: { remoteJidAlt: "70192801575156@lid" } } }),
+      telefoneAlternativoDe({ _data: { key: { remoteJidAlt: "100000000000001@lid" } } }),
     ).toBeNull();
   });
 
@@ -110,11 +110,11 @@ describe("resolveWahaChatId — o canal de uma conversa viva não muda", () => {
       resolveWahaChatId({
         isGroup: false,
         groupChatId: null,
-        phoneNumber: "+558183647258",
-        waIdentity: "phone:+558183647258", // já virou phone: — a coluna é gerada
-        waLid: "70192801575156",
+        phoneNumber: "+5511900000001",
+        waIdentity: "phone:+5511900000001", // já virou phone: — a coluna é gerada
+        waLid: "100000000000001",
       }),
-    ).toBe("70192801575156@lid");
+    ).toBe("100000000000001@lid");
   });
 
   it("contato SEM lid continua indo por @c.us", () => {
@@ -135,9 +135,9 @@ describe("resolveWahaChatId — o canal de uma conversa viva não muda", () => {
         isGroup: false,
         groupChatId: null,
         phoneNumber: null,
-        waIdentity: "lid:70192801575156",
+        waIdentity: "lid:100000000000001",
       }),
-    ).toBe("70192801575156@lid");
+    ).toBe("100000000000001@lid");
   });
 
   it("grupo vence tudo", () => {
@@ -147,7 +147,7 @@ describe("resolveWahaChatId — o canal de uma conversa viva não muda", () => {
         groupChatId: "1203630@g.us",
         phoneNumber: "+5531988887777",
         waIdentity: "phone:+5531988887777",
-        waLid: "70192801575156",
+        waLid: "100000000000001",
       }),
     ).toBe("1203630@g.us");
   });

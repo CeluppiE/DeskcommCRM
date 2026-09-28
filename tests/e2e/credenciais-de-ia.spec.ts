@@ -2,13 +2,17 @@
  * Jornada: admin cola uma chave de IA e entende o resultado sem ler código.
  * Antes, o card mostrava `auth_failed_401` e a lista de modelos colada por vírgula.
  */
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/test";
 
 import { lerCreds, loginComoAdmin } from "./helpers/login-admin";
 
 let creds = lerCreds();
 
 test.describe("Chaves de acesso à IA", () => {
+  // O login pode esperar até 30 s pela próxima janela TOTP antes de abrir a tela.
+  // Reserve também os 15 s da validação e a limpeza, sem ampliar o polling abaixo.
+  test.setTimeout(60_000);
+
   test("[P0] chave inválida vira frase legível, e a tela diz onde pegar outra", async ({ page }) => {
     creds = await loginComoAdmin(page, creds);
     await page.goto("/app/ai/credentials");
@@ -20,7 +24,7 @@ test.describe("Chaves de acesso à IA", () => {
 
     // O diálogo ajuda antes de pedir: diz quando usar e onde pegar a chave.
     await expect(page.getByText(/padrão recomendado para conversar/)).toBeVisible();
-    await expect(dialog.getByRole("link", { name: /pegar chave em/i })).toHaveAttribute(
+    await expect(dialog.getByRole("link", { name: "Onde pegar a chave" })).toHaveAttribute(
       "href",
       /console\.anthropic\.com/,
     );
@@ -57,6 +61,6 @@ test.describe("Chaves de acesso à IA", () => {
     await page.getByRole("button", { name: /^remover$/i }).click();
     await expect(card).toHaveCount(0);
 
-    await page.screenshot({ path: ".superpowers/evidence/credenciais-de-ia.png", fullPage: true });
+    await page.screenshot({ path: "evidence/credenciais-de-ia.png", fullPage: true });
   });
 });

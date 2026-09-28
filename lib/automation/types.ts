@@ -20,6 +20,18 @@ export interface ActionCtx {
   event: EventRow;
   context: Record<string, unknown>; // mesmo objeto avaliado pelas condições
   requestId: string;
+  /**
+   * Posição da ação em `rule.actions` (a lista inteira, não uma filtrada). Compõe
+   * o id da entrega do webhook de saída (#1529). Opcional porque as fixtures de
+   * teste montam `ActionCtx` sem ela; o motor e o Reenviar sempre a passam.
+   */
+  actionIndex?: number;
+  /**
+   * A lista inteira `rule.actions`, como gravada. Também compõe o id da entrega
+   * (#1529): sem ela, depois de uma ação removida outra herdaria a posição e o
+   * id. Opcional pelo mesmo motivo de `actionIndex`.
+   */
+  ruleActions?: ReadonlyArray<{ type: string; config?: Record<string, unknown> }>;
 }
 
 export interface ActionExecutor {

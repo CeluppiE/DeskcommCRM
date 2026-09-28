@@ -1,5 +1,7 @@
 import type { InterfaceSettings } from "@/lib/navigation/interface";
 import type { Idioma } from "@/lib/i18n/idiomas";
+import type { ModuloOpcional } from "@/lib/instalacao/modulos";
+import type { CapacidadeDaOrganizacao } from "@/lib/organizacao/capacidades";
 
 /**
  * Papéis dentro do tenant.
@@ -171,6 +173,18 @@ export interface ActiveOrg {
    */
   cliente_pela_agenda?: boolean;
   /**
+   * Os módulos opcionais LIGADOS na instalação (`lib/instalacao/modulos.ts`).
+   * É da instalação, não da organização — mora aqui porque este é o contexto
+   * que o layout de `/app` entrega à casca. Ausente vale como nenhum: a porta
+   * de módulo desligado não aparece no menu.
+   */
+  modulos_ligados?: readonly ModuloOpcional[];
+  /**
+   * Capacidades que ESTA organização ligou (`lib/organizacao/capacidades.ts`).
+   * Só o layout de `/app` preenche; ausente vale como nenhuma no menu.
+   */
+  capacidades_ligadas?: readonly CapacidadeDaOrganizacao[];
+  /**
    * O que ESTA organização definiu para si — CAMPO A CAMPO, e só o que ela
    * mesma definiu.
    *
@@ -195,5 +209,9 @@ export interface ActiveOrg {
    * banco: `app/layout.tsx` resolve a pilha e o `<PublicEnvScript/>` a injeta em
    * `window.__PUBLIC_ENV__`, de onde `branding()` a lê.
    */
-  marca?: { readonly nome?: string; readonly logoUrl?: string | null };
+  marca?: {
+    readonly nome?: string;
+    readonly logoUrl?: string | null;
+    readonly logoDarkUrl?: string | null;
+  };
 }

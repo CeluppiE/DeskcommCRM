@@ -54,12 +54,14 @@ export function RiskRadarList() {
     );
   }
 
-  // O vazio só é vazio se as DUAS listas estiverem vazias. Sem esta condição,
-  // uma organização com 8 demandas sem próximo passo e nenhum lead frio veria
-  // "Nenhuma demanda em risco" — escondendo exatamente o vazamento que o
-  // invariante 4 existe para denunciar.
+  // O vazio só é vazio se as TRÊS listas estiverem vazias. Sem esta condição,
+  // uma organização com proposta vencida sem retomada e nenhum lead frio
+  // veria "Nenhuma demanda em risco" — escondendo exatamente o vazamento que
+  // a lista nova existe para denunciar (mesma armadilha do invariante 4).
   const semPasso = data?.sem_proximo_passo ?? [];
-  if (!data || (data.total === 0 && semPasso.length === 0)) {
+  const vencidas = data?.propostas_vencidas_sem_retomada ?? [];
+  const esperandoRevisao = data?.propostas_esperando_revisao ?? [];
+  if (!data || (data.total === 0 && semPasso.length === 0 && vencidas.length === 0 && esperandoRevisao.length === 0)) {
     return (
       <div
         className="flex flex-1 flex-col items-center justify-center gap-2 py-16 text-center"
@@ -101,6 +103,70 @@ export function RiskRadarList() {
                 <span className="truncate">{d.contact_name ?? t("Contato sem nome")}</span>
                 <span className="shrink-0 tabular-nums text-muted-foreground">
                   {t("aberta há")} {d.horas_aberta}h
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {/* N3 — proposta VENCIDA sem proposta mais nova: o cliente recebeu, não
+          decidiu, e ninguém retomou. Mesma estrutura da seção de cima (lista
+          paralela, não misturada nos itens do radar). */}
+      {vencidas.length > 0 ? (
+        <section
+          className="rounded-lg border border-warning-border bg-warning-bg/40 p-3"
+          data-testid="radar-propostas-vencidas"
+        >
+          <p className="text-sm font-medium">
+            {vencidas.length}{" "}
+            {vencidas.length === 1
+              ? t("proposta vencida sem retomada")
+              : t("propostas vencidas sem retomada")}
+          </p>
+          <p className="mb-2 text-xs text-muted-foreground">
+            {t("O cliente recebeu e não decidiu. Retome antes que esfrie de vez.")}
+          </p>
+          <ul className="flex flex-col gap-1">
+            {vencidas.slice(0, 8).map((p) => (
+              <li key={p.proposal_id} className="flex items-baseline justify-between gap-3 text-xs">
+                <Link href={`/app/proposals/${p.proposal_id}`} className="truncate hover:underline">
+                  {p.numero != null && p.ano != null ? `${String(p.numero).padStart(4, "0")}/${p.ano}` : t("Proposta sem número")}
+                </Link>
+                <span className="shrink-0 tabular-nums text-muted-foreground">
+                  {t("venceu em")} {p.valid_until ?? "—"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {/* C6 — rascunho com aviso de revisão ABERTO: a IA terminou, ninguém
+          conferiu. Mesma estrutura das seções paralelas acima (lista própria,
+          não misturada nos itens do radar). */}
+      {esperandoRevisao.length > 0 ? (
+        <section
+          className="rounded-lg border border-warning-border bg-warning-bg/40 p-3"
+          data-testid="radar-propostas-esperando-revisao"
+        >
+          <p className="text-sm font-medium">
+            {esperandoRevisao.length}{" "}
+            {esperandoRevisao.length === 1
+              ? t("proposta esperando revisão")
+              : t("propostas esperando revisão")}
+          </p>
+          <p className="mb-2 text-xs text-muted-foreground">
+            {t("Rascunhos que a IA terminou e ninguém revisou. Confira antes de enviar.")}
+          </p>
+          <ul className="flex flex-col gap-1">
+            {esperandoRevisao.slice(0, 8).map((p) => (
+              <li key={p.proposal_id} className="flex items-baseline justify-between gap-3 text-xs">
+                <Link href={`/app/proposals/${p.proposal_id}`} className="truncate hover:underline">
+                  {p.titulo ?? t("Proposta sem título")}
+                </Link>
+                <span className="shrink-0 truncate text-muted-foreground">
+                  {p.contact_name ?? "—"}
                 </span>
               </li>
             ))}

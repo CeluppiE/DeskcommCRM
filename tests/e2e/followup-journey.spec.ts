@@ -37,7 +37,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./helpers/test";
 
 import { zoomAte } from "./utils/canvas-do-fluxo";
 
@@ -109,7 +109,7 @@ async function loginWithTotp(page: Page, email: string, secretTotp: string): Pro
   await page.goto("/login");
   await page.locator("#email").fill(email);
   await page.locator("#password").fill(creds.password);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/login\/mfa/);
 
   for (let attempt = 0; attempt < 2; attempt++) {

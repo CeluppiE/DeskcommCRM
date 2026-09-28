@@ -8,6 +8,66 @@
 
 ---
 
+## Instalação local em Ubuntu/VM (PostgreSQL + serviços em Docker)
+
+Em uma VM Ubuntu nova, execute o instalador uma única vez na raiz do clone:
+
+```bash
+chmod +x ubuntu-local-installer.sh
+./ubuntu-local-installer.sh
+```
+
+O instalador sobe o Supabase local em Docker (PostgreSQL com `pgvector`, Auth,
+PostgREST, Storage e Realtime), aplica `supabase/baseline.sql`, e inicia o app,
+worker, scheduler, WAHA e Redis/SRH pelo `docker-compose.local.yml`. As chaves
+ficam somente em `.env.local`, que não é versionado. O primeiro build pode levar
+alguns minutos e precisa de espaço para as imagens do Supabase e do WAHA.
+
+O instalador também cria o usuário inicial e escolhe uma porta livre para o app.
+Não é necessário executá-lo novamente a cada reinício.
+
+### Uso diário
+
+Depois da instalação inicial, use:
+
+```bash
+pnpm local:up
+pnpm local:status
+pnpm local:logs          # ou: bash scripts/local-stack.sh logs worker
+pnpm local:down
+```
+
+`pnpm local:up` verifica se o Supabase local está ativo e confere o `.env.local`.
+Se o arquivo estiver ausente ou incompleto, ele gera automaticamente as URLs e
+chaves locais do PostgreSQL/Supabase, WAHA, Redis/SRH e da aplicação. Se já
+existir um `.env.local` de outro ambiente, ele é preservado como
+`.env.local.cloud-backup` antes da geração local.
+
+Para atualizar o código e aplicar a versão nova:
+
+```bash
+git pull --ff-only
+pnpm local:up
+```
+
+Para aplicar uma alteração manual no `.env.local`, use também `pnpm local:up`,
+pois a aplicação precisa ser recriada e recompilada para carregar as novas
+variáveis. `docker compose restart` sozinho não atualiza o ambiente do
+container.
+
+O endereço e a porta são mostrados ao final do instalador. Se a porta 3000 já
+estiver ocupada, ele escolhe a próxima porta livre. O painel local do Supabase
+fica em `http://127.0.0.1:54323` e o WAHA em `http://127.0.0.1:3030`.
+
+> A senha do dono e a chave da API do WAHA nascem **aleatórias** a cada
+> instalação e são impressas no fim. Elas não estão neste repositório, e o
+> painel do WAHA só atende em `127.0.0.1` — de outra máquina da rede, só o app
+> responde. Quem quiser escolher a senha exporta `OWNER_PASSWORD` antes.
+
+> A cadeia histórica de migrations contém dependências antigas e não é usada
+> para uma instalação fresca. O helper inicia a infraestrutura sem aplicá-la e
+> carrega o baseline versionado, que é o artefato de instalação do self-host.
+
 ## Índice
 
 1. [Antes de começar](#antes-de-começar)
@@ -16,7 +76,7 @@
 4. [Upstash Redis — rate limit + idempotência](#2-upstash-redis--rate-limit--idempotência)
 5. [WAHA — WhatsApp](#3-waha--whatsapp)
 6. [Anthropic + Vercel AI Gateway — IA](#4-anthropic--vercel-ai-gateway--ia)
-7. [OpenAI — embeddings do RAG](#5-openai--embeddings-do-rag)
+7. [OpenAI ou OpenRouter — embeddings do RAG](#5-openai-ou-openrouter--embeddings-do-rag)
 8. [Sentry — monitoramento de erros](#6-sentry--monitoramento-de-erros)
 9. [E-mail transacional — SMTP ou Resend](#7-e-mail-transacional--smtp-ou-resend)
 10. [Nuvemshop — integração e-commerce](#8-nuvemshop--integração-e-commerce)
@@ -59,7 +119,7 @@ Se você quer rodar o app o mais rápido possível com o mínimo viável:
 
 **🟡 Pra testar features de IA (+10 min):**
 4. [Anthropic](#4-anthropic--vercel-ai-gateway--ia) ou Vercel AI Gateway.
-5. [OpenAI](#5-openai--embeddings-do-rag) — embeddings do RAG.
+5. [OpenAI ou OpenRouter](#5-openai-ou-openrouter--embeddings-do-rag) — embeddings do RAG.
 
 **🟡 Pra testar WhatsApp (+15 min):**
 6. [WAHA](#3-waha--whatsapp) + ngrok (precisa URL pública).
@@ -290,17 +350,11 @@ ANTHROPIC_API_KEY=sk-ant-api03-...
 
 ---
 
-## 5. OpenAI — embeddings do RAG
+## 5. OpenAI ou OpenRouter — embeddings do RAG
 
-**O que é:** Usado **só** pra gerar embeddings (vetores) das bases de conhecimento dos tenants pro chatbot RAG. Não usamos GPT pra gerar texto — esse trabalho é do Claude. **Custo:** baratíssimo. `text-embedding-3-small` = $0.02 / 1M tokens.
+O acervo usa `openai/text-embedding-3-small` com 1536 dimensões para indexar e buscar. A chave pode vir da OpenAI ou da OpenRouter; não troque o modelo só de um lado, porque o agente deixaria de encontrar o material.
 
-1. Acesse <https://platform.openai.com> → **Sign up**. 💳
-2. Adicione método de pagamento (eles não dão mais crédito grátis em conta nova).
-3. **API Keys → Create new secret key** → nome `deskcomm-dev-embeddings` → copie.
-
-```env
-OPENAI_API_KEY=sk-proj-...
-```
+Cadastre a chave em **IA → Credenciais** ou no próprio acervo, escolhendo o provedor. Também é possível definir `OPENAI_API_KEY` ou `OPENROUTER_API_KEY` na instalação. A OpenAI vem primeiro: a chave OpenRouter só é usada quando não há chave OpenAI (da organização ou da instalação) nem gateway de IA configurado. Assim, quem já indexava com a OpenAI continua com ela depois de cadastrar a OpenRouter para a conversa. Entre as duas OpenRouter, a da organização vence a da instalação. A chave OpenAI continua sendo necessária para transcrever áudio, mesmo que o acervo use OpenRouter.
 
 ---
 

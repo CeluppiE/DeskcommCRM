@@ -148,3 +148,155 @@ describe("requireRole — MFA é política de sessão, não de cadastro", () => 
     }
   });
 });
+
+describe("requireRole — leituras independentes em paralelo", () => {
+  it("inicia MFA enquanto a consulta de papel ainda aguarda o banco", async () => {
+    preparar({ role: "admin", temFator: false, aal: "aal1" });
+    const stub = montarStub({ role: "admin", temFator: false, aal: "aal1" });
+    let liberar!: (value: { data: Role; error: null }) => void;
+    stub.rpc.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          liberar = resolve;
+        }),
+    );
+    vi.mocked(createClient).mockResolvedValue(
+      stub as unknown as Awaited<ReturnType<typeof createClient>>,
+    );
+    const resultado = requireRole("admin");
+    await vi.waitFor(() => expect(stub.auth.mfa.listFactors).toHaveBeenCalled());
+    liberar({ data: "admin", error: null });
+    expect((await resultado).ok).toBe(true);
+  });
+
+  it("preserva forbidden_role mesmo se a leitura de MFA falhar", async () => {
+    preparar({ role: "viewer", temFator: false, aal: "aal1" });
+    const stub = montarStub({ role: "viewer", temFator: false, aal: "aal1" });
+    stub.auth.mfa.listFactors.mockRejectedValue(new Error("MFA indisponível"));
+    vi.mocked(createClient).mockResolvedValue(
+      stub as unknown as Awaited<ReturnType<typeof createClient>>,
+    );
+    const resultado = await requireRole("admin");
+    expect(resultado.ok).toBe(false);
+    if (!resultado.ok) expect((await resultado.response.json()).error.code).toBe("forbidden_role");
+  });
+
+  it("não libera acesso quando a leitura de MFA necessária falha", async () => {
+    preparar({ role: "admin", temFator: false, aal: "aal1" });
+    const stub = montarStub({ role: "admin", temFator: false, aal: "aal1" });
+    stub.auth.mfa.listFactors.mockRejectedValue(new Error("MFA indisponível"));
+    vi.mocked(createClient).mockResolvedValue(
+      stub as unknown as Awaited<ReturnType<typeof createClient>>,
+    );
+    await expect(requireRole("admin")).rejects.toThrow("MFA indisponível");
+  });
+});
+
+describe("requireRole — os caminhos que não passam pela leitura paralela", () => {
+  const SUPORTE = {
+    id: "33333333-3333-4333-8333-333333333333",
+    organization_id: ORG_ID,
+    actor_user_id: USER_ID,
+    auth_session_id: "44444444-4444-4444-8444-444444444444",
+    previous_organization_id: null,
+    expires_at: "2099-01-01T00:00:00Z",
+    name: "Org em suporte",
+    locale: null,
+    access_mode: "full" as const,
+  };
+
+  function comSuporte(status: "active" | "expired", cenario: Cenario) {
+    preparar(cenario);
+    const stub = montarStub(cenario);
+    vi.mocked(createClient).mockResolvedValue(
+      stub as unknown as Awaited<ReturnType<typeof createClient>>,
+    );
+    vi.mocked(loadAuthUser).mockResolvedValue({
+      id: USER_ID,
+      email: "admin@teste.local",
+      is_platform_admin: cenario.isPlatformAdmin ?? false,
+      organizations: [],
+      support: { ...SUPORTE, status },
+    } as unknown as AuthUser);
+    return stub;
+  }
+
+  it("acompanhamento encerrado é 403 sem ler papel nem MFA", async () => {
+    comSuporte("expired", { role: "admin", temFator: true, aal: "aal1" });
+    const r = await requireRole("viewer", { organizationId: ORG_ID });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect((await r.response.json()).error.code).toBe("forbidden");
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
+  it("platform admin com opt-in passa sem ler papel nem MFA, como antes", async () => {
+    preparar({ role: "viewer", temFator: true, aal: "aal1", isPlatformAdmin: true });
+    const r = await requireRole("admin", { allowPlatformAdmin: true });
+    expect(r.ok).toBe(true);
+    expect(createClient).not.toHaveBeenCalled();
+  });
+
+  it("acompanhamento ativo NÃO usa o atalho de platform admin: papel e MFA são lidos", async () => {
+    const stub = comSuporte("active", {
+      role: "admin",
+      temFator: true,
+      aal: "aal1",
+      isPlatformAdmin: true,
+    });
+    const r = await requireRole("admin", { organizationId: ORG_ID, allowPlatformAdmin: true });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect((await r.response.json()).error.code).toBe("mfa_required");
+    expect(stub.rpc).toHaveBeenCalledTimes(1);
+    expect(stub.auth.mfa.listFactors).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("requireRole — a leitura paralela não vaza nem guarda nada", () => {
+  it("MFA que rejeita DEPOIS do 403 de papel não vira unhandled rejection", async () => {
+    // O .then de dois handlers é o que garante isto: quando o papel falha, a
+    // promessa de MFA nunca é aguardada, e sem o segundo handler a rejeição
+    // tardia escaparia do processo.
+    preparar({ role: "viewer", temFator: false, aal: "aal1" });
+    const stub = montarStub({ role: "viewer", temFator: false, aal: "aal1" });
+    let rejeitar!: (e: Error) => void;
+    stub.auth.mfa.listFactors.mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          rejeitar = reject;
+        }),
+    );
+    vi.mocked(createClient).mockResolvedValue(
+      stub as unknown as Awaited<ReturnType<typeof createClient>>,
+    );
+    const escapadas: unknown[] = [];
+    const ouvinte = (motivo: unknown) => escapadas.push(motivo);
+    process.on("unhandledRejection", ouvinte);
+    try {
+      const r = await requireRole("admin");
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect((await r.response.json()).error.code).toBe("forbidden_role");
+      rejeitar(new Error("MFA indisponível depois do 403"));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(escapadas).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", ouvinte);
+    }
+  });
+
+  it("cada requisição relê papel e MFA — nada é guardado entre chamadas", async () => {
+    preparar({ role: "admin", temFator: true, aal: "aal2" });
+    const stub = montarStub({ role: "admin", temFator: true, aal: "aal2" });
+    vi.mocked(createClient).mockResolvedValue(
+      stub as unknown as Awaited<ReturnType<typeof createClient>>,
+    );
+    expect((await requireRole("admin")).ok).toBe(true);
+    stub.auth.mfa.getAuthenticatorAssuranceLevel.mockResolvedValue({
+      data: { currentLevel: "aal1", nextLevel: "aal2" },
+      error: null,
+    });
+    const r = await requireRole("admin");
+    expect(r.ok).toBe(false);
+    expect(stub.rpc).toHaveBeenCalledTimes(2);
+    expect(stub.auth.mfa.listFactors).toHaveBeenCalledTimes(2);
+  });
+});

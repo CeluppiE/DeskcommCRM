@@ -19,6 +19,8 @@ export interface RouterMember {
   intent_description: string;
   examples: string[];
   position: number;
+  /** Fluxo de atendimento que começa quando a intenção casa. `null` = só agente. */
+  flow_pointer_id: string | null;
 }
 
 export interface RouterMemberInput {
@@ -26,6 +28,7 @@ export interface RouterMemberInput {
   intent_name: string;
   intent_description: string;
   examples: string[];
+  flow_pointer_id: string | null;
 }
 
 export interface RouterDetail {
@@ -44,10 +47,30 @@ export interface RouterDetailState {
 
 export interface RouterTestResult {
   intent_name: string | null;
-  confidence: number;
+  /**
+   * `null` quando NÃO houve veredito — não é zero. O tipo importa mais que a
+   * rota: ele é o que todo consumidor novo importa, e um `number` aqui faria a
+   * mentira passar com o aval do typecheck.
+   */
+  confidence: number | null;
   min_confidence: number;
   agent_id: string | null;
   agent_name: string | null;
+  /**
+   * O Jev na mesma frase, quando a tarefa do roteador dele roda. `null` com ela
+   * desligada; ausente na resposta da imagem anterior.
+   */
+  jev?: {
+    estado: "observando" | "decidindo";
+    respondeu: boolean;
+    intent_name: string | null;
+    /** A probabilidade da escolha dele; `null` quando ele não respondeu. */
+    confidence: number | null;
+    agent_id: string | null;
+    agent_name: string | null;
+    /** Em produção valeria a escolha dele (decidindo, e com a IA de sempre respondendo). */
+    decide: boolean;
+  } | null;
 }
 
 export interface CreateRouterInput {

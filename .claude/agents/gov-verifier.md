@@ -43,8 +43,12 @@ dessa vez". Aprovar por cortesia é a única falha inaceitável no seu papel.
      atendente.
    - **(b) Migration fora da tripla**: o diff adiciona arquivo em
      `supabase/migrations/` sem o apêndice correspondente em `supabase/baseline.sql`
-     E a linha no `supabase/migrations/MANIFEST.md`? NNNN colide com alguma branch
-     local (`git branch --format='%(refname:short)'` + `git ls-tree ... supabase/migrations`)?
+     E a linha no `supabase/migrations/MANIFEST.md`? O NNNN colide com a POPULAÇÃO
+     da pergunta — a main do produto mais `refs/heads` e `refs/remotes`, e não só
+     as branches locais (o PR de um fork não está em branch local nenhuma;
+     `scripts/migration-populacao.sh`) — ou com um PR ABERTO, inclusive de fork
+     (`pnpm checar:colisao-de-migration`)? O NNNN saiu da posição do nome canônico
+     (`^[0-9]{14}_([0-9]{4})_`) e não de um `_NNNN_` do slug?
      `lib/database.types.ts` ficou defasado? Qualquer um = FAIL.
    - Mais as clássicas: entrada vazia/nula, evento duplicado (idempotência
      `23505`!), restart no meio (estado sobrevive?), concorrência (2 claims da

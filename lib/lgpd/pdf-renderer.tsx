@@ -212,7 +212,11 @@ export function LgpdExportPdf({ data, unsignedWarning }: Props): React.ReactElem
             <View style={styles.row}>
               <Text style={styles.label}>{data.documento_rotulo}:</Text>
               <Text style={styles.value}>
-                {data.contact.cpf_present ? "Armazenado (criptografado)" : "—"}
+                {data.contact.cpf_present
+                  ? "Armazenado (criptografado)"
+                  : data.contact.cpf_informado_na_conversa
+                    ? "Informado na conversa (valor no arquivo de dados)"
+                    : "—"}
               </Text>
             </View>
             <View style={styles.row}>
@@ -227,6 +231,21 @@ export function LgpdExportPdf({ data, unsignedWarning }: Props): React.ReactElem
               <Text style={styles.label}>Anonimizado:</Text>
               <Text style={styles.value}>{data.contact.is_anonymized ? "Sim" : "Não"}</Text>
             </View>
+          </View>
+        ) : null}
+
+        {/* Respostas e campos personalizados (roteiros de atendimento, etc.) */}
+        {data.contact && (data.contact.campos_legiveis ?? []).length > 0 ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Respostas e campos personalizados</Text>
+            {/* A pergunta em linha própria: rótulo de roteiro é frase, e na coluna
+                de 110pt dos dados fixos ele quebrava no meio da palavra. */}
+            {data.contact.campos_legiveis.map((campo, i) => (
+              <View key={i} style={styles.itemBlock}>
+                <Text style={styles.small}>{campo.rotulo}</Text>
+                <Text>{campo.valor}</Text>
+              </View>
+            ))}
           </View>
         ) : null}
 
@@ -311,6 +330,27 @@ export function LgpdExportPdf({ data, unsignedWarning }: Props): React.ReactElem
                   {o.status} · {fmtMoney(o.total_cents, o.currency)}
                 </Text>
                 <Text style={styles.small}>Pedido em {fmtDate(o.ordered_at)}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
+        {/* Propostas — o documento comercial que a pessoa RECEBEU; sem esta
+            seção o relatório não mencionava proposta nenhuma. */}
+        {data.proposals?.length ? (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Propostas comerciais</Text>
+            {data.proposals.map((p) => (
+              <View key={p.id} style={styles.itemBlock}>
+                <Text>
+                  {p.numero != null && p.ano != null ? `Nº ${p.numero}/${p.ano} · ` : ""}
+                  {p.titulo} · {p.status} · {fmtMoney(p.total_cents, p.moeda)}
+                </Text>
+                <Text style={styles.small}>
+                  Criada em {fmtDate(p.created_at)}
+                  {p.sent_at ? ` · enviada em ${fmtDate(p.sent_at)}` : ""}
+                  {p.tem_pdf ? " · documento em PDF enviado" : ""}
+                </Text>
               </View>
             ))}
           </View>

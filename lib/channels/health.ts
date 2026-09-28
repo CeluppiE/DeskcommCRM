@@ -31,6 +31,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { PROVIDERS_DE_MENSAGEM } from "./capabilities";
+import { ehNomeDeSessaoE2E } from "./sessoes-e2e";
 
 /** Único estado em que mensagem entra e sai. Contrato do CRM (uppercase). */
 export const STATUS_SAUDAVEL = "WORKING";
@@ -180,7 +181,7 @@ export async function listarConexoesCaidas(
 ): Promise<ConexaoCaida[]> {
   const { data } = await admin
     .from("channel_sessions")
-    .select("id, display_name, phone_number, status")
+    .select("id, display_name, phone_number, status, waha_session_name")
     .eq("organization_id", organizationId)
     .is("archived_at", null)
     // A faixa diz "nenhuma mensagem entra nem sai por esta conexão" e leva a
@@ -190,7 +191,14 @@ export async function listarConexoesCaidas(
     .in("provider", [...PROVIDERS_DE_MENSAGEM])
     .in("status", [...STATUS_QUE_AVISAM]);
 
-  return (data ?? []).map((s) => ({
+  return (data ?? [])
+    // A linha de seed do e2e (#1032) é o MESMO caso por outra porta: ninguém a
+    // criou pela tela, ninguém a remove, e o `status` dela é `STOPPED` para
+    // sempre — a faixa anunciaria como conexão de alguém algo que não é
+    // conexão de ninguém, a mesma faixa permanente do parágrafo acima. Quem não
+    // é seed passa por este filtro intacto, inclusive caído.
+    .filter((s) => !ehNomeDeSessaoE2E(s.waha_session_name as string | null))
+    .map((s) => ({
     id: s.id as string,
     apelido: (s.display_name as string | null) ?? (s.phone_number as string | null) ?? "sem nome",
     status: (s.status as string | null) ?? "",

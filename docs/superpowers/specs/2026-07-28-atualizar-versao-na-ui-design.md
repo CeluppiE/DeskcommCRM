@@ -272,8 +272,8 @@ exatamente esse comando.
   simula o agente anunciando 1.1.0; a sidebar acende; a tela mostra o texto do CHANGELOG; o
   clique em `Atualizar agora` cria o run; um segundo `curl` do agente confirma o recebimento e
   devolve sucesso; a tela chega em "Você está na 1.1.0". Caso espelhado: usuário `agent` não vê
-  o botão. Evidência visual em `.superpowers/evidence/`.
-- **Prova real na VPS** (129.121.45.100): o ciclo completo com uma tag de teste, ponta a ponta.
+  o botão. Evidência visual em `evidence/`.
+- **Prova real na VPS** (203.0.113.10): o ciclo completo com uma tag de teste, ponta a ponta.
   Sem isso a feature não é declarada pronta — o E2E prova a tela, não prova o host.
 
 ## 9. Living System Checklist

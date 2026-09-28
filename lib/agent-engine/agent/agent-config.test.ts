@@ -11,6 +11,7 @@ const baseRow = {
   version_created_by: null, agent_created_by: null,
   active_kb_version_id: 'kb-1',
   config: { rag_top_k: 7, rag_similarity_threshold: 0.8 },
+  followup: { enabled: true, flow_pointer_ids: ['flow-1'], callback_enabled: false },
 };
 
 function poolWith(row: Record<string, unknown> | undefined): pg.Pool {
@@ -42,6 +43,30 @@ describe('loadPublishedAgentConfig — campos de RAG', () => {
   it('activeKbVersionId nulo quando o agente não tem KB ativa', async () => {
     const cfg = await loadPublishedAgentConfig(poolWith({ ...baseRow, active_kb_version_id: null }), 'org1', 'cs1');
     expect(cfg?.activeKbVersionId).toBeNull();
+  });
+
+  it('carrega followup da versão publicada, sem misturar a política de callbacks com os fluxos', async () => {
+    const pool = poolWith(baseRow);
+    const cfg = await loadPublishedAgentConfig(pool, 'org1', 'cs1');
+    const queryMock = pool.query as unknown as ReturnType<typeof vi.fn>;
+    const [sql] = queryMock.mock.calls[0] as [string, unknown[]];
+
+    expect(sql).toMatch(/v\.followup/);
+    expect(cfg?.followup).toEqual({
+      enabled: true,
+      flow_pointer_ids: ['flow-1'],
+      callback_enabled: false,
+    });
+  });
+
+  it('preserva a configuração legada sem callback_enabled', async () => {
+    const cfg = await loadPublishedAgentConfig(
+      poolWith({ ...baseRow, followup: { enabled: true, flow_pointer_ids: ['flow-1'] } }),
+      'org1',
+      'cs1',
+    );
+
+    expect(cfg?.followup).toEqual({ enabled: true, flow_pointer_ids: ['flow-1'] });
   });
 });
 

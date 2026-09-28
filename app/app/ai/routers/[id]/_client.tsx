@@ -31,7 +31,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { showApiError } from "@/components/feedback/ApiErrorToast";
 import { ArrowRight, CaretLeft, Info, Plus, Trash } from "@/lib/ui/icons";
 import { randomId } from "@/lib/random-id";
-import { usePermission } from "@/hooks/auth/AuthProvider";
+import { useAuth, usePermission } from "@/hooks/auth/AuthProvider";
 import {
   useRouter as useRouterData,
   useUpdateRouter,
@@ -40,9 +40,11 @@ import {
   useTestRouter,
   type RouterDetailState,
   type RouterMemberInput,
+  type RouterTestResult,
 } from "@/hooks/ai/useRouters";
 import type { ClassifierModelOption } from "@/lib/ai/classifier-models";
 import type { ChannelSessionLite } from "../../agents/[id]/_components/AgentForm";
+import { useFollowupFlows } from "@/hooks/followup/useFollowupFlows";
 import { useT } from "@/hooks/i18n/useT";
 
 interface AgentLite {
@@ -115,6 +117,12 @@ export function RouterEditorClient({
   const deleteRouter = useDeleteRouter();
   const saveMembers = useSaveMembers(routerId);
   const testRouter = useTestRouter(routerId);
+  // Fluxos de atendimento disponíveis para amarrar a uma intenção (surface=atendimento).
+  // Com o módulo desligado o seletor não existe: amarrar a um roteiro que não roda
+  // seria prometer um comportamento que a instalação não tem.
+  const { activeOrg } = useAuth();
+  const roteirosLigados = activeOrg?.modulos_ligados?.includes("fluxos_atendimento") === true;
+  const { data: atendimentoFlows } = useFollowupFlows({ surface: "atendimento", enabled: roteirosLigados });
 
   const baseline = React.useMemo(
     () => ({
@@ -122,22 +130,26 @@ export function RouterEditorClient({
       isActive: router.is_active,
       fallbackAgentId: router.fallback_agent_id ?? "",
       classifier: classifierKeyFrom(router.config),
-      members: members.map(({ agent_id, intent_name, intent_description, examples }) => ({
+      members: members.map(({ agent_id, intent_name, intent_description, examples, flow_pointer_id }) => ({
         agent_id,
         intent_name,
         intent_description,
         examples,
+        flow_pointer_id: flow_pointer_id ?? null,
       })),
     }),
     [router, members],
   );
 
-  const currentMembers = draftMembers.map(({ agent_id, intent_name, intent_description, examples }) => ({
-    agent_id,
-    intent_name,
-    intent_description,
-    examples,
-  }));
+  const currentMembers = draftMembers.map(
+    ({ agent_id, intent_name, intent_description, examples, flow_pointer_id }) => ({
+      agent_id,
+      intent_name,
+      intent_description,
+      examples,
+      flow_pointer_id: flow_pointer_id ?? null,
+    }),
+  );
 
   const dirty =
     name !== baseline.name ||
@@ -178,6 +190,7 @@ export function RouterEditorClient({
         intent_name: "",
         intent_description: "",
         examples: [],
+        flow_pointer_id: null,
       },
     ]);
   }
@@ -403,6 +416,7 @@ export function RouterEditorClient({
                     <IntentRow
                       member={m}
                       agents={agents}
+                      flows={roteirosLigados ? (atendimentoFlows ?? []) : null}
                       disabled={!canManage}
                       error={memberErrors[i] ?? null}
                       duplicate={duplicateNames.has(m.intent_name.trim().toLowerCase())}
@@ -450,6 +464,7 @@ export function RouterEditorClient({
 function IntentRow({
   member,
   agents,
+  flows,
   disabled,
   error,
   duplicate,
@@ -458,6 +473,8 @@ function IntentRow({
 }: {
   member: DraftMember;
   agents: AgentLite[];
+  /** `null` = módulo de roteiros desligado: o seletor não aparece. */
+  flows: Array<{ id: string; name: string }> | null;
   disabled: boolean;
   error: string | null;
   duplicate: boolean;
@@ -519,6 +536,33 @@ function IntentRow({
           maxLength={2000}
         />
       </div>
+      {flows !== null && (
+      <div className="space-y-1" data-testid="seletor-de-roteiro">
+        <Label>{t("Fluxo de atendimento (opcional)")}</Label>
+        <Select
+          value={member.flow_pointer_id ?? NONE}
+          onValueChange={(v) => onChange({ flow_pointer_id: v === NONE ? null : v })}
+          disabled={disabled}
+        >
+          <SelectTrigger>
+            <SelectValue placeholder={t("Nenhum — só roteia o agente")} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NONE}>{t("Nenhum — só roteia o agente")}</SelectItem>
+            {flows.map((f) => (
+              <SelectItem key={f.id} value={f.id}>
+                {f.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-muted-foreground">
+          {t(
+            "Quando a intenção casar, este fluxo começa e as perguntas dele guiam o atendimento até o cliente completar.",
+          )}
+        </p>
+      </div>
+      )}
       <ExamplesInput
         value={member.examples}
         onChange={(examples) => onChange({ examples })}
@@ -620,19 +664,34 @@ function TestPanel({
   message: string;
   onMessageChange: (v: string) => void;
   onTest: () => void;
-  result:
-    | {
-        intent_name: string | null;
-        confidence: number;
-        min_confidence: number;
-        agent_id: string | null;
-        agent_name: string | null;
-      }
-    | undefined;
+  /**
+   * O tipo vem do hook, não é redeclarado aqui. Enquanto eram duas declarações
+   * do mesmo contrato, a próxima mudança acertava uma só — foi assim que a rota
+   * passou a poder devolver ausência e este lado continuou prometendo número.
+   */
+  result: RouterTestResult | undefined;
   pending: boolean;
 }) {
   const t = useT();
-  const belowThreshold = result?.intent_name != null && result.confidence < result.min_confidence;
+  // A guarda é sobre a CONFIANÇA, não sobre o campo vizinho. Antes, os três
+  // renders checavam `intent_name` e por acaso concordavam — ninguém havia
+  // escrito que um vale só com o outro. Bastaria um quarto render sem a guarda
+  // para o valor ausente aparecer na tela.
+  // O valor sai para um const ANTES do JSX para que o TypeScript o estreite lá
+  // dentro. Sem ele, o render precisava de `(result.confidence ?? 0)` — e um
+  // `?? 0` sobre confiança, dentro do PR que existe para extingui-lo, é a
+  // definição de padrão que volta pela porta dos fundos. A cerca em
+  // `tests/unit/confianca-do-handoff-nao-e-similaridade.test.ts` passou a cobrir
+  // `app/app/ai` por causa desta linha.
+  //
+  // Decidindo (e com a IA de sempre respondendo), em produção vale a escolha do
+  // Jev — e este bloco diz o que ACONTECERIA, então lê inteiro o lado que vale.
+  // Lendo a intenção e a confiança da IA ao lado do agente do Jev, ele dizia
+  // "cairia no atendimento padrão" com o agente do Jev logo abaixo.
+  const vale = result?.jev?.decide ? result.jev : result;
+  const confianca = vale?.confidence ?? null;
+  const abaixoDoMinimo =
+    confianca !== null && result !== undefined && confianca < result.min_confidence;
   return (
     <Card className="space-y-3 p-4">
       <CardHeader className="p-0">
@@ -668,28 +727,103 @@ function TestPanel({
           {!pending && <ArrowRight />}
         </Button>
         {result && (
-          <div className="rounded-md border border-border/60 p-3 text-sm">
+          <div className="rounded-md border border-border/60 p-3 text-sm" data-testid="teste-resultado">
             <p>
-              {t("Intenção")}: <span className="font-medium">{result.intent_name ?? t("nenhuma casou")}</span>
-              {result.intent_name && (
+              {t("Intenção")}: <span className="font-medium">{vale?.intent_name ?? t("nenhuma casou")}</span>
+              {confianca !== null && (
                 <span className="ml-2 text-xs text-muted-foreground">
-                  {t("confiança")} {(result.confidence * 100).toFixed(0)}%
+                  {t("confiança")} {(confianca * 100).toFixed(0)}%
                 </span>
               )}
             </p>
-            {belowThreshold && (
+            {abaixoDoMinimo && confianca !== null && (
               <p className="text-xs text-amber-600">
-                {t("Confiança")} {(result.confidence * 100).toFixed(0)}% — {t("abaixo do mínimo de")}{" "}
+                {t("Confiança")} {(confianca * 100).toFixed(0)}% — {t("abaixo do mínimo de")}{" "}
                 {(result.min_confidence * 100).toFixed(0)}%, {t("cairia no atendimento padrão em produção.")}
               </p>
             )}
             <p>
               {t("Agente que atenderia")}:{" "}
-              <span className="font-medium">{result.agent_name ?? t("nenhum (sem fallback)")}</span>
+              <span className="font-medium" data-testid="teste-agente-que-atenderia">
+                {vale?.agent_name ?? t("nenhum (sem fallback)")}
+              </span>
             </p>
           </div>
         )}
+        {result?.jev && <EscolhasLadoALado result={result} jev={result.jev} />}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * A escolha da IA de sempre e a do Jev, lado a lado, na mesma frase — é aqui que
+ * quem configura vê se os dois levariam o cliente ao MESMO agente antes de
+ * deixar o Jev decidir. Nada disto é gravado como comparação (só o atendimento
+ * de verdade conta no cartão do Jev).
+ */
+function EscolhasLadoALado({
+  result,
+  jev,
+}: {
+  result: RouterTestResult;
+  jev: NonNullable<RouterTestResult["jev"]>;
+}) {
+  const t = useT();
+  const porcento = (n: number) => `${(n * 100).toFixed(0)}%`;
+  const jevAbaixoDoMinimo = jev.intent_name !== null && jev.confidence !== null && jev.confidence < result.min_confidence;
+  // A mesma marca dos dois lados: decidindo, o bloco de cima lê só o Jev, e a
+  // escolha da IA abaixo do mínimo (que leva ao de reserva) ficava sem motivo.
+  const iaAbaixoDoMinimo =
+    result.intent_name !== null && result.confidence !== null && result.confidence < result.min_confidence;
+  return (
+    <div className="grid gap-2 sm:grid-cols-2" data-testid="teste-com-o-jev">
+      <div className="rounded-md border border-border/60 p-3 text-sm" data-testid="teste-escolha-da-ia">
+        <p className="text-xs text-muted-foreground">{t("Sua IA escolheu")}</p>
+        <p className="font-medium">
+          {result.confidence === null ? t("não respondeu") : (result.agent_name ?? t("nenhum (sem fallback)"))}
+        </p>
+        {result.confidence !== null && (
+          <p className="text-xs text-muted-foreground">
+            {result.intent_name ?? t("nenhuma intenção")} · {porcento(result.confidence)}
+            {iaAbaixoDoMinimo && ` — ${t("abaixo do mínimo")}`}
+          </p>
+        )}
+      </div>
+      <div className="rounded-md border border-border/60 p-3 text-sm" data-testid="teste-escolha-do-jev">
+        <p className="text-xs text-muted-foreground">{t("O Jev escolheu")}</p>
+        <p className="font-medium">
+          {jev.respondeu ? (jev.agent_name ?? t("nenhum (sem fallback)")) : t("não respondeu")}
+        </p>
+        {/* Sem motivo, "não respondeu" não levava a lugar nenhum: o porquê (a
+            chave, o crédito, o roteador sem intenções) está no cartão dele. */}
+        {!jev.respondeu && (
+          <Link className="text-xs underline underline-offset-4" href="/app/ai/providers">
+            {t("Ver o motivo no cartão do Jev")}
+          </Link>
+        )}
+        {jev.respondeu && jev.confidence !== null && (
+          <p className="text-xs text-muted-foreground">
+            {jev.intent_name ?? t("nenhuma intenção")} · {porcento(jev.confidence)}
+            {jevAbaixoDoMinimo && ` — ${t("abaixo do mínimo")}`}
+          </p>
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground sm:col-span-2" data-testid="teste-quem-decide">
+        {jev.decide
+          ? t("O Jev decide esta tarefa: em produção, vale a escolha dele, e a sua IA fica de reserva.")
+          : jev.estado === "observando"
+            ? // Sem a resposta da IA não há "escolha da sua IA": vale a regra de sempre.
+              result.confidence === null
+              ? t(
+                  "O Jev só observa esta tarefa. Sem a resposta da sua IA, em produção vale a regra de sempre: o agente que já atendia a conversa ou o “Agente de fallback” do roteador.",
+                )
+              : t("O Jev só observa esta tarefa: em produção, vale a escolha da sua IA.")
+            : // Sem a resposta da IA, vale a regra de sempre, tenha o Jev respondido ou não (R2).
+              result.confidence === null
+              ? t("O Jev decide esta tarefa, mas sem a resposta da sua IA vale a regra de sempre — nunca só o Jev.")
+              : t("O Jev decide esta tarefa, mas não respondeu: em produção, a sua IA decidiria no lugar dele.")}
+      </p>
+    </div>
   );
 }

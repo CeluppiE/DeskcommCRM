@@ -16,9 +16,8 @@ import { z } from "zod";
 
 import { ok, fail } from "@/lib/api/wrappers";
 import { requireRole } from "@/lib/auth/require-role";
-import { type Provider } from "@/lib/ai/provider-validators";
 import { guardarCredencial } from "@/lib/ai/credenciais/guardar";
-import { IDS_DE_PROVEDOR } from "@/lib/ai/pontos/provedores";
+import { IDS_COM_CHAVE } from "@/lib/ai/pontos/provedores";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 import { traduzir } from "@/lib/i18n/dicionario";
@@ -26,16 +25,25 @@ import { traduzir } from "@/lib/i18n/dicionario";
 export const dynamic = "force-dynamic";
 
 const SAFE_COLUMNS =
-  "id, organization_id, provider, label, api_key_last4, validated_at, validation_error, models_available, is_active, created_by, created_at, updated_at";
+  "id, organization_id, provider, label, api_key_last4, base_url, validated_at, validation_error, models_available, is_active, created_by, created_at, updated_at";
 
 const createSchema = z.object({
   // Derivado de `lib/ai/pontos/provedores.ts`, a lista única desde a migration
   // 0127. Enquanto era uma cópia à mão, o banco aceitava OpenRouter e ESTA rota
   // recusava com 422 — o operador via a tela de Provedores oferecer OpenRouter
-  // e não tinha onde cadastrar a chave.
-  provider: z.enum(IDS_DE_PROVEDOR),
+  // e não tinha onde cadastrar a chave. A UNIÃO, e não só quem conversa: a
+  // chave do Jev (que só decide) se cadastra por aqui também.
+  provider: z.enum(IDS_COM_CHAVE),
   label: z.string().trim().min(1).max(80),
   api_key: z.string().trim().min(8).max(2048),
+  /**
+   * Só o provedor personalizado (#1642): o endereço da API compatível com a
+   * OpenAI que vai RECEBER a chave. A obrigatoriedade (e a recusa para os
+   * nativos) é checada depois do parse, porque aí a resposta é a frase que
+   * diz o que falta — `z.string().min(1)` devolveria "Campos inválidos.",
+   * que manda a pessoa adivinhar qual campo.
+   */
+  base_url: z.string().trim().max(500).optional(),
 });
 
 export async function GET(): Promise<Response> {
@@ -82,7 +90,39 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
   }
   const input = parsed.data;
-  const provider = input.provider as Provider;
+  const provider = input.provider;
+
+  // Barra final removida antes de gravar, como `lib/webhooks/url-publica.ts`
+  // decidiu para o mesmo formato: `base + "/" + caminho` viraria `.../v1//models`.
+  const baseUrl = (input.base_url ?? "").trim().replace(/\/+$/, "");
+  if (provider === "custom" && baseUrl === "") {
+    return fail(
+      "validation_failed",
+      t("Informe o endereço (base URL) do provedor personalizado."),
+      422,
+      { requestId },
+    );
+  }
+  if (baseUrl !== "" && !/^https?:\/\//i.test(baseUrl)) {
+    return fail(
+      "validation_failed",
+      t("O endereço (base URL) precisa começar com http:// ou https://."),
+      422,
+      { requestId },
+    );
+  }
+  // Os quatro nativos continuam 100% iguais: o endpoint deles é intrínseco, e
+  // gravar endereço ao lado de uma chave da OpenAI seria configuração que o
+  // runtime lê e ninguém preencheu pela tela. Quem quer endpoint próprio num
+  // nativo aponta o BINDING no painel de provedores — caminho que já existe.
+  if (provider !== "custom" && baseUrl !== "") {
+    return fail(
+      "validation_failed",
+      t("Só o provedor personalizado aceita um endereço (base URL) próprio."),
+      422,
+      { requestId },
+    );
+  }
 
   // O miolo — cifrar, gravar, auditar e validar em segundo plano — mora em
   // `lib/ai/credenciais/guardar.ts` porque o wizard precisa exatamente do mesmo
@@ -95,6 +135,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     provider,
     label: input.label,
     apiKey: input.api_key,
+    baseUrl: baseUrl === "" ? undefined : baseUrl,
     requestId,
   });
 
@@ -102,7 +143,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (guardado.motivo === "label_em_uso") {
       return fail(
         "label_already_used",
-        t("Já existe uma credential com este label e provider."),
+        t("Já existe uma chave deste provedor com este nome. Dê outro nome a ela."),
         409,
         { requestId },
       );

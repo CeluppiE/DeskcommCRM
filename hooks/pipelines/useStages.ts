@@ -37,6 +37,13 @@ export interface PatchDeEtapa {
   is_won?: boolean;
   is_lost?: boolean;
   depois_de?: string | null;
+  /**
+   * Probabilidade de ganho da etapa, 0–100. `null` limpa a calibração — e a
+   * previsão volta a reportar a etapa no balde "sem probabilidade".
+   */
+  win_probability?: number | null;
+  /** Negócio que entra nesta etapa abre um aviso na Central (migration 0440). */
+  avisar_na_central?: boolean;
 }
 
 function useReler(pipelineId: string) {

@@ -37,6 +37,7 @@ const AGENT: PublishedAgentConfig = {
   historyTokenWindow: 1000,
   handoffKeywords: [],
   handoffToolEnabled: false,
+  proposalAiDraftEnabled: true,
   splitMessages: false,
   splitMaxChars: 400,
   multimodalInput: false,

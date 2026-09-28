@@ -63,6 +63,8 @@ interface Estado {
   caso: Record<string, unknown> | null;
   canal: Record<string, unknown> | null;
   anonimizado: boolean;
+  /** O número de destino virou o de uma conexão ATIVA desta organização? */
+  destinoEhDaPropriaOrg: boolean;
   entregaExistente: Record<string, unknown> | null;
   patches: Array<Record<string, unknown>>;
   central: Array<Record<string, unknown>>;
@@ -96,6 +98,7 @@ function monta(over: Partial<Estado> = {}, deps: Partial<AvisoDeps> = {}) {
     },
     canal: { id: CANAL, status: "WORKING", archived_at: null, aceitaMensagemLivre: true },
     anonimizado: false,
+    destinoEhDaPropriaOrg: false,
     entregaExistente: null,
     patches: [],
     central: [],
@@ -148,6 +151,9 @@ function monta(over: Partial<Estado> = {}, deps: Partial<AvisoDeps> = {}) {
       },
       async carregaCanal() {
         return e.canal as never;
+      },
+      async destinoEhDaPropriaOrganizacao() {
+        return e.destinoEhDaPropriaOrg;
       },
       async avisaNaCentral(entrada) {
         e.central.push(entrada as unknown as Record<string, unknown>);
@@ -227,6 +233,7 @@ describe("aviso ao suporte — nenhum desfecho é `error`", () => {
       { canal: { id: CANAL, status: "WORKING", archived_at: null, aceitaMensagemLivre: false } },
       { canal: { id: CANAL, status: "STOPPED", archived_at: null, aceitaMensagemLivre: true } },
       { anonimizado: true },
+      { destinoEhDaPropriaOrg: true },
     ];
     for (const mundo of mundos) {
       const { deps } = monta(mundo);
@@ -237,6 +244,39 @@ describe("aviso ao suporte — nenhum desfecho é `error`", () => {
 });
 
 describe("aviso ao suporte — o que impede o envio", () => {
+  it("o destino voltou a ser um número da organização → NÃO envia, e fica registrado", async () => {
+    // A guarda de "número da própria organização" roda ao DEFINIR o aviso. Uma
+    // conexão arquivada deixa de contar, então o número dela pode virar destino
+    // — e se a conexão for REATIVADA depois, nenhuma checagem volta a rodar. O
+    // aviso sairia para um número atendido por um agente DESTA organização: o
+    // laço robô-com-robô que a guarda existe para evitar.
+    //
+    // Este caso mede o desfecho: a mensagem NÃO sai e a recusa fica gravada na
+    // entrega, visível na tela e na Central — não é um silêncio.
+    const { deps, estado } = monta({ destinoEhDaPropriaOrg: true });
+    const r = await aplicaAvisoDeCaso(deps, evento());
+
+    expect(r.status).toBe("skipped");
+    expect(r.detail).toContain("destino_da_propria_organizacao");
+    expect(estado.enviados, "o aviso saiu para um número da própria organização").toHaveLength(0);
+    // O registro é o que faz a recusa ser diagnosticável depois.
+    expect(estado.patches.at(-1)).toMatchObject({
+      status: "falhou",
+      erro_codigo: "destino_da_propria_organizacao",
+    });
+    // E a Central abre item: sem isso, o caso fica esperando sem ninguém saber.
+    expect(estado.central).toHaveLength(1);
+  });
+
+  it("o destino de FORA continua enviando — o controle positivo da guarda nova", async () => {
+    // Sem esta ponta, uma guarda que recusasse TODO destino passaria no caso
+    // acima e ninguém saberia.
+    const { deps, estado } = monta();
+    const r = await aplicaAvisoDeCaso(deps, evento());
+    expect(r.status).toBe("ok");
+    expect(estado.enviados).toHaveLength(1);
+  });
+
   it("caso fechado entre o evento e o dreno → não envia", async () => {
     const { deps, estado } = monta({
       caso: { id: CASO, organization_id: ORG, source: "agent", status: "resolved", conversation_id: CONVERSA },

@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "vitest";
 
 import { scrubMessage, scrubUrl, sentryScrubHooks } from "./scrub";
 
 // Issue #100. O que estes testes travam: com `tracesSampleRate: 1` e sem
-// `beforeSendTransaction`/`beforeSendSpan`/`beforeBreadcrumb`, a URL crua saía do
+// hooks de transação/span/breadcrumb, a URL crua saía do
 // servidor do self-hoster em 6 campos (transaction, request.url, url.full,
 // http.url, url.path, http.target). As rotas de webhook por tenant têm CREDENCIAL
 // no path, e na instalação padrão esse token é a credencial inteira da rota,
@@ -66,6 +68,110 @@ describe("scrubMessage", () => {
     expect(out).not.toContain("123.456.789-01");
     expect(out).not.toContain("joao@exemplo.com");
   });
+
+  // O mesmo texto vai ao Sentry e ao Jev, e a tela do Jev promete ao admin que
+  // o telefone sai apagado. O padrão antigo exigia o DDD colado ao número, sem
+  // parênteses: `(11) 98765-4321` e `98765-4321` — os jeitos mais comuns de
+  // escrever — saíam inteiros. O critério é o número sumir, não o rótulo: 11
+  // dígitos seguidos o padrão de CPF pega antes, e isso também serve.
+  it("apaga telefone nos jeitos em que se escreve no Brasil", () => {
+    for (const tel of [
+      "(11) 98765-4321",
+      "(11)98765-4321",
+      "(11) 3456-7890",
+      "11 98765-4321",
+      "11 98765 4321",
+      "11987654321",
+      "5511987654321",
+      "+55 11 98765-4321",
+      "+55 (11) 98765-4321",
+      "98765-4321",
+      "98765 4321",
+      "3456-7890",
+      "11-98765-4321",
+      "11.98765.4321",
+      "(11)-98765-4321",
+      "98765.4321",
+      "(11) 9 8765-4321",
+      "+55 (11) 9 8765-4321",
+    ]) {
+      const out = scrubMessage(`meu zap ${tel}, obrigado`);
+      expect(out, tel).not.toMatch(/\d{3}/);
+      expect(out, tel).toMatch(/^meu zap .*\[(PHONE|CPF)\], obrigado$/);
+    }
+  });
+
+  // A tela do Jev promete apagar o CPF. Quem digita rápido não segue a máscara.
+  it("apaga CPF com qualquer separador entre os blocos", () => {
+    for (const cpf of [
+      "123.456.789-09",
+      "123 456 789 09",
+      "123.456.789.09",
+      "123-456-789-09",
+      "123.456.789 09",
+      "12345678909",
+    ]) {
+      const out = scrubMessage(`meu cpf ${cpf}, obrigado`);
+      expect(out, cpf).not.toMatch(/\d{3}/);
+      expect(out, cpf).toMatch(/^meu cpf \[(PHONE|CPF)\], obrigado$/);
+    }
+  });
+
+  it("dois telefones na mesma frase saem os dois", () => {
+    expect(scrubMessage("98765-4321 ou (21) 3456-7890")).toBe("[PHONE] ou [PHONE]");
+  });
+
+  it("o número colado em texto também sai", () => {
+    // 11 dígitos seguidos o CPF pega antes; o critério é o número sumir.
+    expect(scrubMessage("zap11987654321 ok")).toMatch(/^zap\[(PHONE|CPF)\] ok$/);
+  });
+
+  // Regressão: uma borda de letra/hífen nos padrões (posta para poupar UUID)
+  // deixava sair inteiro o número grudado justamente nos rótulos que alguém
+  // digita colado — e hexadecimal (`cpf`, `fone`, `doc`) e hífen estão entre eles.
+  it("apaga CPF e telefone grudados no rótulo, inclusive por hífen", () => {
+    for (const [texto, rotulo] of [
+      ["cpf12345678909", "cpf"],
+      ["CPF123.456.789-09", "CPF"],
+      ["doc12345678909", "doc"],
+      ["fone11987654321", "fone"],
+      ["telefone11987654321", "telefone"],
+      ["tel-11987654321", "tel-"],
+      ["lead-123.456.789-09", "lead-"],
+    ] as const) {
+      const out = scrubMessage(texto);
+      expect(out, texto).not.toMatch(/\d{3}/);
+      expect(out, texto).toMatch(new RegExp(`^${rotulo}\\[(PHONE|CPF)\\]$`));
+    }
+    expect(scrubMessage("12345678909-joao")).toMatch(/^\[(PHONE|CPF)\]-joao$/);
+  });
+
+  it("apaga o CPF e poupa o UUID na mesma frase", () => {
+    const uuid = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+    const out = scrubMessage(`cpf12345678909 no agente ${uuid}`);
+    expect(out).toMatch(/^cpf\[(PHONE|CPF)\] no agente /);
+    expect(out).toContain(uuid);
+  });
+
+  // Um UUID fixo passa por sorte: sem a proteção do UUID, 141 destes 5.000
+  // saíam alterados, sempre num trecho só de dígitos. Por isso milhares,
+  // gerados de forma determinística (sha256 do índice) — a mesma amostra em
+  // toda execução, e uma falha reproduzível pelo índice.
+  it("não come pedaço de UUID — em milhares deles", () => {
+    const alterados: string[] = [];
+    for (let i = 0; i < 5000; i++) {
+      const h = createHash("sha256").update(`uuid-${i}`).digest("hex");
+      const variante = "89ab"[parseInt(h[16]!, 16) % 4];
+      const uuid = `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-${variante}${h.slice(17, 20)}-${h.slice(20, 32)}`;
+      const texto = `agente ${uuid} falhou`;
+      if (scrubMessage(texto) !== texto) alterados.push(`${i}: ${uuid} -> ${scrubMessage(texto)}`);
+    }
+    expect(alterados.slice(0, 5)).toEqual([]);
+  });
+
+  it("não come pedaço de hora nem de data", () => {
+    expect(scrubMessage("em 2026-09-23T18:46:39Z")).toBe("em 2026-09-23T18:46:39Z");
+  });
 });
 
 describe("sentryScrubHooks", () => {
@@ -92,8 +198,10 @@ describe("sentryScrubHooks", () => {
     expect(JSON.stringify(event)).not.toContain(TOKEN);
   });
 
-  it("beforeSendTransaction limpa os atributos de trace — o canal que não tinha guarda", () => {
-    const event = sentryScrubHooks.beforeSendTransaction({
+  // No Sentry 11 não há mais evento de transação (o hook é no-op), mas o evento
+  // de ERRO ainda carrega `transaction` e `contexts.trace.data`.
+  it("beforeSend limpa o nome da transação e os atributos de trace do evento de erro", () => {
+    const event = sentryScrubHooks.beforeSend({
       transaction: `GET /api/v1/webhooks/in/${TOKEN}`,
       request: { url: urlComToken },
       contexts: {
@@ -113,13 +221,30 @@ describe("sentryScrubHooks", () => {
     expect(JSON.stringify(event)).not.toContain("deadbeef");
   });
 
-  it("beforeSendSpan limpa description e data", () => {
+  it("beforeSendSpan limpa name e attributes — o formato do span no Sentry 11", () => {
     const span = sentryScrubHooks.beforeSendSpan({
-      description: `GET ${urlComToken}`,
-      data: { "url.full": urlComToken },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
+      name: `GET ${urlComToken}`,
+      is_segment: true,
+      attributes: {
+        "url.full": urlComToken,
+        "http.request.header.x-canal-novo-api-key": ["chave-de-integracao-futura"],
+        "http.request.header.user-agent": ["Mozilla/5.0"],
+      },
+    });
     expect(JSON.stringify(span)).not.toContain(TOKEN);
+    expect(JSON.stringify(span)).not.toContain("chave-de-integracao-futura");
+    // Header que não é credencial fica: serve para depurar.
+    expect(span.attributes).toHaveProperty("http.request.header.user-agent");
+  });
+
+  it("beforeSend apaga corpo, cookies e usuário do evento", () => {
+    const event = sentryScrubHooks.beforeSend({
+      request: { url: "https://crm.exemplo.com/x", data: { cpf: "123" }, cookies: { a: "b" } },
+      user: { ip_address: "203.0.113.9" },
+    });
+    expect(event.request).not.toHaveProperty("data");
+    expect(event.request).not.toHaveProperty("cookies");
+    expect(event).not.toHaveProperty("user");
   });
 
   it("beforeBreadcrumb limpa a URL — o README prometia isso sem mecanismo", () => {

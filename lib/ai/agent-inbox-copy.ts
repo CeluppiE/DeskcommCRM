@@ -5,6 +5,8 @@
  */
 
 import type { InboxKind } from "@/lib/agent-engine/db/repository";
+import { traduzir } from "@/lib/i18n/dicionario";
+import type { Idioma } from "@/lib/i18n/idiomas";
 
 export type AgentInboxSeverity = "info" | "warn" | "critical";
 
@@ -78,6 +80,9 @@ export const KIND_LABEL = {
   // conseguiu. O motivo cru do upstream (`user_ended`, `do_not_disturb`) nunca
   // chega à tela — vira frase de gente no corpo do aviso, escrito pelo worker.
   voice_call_missed: "Alguém ligou e ninguém atendeu",
+  proposal_expired_notice: "Uma proposta venceu sem decisão",
+  proposal_acceptance_rate_drop: "A taxa de aceite de propostas caiu",
+  proposal_promised_not_created: "Uma proposta prometida não foi criada",
   // Diz o que NÃO aconteceu do ponto de vista de quem opera — "não chegou ao
   // WhatsApp da equipe" —, e nunca "a entrega falhou": quem lê precisa entender
   // que o caso continua aberto e que ninguém foi avisado por fora do CRM. O
@@ -89,6 +94,8 @@ export const KIND_LABEL = {
   // devia estar recebendo mensagem e não recebe, e é isso que faz alguém abrir
   // o aviso. O passo que conserta fica no corpo.
   followup_sem_agente: "Um follow-up está publicado e não está disparando",
+  proposta_travada: "Uma proposta ficou presa em envio e voltou a rascunho",
+  proposta_pronta_para_revisao: "Uma proposta está pronta para revisão",
   other: "Aviso do assistente",
 } as const satisfies Record<InboxKind, string>;
 
@@ -134,11 +141,17 @@ export type PromessaSemDono =
 export function copyDaPromessaSemDono(
   quantas: number,
   porque: PromessaSemDono,
+  /**
+   * O idioma da ORGANIZAÇÃO. O aviso é LINHA gravada — a Central mostra como
+   * veio, sem passar por `t()` —, então é na escrita que ele ganha o idioma de
+   * quem vai ler, como o aviso de passagem para pessoa já fazia.
+   */
+  idioma: Idioma = "pt-BR",
 ): { title: string; body: string } {
   const title =
     quantas === 1
-      ? "O assistente prometeu algo ao cliente e ninguém ficou responsável"
-      : `${quantas} promessas ao cliente sem ninguém responsável`;
+      ? traduzir("O assistente prometeu algo ao cliente e ninguém ficou responsável", idioma)
+      : `${quantas} ${traduzir("promessas ao cliente sem ninguém responsável", idioma)}`;
 
   const CORPO: Record<PromessaSemDono, string> = {
     operador_sem_ferramentas:
@@ -156,5 +169,5 @@ export function copyDaPromessaSemDono(
       "combinado e decida quem faz.",
   };
 
-  return { title, body: CORPO[porque] };
+  return { title, body: traduzir(CORPO[porque], idioma) };
 }

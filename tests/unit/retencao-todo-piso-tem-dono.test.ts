@@ -58,6 +58,17 @@ const DONO_NO_SQL: Record<string, string> = {
   // BAIXO da lista (30), e isso é decisão escrita em `politica.ts`: o que ele
   // protege é o incidente em apuração, não rastro legal.
   AVISO_DE_CASO: "fn_expurgar_avisos_de_caso_vencidos",
+  // migration 0408 — o candidato da prospecção nativa vencido (issue #1313).
+  // Entra aqui no MESMO commit da migration, que é a lição desta lista. Foi o
+  // par que NASCEU como isenção com razão MENTIDA ("poda pelo admin client",
+  // que não existia) — a isenção sem dono deixa o teste verde sem medir nada,
+  // e este par é a prova: a razão escrita não correspondia ao código, e ninguém
+  // percebeu até a revisão medir o repo.
+  PROSPECCAO: "fn_expurgar_prospeccao_vencida",
+  // migration 0421 — as observações do Jev. Entra no MESMO commit da migration.
+  OBSERVACOES_DO_JEV: "fn_expurgar_observacoes_do_jev",
+  // migration 0428 — os candidatos ao golden set (issue #1695).
+  CANDIDATOS_GOLDEN: "fn_expurgar_candidatos_do_golden",
 };
 
 /**
@@ -66,6 +77,12 @@ const DONO_NO_SQL: Record<string, string> = {
  */
 const SEM_FUNCAO_NO_SQL: Record<string, string> = {
   CAPTACAO: "admin client",
+  // migration 0419 — o rascunho sugerido por integração (issue #1686). A décima
+  // poda do cron `data-retention` é um DELETE do admin client: a tabela nunca
+  // teve função de expurgo, então não há corpo onde enfiar o `greatest` do piso.
+  // A razão está escrita em `politica.ts`, ao lado da declaração — a captação é
+  // a mesma exceção, com a mesma frase.
+  RASCUNHO: "admin client",
 };
 
 function paresDeclarados(): string[] {
@@ -81,7 +98,10 @@ function valor(prefixo: string, qual: "PADRAO" | "PISO"): number {
 }
 
 function corpoDaFuncao(nome: string): string {
-  const i = BASELINE.indexOf(`create or replace function public.${nome}(`);
+  // `lastIndexOf`: o baseline é dump + apêndice e vale a ÚLTIMA definição
+  // (CLAUDE.md, item 10). Com `indexOf` a sonda mediria o corpo do dump — morto
+  // desde o apêndice — e diria do produto o oposto do que o banco instala.
+  const i = BASELINE.lastIndexOf(`create or replace function public.${nome}(`);
   if (i < 0) throw new Error(`INSTRUMENTO: função ${nome} não existe no baseline`);
   const fim = BASELINE.indexOf("$$;", i);
   return BASELINE.slice(i, fim > i ? fim : i + 4000);

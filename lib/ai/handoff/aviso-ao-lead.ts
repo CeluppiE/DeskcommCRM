@@ -51,12 +51,16 @@ import { carregarRosterDeAtendimento, podeAssumirAgora } from "@/lib/escalacao/a
 import type {
   DesfechoDoAvisoAoCliente,
   MotivoDoAviso as MotivoDoAvisoDaPassagem,
+  OrigemDaPassagem,
 } from "@/lib/escalacao/passagem";
 import type { QuemPodeAssumir } from "@/lib/escalacao/disponibilidade";
 import { logger } from "@/lib/logger";
 
 /** Ator do envio — é o automático falando, não uma pessoa. */
 const ATOR_DO_AVISO = "handoff-orchestrator";
+
+/** Um aviso por conversa dentro desta janela (ver as guardas em `avisarLeadDoCrm`). */
+const JANELA_DO_AVISO_MS = 24 * 60 * 60 * 1000;
 
 export interface AvisoDoCrmInput {
   serviceBoundary?: ServiceBoundary;
@@ -66,7 +70,15 @@ export interface AvisoDoCrmInput {
   contactId: string;
   /** `conversations.last_handoff_reason` que está sendo gravado agora. */
   reason: string;
+  /**
+   * Por onde a passagem entrou. Só `mcp_externo` muda algo aqui: ver a exceção
+   * da guarda 1 em `avisarLeadDoCrm`.
+   */
+  origem?: OrigemDaPassagem;
 }
+
+/** Status de `messages` que significam "chegou ao cliente". */
+const STATUS_ENTREGUE = new Set(["sent", "delivered", "read"]);
 
 /**
  * O desfecho do aviso. É o MESMO tipo do outro emissor, por definição — ver
@@ -106,10 +118,108 @@ export async function avisarLeadDoCrm(
   input: AvisoDoCrmInput,
 ): Promise<DesfechoDoAvisoDoCrm> {
   try {
+    // ═══ DUAS GUARDAS ANTES DE QUALQUER TEXTO ═══
+    //
+    // 1. A IA precisa ter FALADO nesta conversa. O aviso existe para o cliente
+    //    não ficar falando com o vazio quando a IA se retira — mas numa
+    //    instalação sem agente publicado (ou numa conversa que sempre foi
+    //    humana), não há retirada a anunciar. Medido numa instalação real: o
+    //    worker de sentimento roda para TODA mensagem, com ou sem agente,
+    //    disparou `low_sentiment` numa organização sem agente ativo, e dois
+    //    clientes receberam "Já acionei o time" sem nunca terem falado com IA.
+    //    O próprio aviso NÃO conta como fala (`aviso_de_escalacao`): sem essa
+    //    distinção, o primeiro aviso indevido legitimaria o segundo.
+    //
+    // 2. UM aviso por conversa por janela de 24 h, contado no BANCO. No mesmo
+    //    incidente um cliente recebeu o aviso QUATRO vezes em cinco minutos: o
+    //    envio travou (canal fora do ar), o disparo foi refeito, e cada nova
+    //    tentativa virou mensagem nova — o `requestId` não segura, porque cada
+    //    disparo é uma chamada nova. A janela deixa passar o retrigger honesto
+    //    (uma passagem nova amanhã avisa) e mata a repetição.
+    //
+    // As guardas moram deste lado (o CRM) porque é o único alcançável sem um
+    // turno de agente: o aviso do motor só roda de dentro de um turno ativo, em
+    // que a IA já falou por construção.
+    //
+    // Leitura que falha não avisa (fail-closed, como o gate de elegibilidade do
+    // orquestrador): mandar a frase para quem nunca falou com IA é o defeito que
+    // estas guardas existem para impedir.
+    //
+    // EXCEÇÃO da guarda 1 — `origem: "mcp_externo"`. Um agente externo
+    // conectado por MCP com chave emitida pela tela (sem o escopo
+    // `actor:ai_agent`, decisão de 19/09) tem as falas gravadas como
+    // `sent_via='system'` (`origemDaMensagem` em `_handler.ts`), então a guarda
+    // não as enxerga. Mas foi ele quem declarou a passagem — houve atendimento
+    // automático — e o contrato de `crm_request_human_handoff` manda o agente
+    // NÃO avisar, porque o aviso é deste lado. Sem a exceção, o cliente ficaria
+    // sem aviso nenhum.
+    const { data: falas, error: erroDasFalas } = await admin
+      .from("messages")
+      .select("metadata, created_at, status")
+      .eq("organization_id", input.organizationId)
+      .eq("conversation_id", input.conversationId)
+      .eq("direction", "outbound")
+      .eq("sent_via", "ai")
+      .order("created_at", { ascending: false })
+      .limit(20);
+    if (erroDasFalas) {
+      logger.warn("[handoff-orchestrator] falas da IA não lidas — aviso não enviado", {
+        conversation_id: input.conversationId,
+        error: erroDasFalas.message.slice(0, 200),
+      });
+      return { avisado: false, porque: "falas_da_ia_nao_lidas" };
+    }
+    const linhas = (falas ?? []) as {
+      metadata: Record<string, unknown> | null;
+      created_at: string;
+      status: string | null;
+    }[];
+    const iaJaFalou = linhas.some((m) => m.metadata?.aviso_de_escalacao !== true);
+    if (!iaJaFalou && input.origem !== "mcp_externo") {
+      return { avisado: false, porque: "ia_nunca_falou_nesta_conversa" };
+    }
+    // Aviso `failed` não conta: ele nunca chegou (a linha nasce com o metadata
+    // ANTES do envio e vira `failed` em pre_go_live, canal arquivado, sem
+    // telefone ou recusa do transporte). Contá-lo seguraria por 24 h o aviso que
+    // o cliente ainda não recebeu. `queued`/`sending` contam: o
+    // `session-reconciler` reenvia o que está preso, e era isso que repetia.
+    const corte = Date.now() - JANELA_DO_AVISO_MS;
+    const avisosRecentes = linhas.filter(
+      (m) =>
+        m.metadata?.aviso_de_escalacao === true &&
+        m.status !== "failed" &&
+        new Date(m.created_at).getTime() > corte,
+    );
+    // O desfecho de quem é barrado diz a verdade sobre o aviso que JÁ existe —
+    // senão a Central escreve "o cliente NÃO foi avisado (motivo desconhecido)"
+    // para quem foi avisado há minutos.
+    if (avisosRecentes.some((m) => STATUS_ENTREGUE.has(m.status ?? ""))) return { avisado: true };
+    if (avisosRecentes.length > 0) {
+      return {
+        avisado: false,
+        porque: "aviso_ja_enviado_na_janela",
+        motivoCodigo: "na_fila_canal_fora",
+      };
+    }
+
+    // O aviso sai no idioma da ORGANIZAÇÃO (ver `textoDoAviso`). A leitura que
+    // falha não pode derrubar o aviso: sem idioma, sai em português, como antes.
+    let idioma: string | null = null;
+    try {
+      const { data: org } = await admin
+        .from("organizations")
+        .select("locale")
+        .eq("id", input.organizationId)
+        .maybeSingle();
+      idioma = (org as { locale?: string | null } | null)?.locale ?? null;
+    } catch {
+      idioma = null;
+    }
     const body = textoDoAviso(
       motivoDoAviso(input.reason),
       await quemPodeAssumir(admin, input.organizationId),
       input.contactId,
+      idioma,
     );
     const mensagem = await sendMessageHandler(
       admin,

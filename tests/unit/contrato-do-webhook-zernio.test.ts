@@ -30,7 +30,19 @@ const SECRET = "segredo-longo-o-suficiente";
 const arquivoFechado: { status: string; erro?: string | null; validSignature: boolean | null }[] = [];
 const ingeridos: unknown[] = [];
 
-vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: () => ({}) }));
+// O cliente dublado responde à busca da guarda de conta
+// (`inboundPayloadBelongsToSession`): desde 23/09 o WhatsApp do provedor recusa
+// evento de OUTRA conta do mesmo espaço, e para isso a guarda pergunta ao banco
+// qual é a conta desta sessão. O `{}` de antes fazia a busca lançar
+// `admin.from is not a function`, e o caso reprovava pelo motivo errado. A conta
+// devolvida é a MESMA do payload deste arquivo — o que se mede aqui é o
+// contrato do webhook, não a guarda (que tem o seu próprio arquivo).
+vi.mock("@/lib/supabase/admin", () => {
+  const cadeia: Record<string, unknown> = {};
+  for (const m of ["select", "eq"]) cadeia[m] = () => cadeia;
+  cadeia.maybeSingle = async () => ({ data: { zernio_account_id: "6a3572a15f7d1751ab117832" }, error: null });
+  return { createAdminClient: () => ({ from: () => cadeia }) };
+});
 
 vi.mock("@/lib/channels/archived", () => ({
   ARCHIVED_AT: "archived_at",

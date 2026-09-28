@@ -19,7 +19,7 @@ import { traduzir } from "@/lib/i18n/dicionario";
 export const dynamic = "force-dynamic";
 
 const VERSION_COLUMNS =
-  "id, organization_id, agent_id, version_number, system_prompt, provider, model, credential_id, tool_ids, trigger_config, channel_session_id, max_steps, token_budget, cost_budget_cents, history_message_window, history_token_window, handoff_keywords, handoff_tool_enabled, cases_enabled, split_messages, split_max_chars, followup, operator_enabled, operator_model, operator_tool_ids, status, published_at, superseded_at, created_at, created_by,pipeline_ids,knowledge_source_ids,provisioning_origin";
+  "id, organization_id, agent_id, version_number, system_prompt, provider, model, credential_id, tool_ids, trigger_config, channel_session_id, max_steps, token_budget, cost_budget_cents, history_message_window, history_token_window, handoff_keywords, handoff_tool_enabled, proposal_ai_draft_enabled, cases_enabled, split_messages, split_max_chars, followup, operator_enabled, operator_model, operator_tool_ids, status, published_at, superseded_at, created_at, created_by,pipeline_ids,knowledge_source_ids,provisioning_origin";
 
 const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -87,7 +87,7 @@ export async function PATCH(req: NextRequest, ctx: Ctx): Promise<Response> {
   const admin = createAdminClient();
   const { data: existing } = await admin
     .from("ai_agent_versions")
-    .select("id, status, agent_id, organization_id")
+    .select("id, status, agent_id, organization_id, followup")
     .eq("id", vid)
     .eq("organization_id", activeOrg.orgId)
     .eq("agent_id", id)
@@ -119,10 +119,20 @@ export async function PATCH(req: NextRequest, ctx: Ctx): Promise<Response> {
   if (patch.handoff_keywords !== undefined) update.handoff_keywords = patch.handoff_keywords;
   if (patch.handoff_tool_enabled !== undefined)
     update.handoff_tool_enabled = patch.handoff_tool_enabled;
+  if (patch.proposal_ai_draft_enabled !== undefined)
+    update.proposal_ai_draft_enabled = patch.proposal_ai_draft_enabled;
   if (patch.cases_enabled !== undefined) update.cases_enabled = patch.cases_enabled;
   if (patch.split_messages !== undefined) update.split_messages = patch.split_messages;
   if (patch.split_max_chars !== undefined) update.split_max_chars = patch.split_max_chars;
-  if (patch.followup !== undefined) update.followup = patch.followup;
+  if (patch.followup !== undefined) {
+    const existingFollowup =
+      existing.followup !== null &&
+      typeof existing.followup === "object" &&
+      !Array.isArray(existing.followup)
+        ? existing.followup
+        : {};
+    update.followup = { ...existingFollowup, ...patch.followup };
+  }
 
   const { data, error } = await admin
     .from("ai_agent_versions")

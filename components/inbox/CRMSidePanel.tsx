@@ -1,5 +1,6 @@
 "use client";
 
+import { RoteirosDoContato } from "@/components/contacts/RoteirosDoContato";
 import { LeadEnrichment } from "./LeadEnrichment";
 import type { ProspectEnrichment } from "@/lib/prospecting/schema";
 import { useAuth } from "@/hooks/auth/AuthProvider";
@@ -27,6 +28,8 @@ import { useDefaultPipeline } from "@/hooks/pipelines/useDefaultPipeline";
 import { NewLeadDialog } from "@/components/kanban/NewLeadDialog";
 import { CustomFieldsEditor, type CustomFieldDef } from "@/components/contacts/CustomFieldsEditor";
 import { useEditLead } from "@/hooks/kanban/useUpdateLead";
+import { useBulkAction } from "@/hooks/kanban/useBulkAction";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { rotuloDoContato } from "@/lib/contacts/rotulo-do-contato";
 import { phoneForDisplay } from "@/lib/channels/phone-variants";
@@ -47,6 +50,9 @@ interface LeadRow {
   field_defs: CustomFieldDef[];
   funil_nome: string | null;
   etapa_nome: string | null;
+  stage_id?: string;
+  /** As etapas ativas do funil, na ordem do quadro (rota crm-summary). */
+  etapas_do_funil?: Array<{ id: string; name: string; is_won: boolean; is_lost: boolean }>;
 }
 
 interface OrderRow {
@@ -391,6 +397,7 @@ function InboxLeadEditor({
           </p>
         </div>
       )}
+      <EtapaDoNegocio key={`etapa-${ativo.id}`} lead={ativo} onMovido={onSalvo} />
       <CamposDoFunil
         key={ativo.id}
         leadId={ativo.id}
@@ -399,6 +406,54 @@ function InboxLeadEditor({
         valores={ativo.custom_fields ?? {}}
         onSalvo={onSalvo}
       />
+    </div>
+  );
+}
+
+/**
+ * Mover o negócio de etapa SEM sair da conversa — ex.: passar a "Pedido
+ * confirmado" quando o cliente confirma pelo WhatsApp. Antes só dava pelo quadro
+ * do funil: quem atendia tinha de sair da conversa, achar o card e arrastá-lo.
+ *
+ * Usa o MESMO caminho do "Mover para…" do quadro (`/api/v1/leads/bulk`, que
+ * posiciona o card no banco e emite atividade, evento e auditoria), então a
+ * etapa que avisa na Central avisa igual. Etapa de PERDA fica de fora: ela pede
+ * o motivo, e esse diálogo mora no quadro.
+ */
+function EtapaDoNegocio({ lead, onMovido }: { lead: LeadRow; onMovido: () => void }) {
+  const t = useT();
+  const mover = useBulkAction(lead.pipeline_id);
+  const etapas = (lead.etapas_do_funil ?? []).filter((e) => !e.is_lost || e.id === lead.stage_id);
+  if (!lead.stage_id || etapas.length === 0) return null;
+
+  async function escolher(stageId: string) {
+    if (stageId === lead.stage_id) return;
+    try {
+      await mover.mutateAsync({ action: "move", lead_ids: [lead.id], params: { stage_id: stageId } });
+      toast.success(t("Etapa atualizada."));
+      onMovido();
+    } catch {
+      // o hook já mostrou o erro
+    }
+  }
+
+  return (
+    <div className="space-y-1" data-testid="inbox-etapa-do-negocio">
+      <label className="block text-xs font-medium text-text" htmlFor={`etapa-${lead.id}`}>
+        {t("Etapa do funil")}
+      </label>
+      <Select value={lead.stage_id} onValueChange={(v) => void escolher(v)} disabled={mover.isPending}>
+        <SelectTrigger id={`etapa-${lead.id}`} className="h-8 w-full text-xs" data-testid="inbox-etapa-select">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {etapas.map((e) => (
+            <SelectItem key={e.id} value={e.id} className="text-xs">
+              {e.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </div>
   );
 }
@@ -756,11 +811,15 @@ export function CRMSidePanel({ conversation }: Props) {
       <section data-testid="inbox-memoria">
         <h3 className="text-xs font-semibold">{t("Memória do contato")}</h3>
         <p className="mt-1 text-xs text-muted-foreground">{t("Fatos duráveis registrados nas notas. Pendências pertencem à demanda vigente.")}</p>
-        {!sectionsLoading && fatos.map((f) => <details key={f.id} className="mt-2 text-xs"><summary>{f.headline}</summary><p className="mt-1 whitespace-pre-wrap">{f.body}</p></details>)}
+        {!sectionsLoading && fatos.map((f) => <details key={f.id} className="mt-2 text-xs"><summary className="wrap-anywhere">{f.headline}</summary><p className="mt-1 whitespace-pre-wrap wrap-anywhere">{f.body}</p></details>)}
         {!sectionsLoading && fatos.length === 0 && <p className="mt-2 text-xs text-muted-foreground">{t("Nenhum fato durável registrado.")}</p>}
         {!sectionsLoading && historico.length > 0 && <div className="mt-3 text-xs"><h4>{t("Histórico encerrado — sem tarefas pendentes")}</h4>{historico.map((h) => <p key={h.id}>{t(DESFECHO_LEGIVEL[h.desfecho] ?? h.desfecho)}{h.fechada_em ? ` · ${shortDate(h.fechada_em, localeDaData)}` : ""}</p>)}</div>}
       </section>
       <Separator />
+
+      {/* O que os roteiros de atendimento coletaram (módulo opcional; desligado
+          ou sem roteiro, não desenha nada). */}
+      {contactId && !contact?.is_anonymized && <RoteirosDoContato contactId={contactId} variante="painel" />}
 
       <section data-testid="inbox-campos-lead">
         <h3 className="text-xs font-semibold text-text">

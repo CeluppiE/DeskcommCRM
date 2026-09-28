@@ -15,6 +15,10 @@ import type { Role } from "@/lib/auth/types";
 export interface McpContext {
   /** Somente o runtime in-process fornece o job original, nunca o cliente MCP. */
   meetingBooking?: MeetingBookingContext;
+  /** Chave `Idempotency-Key` da requisição MCP externa, quando enviada. */
+  idempotencyKey?: string;
+  /** Job estável do runtime in-process; nunca vem dos argumentos da tool. */
+  sourceJobId?: string;
   organizationId: string;
   role: Role;
   actor: Actor;
@@ -38,6 +42,16 @@ export interface McpToolDefinition<TInput extends z.ZodRawShape = z.ZodRawShape>
    * Ausência → -32002 forbidden.
    */
   requiresScope: "mcp:read" | "mcp:write";
+  /**
+   * Limpa os args ANTES da auditoria (os dois ingressos: runtime e `/api/mcp`).
+   *
+   * Existe porque `auditMcpToolCall` grava os args em `api_audit_log.metadata` e
+   * só redige um punhado de chaves conhecidas (token, senha…). Uma tool cujos
+   * args carregam PII por DESENHO — os valores de filtro de uma consulta a banco
+   * externo, por exemplo — precisa tirá-los por conta própria: o valor filtrado
+   * é o dado do cliente, e log é lugar de metadado, não de conteúdo.
+   */
+  redigirParaAuditoria?: (args: Record<string, unknown>) => Record<string, unknown>;
   /**
    * O que a tool DECLARA quando a resposta é um vazio que NÃO é sucesso.
    *

@@ -30,6 +30,19 @@ vi.mock("next/navigation", () => ({
 vi.mock("@/components/connections/ConnectionHealthDot", () => ({
   ConnectionHealthDot: () => null,
 }));
+// Os contadores leem pelo React Query; aqui não há provider, e o NÚMERO não é
+// o objeto destes casos (mora em contador-de-casos/contador-da-fila.test.tsx).
+// O dublê desenha um marcador vazio: o que se mede aqui é ONDE o Sidebar o põe.
+vi.mock("@/components/shell/ContadorDeCasos", () => ({
+  ContadorDeCasos: ({ compacto }: { compacto: boolean }) => (
+    <span data-testid="marcador-casos" data-compacto={String(compacto)} />
+  ),
+}));
+vi.mock("@/components/shell/ContadorDaFila", () => ({
+  ContadorDaFila: ({ compacto }: { compacto: boolean }) => (
+    <span data-testid="marcador-fila" data-compacto={String(compacto)} />
+  ),
+}));
 vi.mock("@/app/actions/shell/toggleSidebar", () => ({
   toggleSidebar: vi.fn(),
 }));
@@ -73,6 +86,23 @@ describe("Sidebar agrupado", () => {
     const hub = screen.getByRole("link", { name: /Ver tudo em CRM/ });
     expect(hub).toHaveAttribute("href", "/app/crm");
     expect(screen.queryByRole("link", { name: "Etapas do funil" })).toBeNull();
+  });
+
+  it("o número de Casos mora no item de Casos, e o da Fila no item de Inbox", () => {
+    comoPapel("admin");
+    render(<Sidebar collapsed={false} />);
+    const casos = screen.getAllByTestId("marcador-casos");
+    const fila = screen.getAllByTestId("marcador-fila");
+    expect(casos).toHaveLength(1);
+    expect(fila).toHaveLength(1);
+    expect(casos[0]!.closest("a")).toHaveAttribute("href", "/app/ai/cases");
+    expect(fila[0]!.closest("a")).toHaveAttribute("href", "/app/inbox");
+    // Roteadores saiu do menu para Casos caber (a folga era menos de uma linha).
+    expect(screen.queryByRole("link", { name: "Roteadores" })).toBeNull();
+    cleanup();
+    // Recolhido, o contador vira ponto — é o componente que decide, com esta dica.
+    render(<Sidebar collapsed />);
+    expect(screen.getByTestId("marcador-casos")).toHaveAttribute("data-compacto", "true");
   });
 
   it("e os dois itens de funil não disputam o mesmo nome", () => {

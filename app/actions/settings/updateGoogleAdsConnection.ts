@@ -9,6 +9,7 @@ import { audit } from "@/lib/audit";
 import { loadAuthUser, mfaEmDivida, resolveActiveOrg } from "@/lib/auth/server";
 import { ROLE_RANK } from "@/lib/auth/types";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { MODOS_DE_VALOR_DA_VENDA, VALORES_DE_CATEGORIA } from "@/lib/conversoes/regras-google";
 
 /**
  * Salva PARA ONDE o Google Ads reporta — a conta e a ação de conversão.
@@ -47,11 +48,20 @@ const entradaSchema = z.object({
     .pipe(z.union([z.literal(""), z.string().length(10)]))
     .nullable()
     .optional(),
-  conversion_action_id: z.string().trim().min(1).max(32).regex(/^\d+$/, "só dígitos"),
+  // Vazio = a organização não reporta a compra, só etapas (0436).
+  conversion_action_id: z
+    .string()
+    .trim()
+    .max(32)
+    .regex(/^\d*$/, "só dígitos")
+    .transform((v) => v || null),
   enabled: z.boolean(),
+  purchase_value_mode: z.enum(MODOS_DE_VALOR_DA_VENDA).optional(),
+  purchase_category: z.enum(VALORES_DE_CATEGORIA).optional(),
+  send_hashed_phone: z.boolean().optional(),
 });
 
-export type GoogleAdsConnectionInput = z.infer<typeof entradaSchema>;
+export type GoogleAdsConnectionInput = z.input<typeof entradaSchema>;
 
 export async function updateGoogleAdsConnection(
   input: GoogleAdsConnectionInput,
@@ -73,6 +83,9 @@ export async function updateGoogleAdsConnection(
 
   const admin = createAdminClient();
 
+  // A qualificação de etapa única (0402) virou regra por etapa (0436):
+  // `salvarRegrasDeConversaoGoogle`. Esta action cuida só da conta e da venda.
+
   const loginCustomerId = parsed.data.login_customer_id?.trim() || null;
 
   // `update`, não `upsert`: a linha só existe depois do OAuth (a rota de
@@ -87,6 +100,15 @@ export async function updateGoogleAdsConnection(
       google_login_customer_id: loginCustomerId,
       google_conversion_action_id: parsed.data.conversion_action_id,
       enabled: parsed.data.enabled,
+      ...(parsed.data.purchase_value_mode
+        ? { google_purchase_value_mode: parsed.data.purchase_value_mode }
+        : {}),
+      ...(parsed.data.purchase_category
+        ? { google_purchase_category: parsed.data.purchase_category }
+        : {}),
+      ...(parsed.data.send_hashed_phone !== undefined
+        ? { google_send_hashed_phone: parsed.data.send_hashed_phone }
+        : {}),
       updated_by: authUser.id,
     })
     .eq("organization_id", activeOrg.orgId)
@@ -116,6 +138,13 @@ export async function updateGoogleAdsConnection(
       enabled: parsed.data.enabled,
       customer_id: parsed.data.customer_id,
       tem_login_customer_id: Boolean(loginCustomerId),
+      tem_acao_de_venda: Boolean(parsed.data.conversion_action_id),
+      ...(parsed.data.purchase_value_mode
+        ? { purchase_value_mode: parsed.data.purchase_value_mode }
+        : {}),
+      ...(parsed.data.send_hashed_phone !== undefined
+        ? { send_hashed_phone: parsed.data.send_hashed_phone }
+        : {}),
     },
   });
 

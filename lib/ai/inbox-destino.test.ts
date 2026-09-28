@@ -51,6 +51,9 @@ describe("destinos da Central", () => {
     ["handoff", "contact", `/app/contacts/${ID}`], ["other", "lead", `/app/pipelines/${PIPELINE}?lead=${ID}`],
     ["followup_dead", "followup_enrollment", `/app/ai/followups/enrollments/${ID}`],
     ["qr_rescan", "channel_session", "/app/connections"], ["conhecimento_nao_indexado", "ai_knowledge_source", "/app/ai/knowledge/sources"],
+    ["other", "ai_provider_credential", "/app/ai/credentials"],
+    // O caso aberto na Central, na hora (`lib/escalacao/caso-na-central.handler.ts`).
+    ["other", "agent_case", `/app/ai/cases?caso=${ID}`],
   ])("%s/%s abre somente contexto real", async (kind, ref, href) => {
     const l = leitor(); const [item] = await resolverDestinosDosAvisos(l.client, ORG, "admin", [aviso(kind, ref)]);
     expect(item?.destination).toMatchObject({ estado: "disponivel", href });

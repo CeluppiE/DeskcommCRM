@@ -4,6 +4,14 @@ import { requireSupportWrite } from "@/lib/impersonate/support";
  * `call_webhook` da regra do run, contra o evento original (`event_log` do
  * run.event_id). Se o evento foi apagado (FK on delete set null zera
  * event_id) → 409 `event_gone`. Grava um run NOVO com o resultado.
+ *
+ * Mesma ENTREGA, não uma nova (#1529): o id da entrega é recalculado com a
+ * posição da ação na lista inteira da regra e com a própria lista — igual ao do
+ * disparo original enquanto as ações não mudarem; mudaram, sai um id novo, e
+ * nunca o de outra ação que o receptor já processou —, o
+ * número da tentativa continua de onde os runs anteriores do mesmo par
+ * (regra, evento) pararam, e cada resultado do run novo aponta para o run
+ * clicado em `detail.resent_from_run_id` (jsonb que já existe; sem migration).
  */
 import { randomUUID } from "node:crypto";
 import type { NextRequest } from "next/server";
@@ -14,7 +22,11 @@ import { requireRole } from "@/lib/auth/require-role";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { buildContext } from "@/lib/automation/engine";
-import { executeCallWebhook } from "@/lib/automation/actions/call-webhook";
+import {
+  executeCallWebhook,
+  idDaEntrega,
+  tentativasRegistradas,
+} from "@/lib/automation/actions/call-webhook";
 import type { ActionCtx, ActionResultDetail } from "@/lib/automation/types";
 import type { EventRow } from "@/lib/event-log/dispatcher";
 import { traduzir } from "@/lib/i18n/dicionario";
@@ -79,9 +91,12 @@ export async function POST(_req: NextRequest, ctx: RouteCtx): Promise<Response> 
   const typedEvent = eventRow as unknown as EventRow;
   const context = await buildContext(supabase, typedEvent);
 
-  const callWebhookActions = ((rule.actions ?? []) as RuleAction[]).filter(
-    (action) => action.type === "call_webhook",
-  );
+  // O índice é tirado ANTES do filtro: é a posição na lista inteira que compõe
+  // o id da entrega, e a da lista filtrada daria outro id para a mesma ação.
+  const acoesDaRegra = (rule.actions ?? []) as RuleAction[];
+  const callWebhookActions = acoesDaRegra
+    .map((action, indice) => ({ action, indice }))
+    .filter(({ action }) => action.type === "call_webhook");
 
   // ─── REENVIAR NADA NÃO É SUCESSO ──────────────────────────────────────────
   //
@@ -106,12 +121,24 @@ export async function POST(_req: NextRequest, ctx: RouteCtx): Promise<Response> 
     );
   }
 
+  // Todos os runs do par (regra, evento), não só o clicado: dois Reenviar
+  // seguidos a partir do mesmo run original não podem repetir o Attempt.
+  // Dois cliques SIMULTÂNEOS ainda podem — leitura e escrita sem trava —, e
+  // isso é aceitável: Attempt é informativo, a chave do receptor é o Delivery.
+  const { data: runsDoPar, error: runsErr } = await supabase
+    .from("automation_rule_runs")
+    .select("actions_result")
+    .eq("organization_id", activeOrg.orgId)
+    .eq("rule_id", rule.id)
+    .eq("event_id", typedEvent.id);
+  if (runsErr) return fail("internal_error", runsErr.message, 500, { requestId });
+
   // Admin real no ctx: o executor decifra config.secret_enc via RPC
   // fn_decrypt_oauth (grant só service_role) — client de sessão falharia e o
   // outbound sairia sem assinatura silenciosamente.
   const adminForActions = createAdminClient();
   const results: ActionResultDetail[] = [];
-  for (const action of callWebhookActions) {
+  for (const { action, indice } of callWebhookActions) {
     const actionCtx: ActionCtx = {
       admin: adminForActions,
       organizationId: activeOrg.orgId,
@@ -120,8 +147,14 @@ export async function POST(_req: NextRequest, ctx: RouteCtx): Promise<Response> 
       event: typedEvent,
       context,
       requestId,
+      actionIndex: indice,
+      ruleActions: acoesDaRegra,
     };
-    results.push(await executeCallWebhook(actionCtx, action.config ?? {}));
+    const entrega = idDaEntrega(typedEvent.id, rule.id, indice, acoesDaRegra);
+    const resultado = await executeCallWebhook(actionCtx, action.config ?? {}, {
+      primeiraTentativa: tentativasRegistradas(runsDoPar ?? [], entrega) + 1,
+    });
+    results.push({ ...resultado, detail: { ...resultado.detail, resent_from_run_id: runId } });
   }
 
   const failed = results.filter((r) => r.status === "failed").length;

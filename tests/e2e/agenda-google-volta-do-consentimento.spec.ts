@@ -27,7 +27,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./helpers/test";
 
 const CALLBACK = "/api/v1/agenda/google/callback";
 const RAIZ = process.cwd();
@@ -53,7 +53,7 @@ async function entrar(page: import("@playwright/test").Page, creds: Creds) {
   await page.goto("/login");
   await page.getByLabel(/e-?mail/i).fill(usuario.email);
   await page.getByLabel(/senha/i).fill(creds.password);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app(\/|$)/, { timeout: 20_000 });
 }
 

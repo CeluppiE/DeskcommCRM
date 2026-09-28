@@ -292,6 +292,205 @@ describe.skipIf(!temAwk)("recriar o que falta: o comando INTEIRO, nunca o nome",
     expect(recria(`create policy "a1" on public.a for select using (true);\n`, []).trim()).toBe("");
   });
 
+  /**
+   * A comparação das regras NÃO pode depender do locale de quem roda o update.
+   *
+   * ## O incidente — instalação real, 2026-09-28
+   *
+   * `sort` e `comm` precisam concordar na ordenação, e sob um locale UTF-8 eles
+   * não concordam. O `en_US.UTF-8` — padrão de muita VPS — ordena IGNORANDO
+   * pontuação: `_` e `|` não pesam, e o `sort` devolve uma ordem que o `comm`
+   * não reconhece. Ele mesmo denuncia, na stderr — "comm: input is not in
+   * sorted order" —, e o que devolve depois é lixo.
+   *
+   * Com as 114 regras TODAS no banco, a conferência acusou 2 faltando. O alarme
+   * falso manda recriar as duas, o banco responde "already exists", a
+   * conferência seguinte tropeça na mesma ordenação — e a atualização PARA,
+   * com o aviso de manutenção de pé. O dono ficou 8 horas em 503 com o banco
+   * íntegro, procurando regra que nunca faltou.
+   *
+   * ## Por que este caso roda o bash de verdade
+   *
+   * A comparação vive no `update.sh`, em `sort`/`comm`. Reescrevê-la em
+   * TypeScript para poder testá-la criaria duas réguas — e duas réguas
+   * divergem. Este caso extrai do script a ordenação e a linha de comparação, e
+   * as executa: se alguém tirar o pin do locale, é a linha sem o pin que roda.
+   */
+  describe.skipIf(!temAwk)("⛔ a conferência não depende do locale de quem roda", () => {
+    // O script roda `bash` (usa substituição de processo), então o teste também.
+    const BASH = "bash";
+
+    /** A ordenação, com o prefixo que estiver lá — `LC_ALL=C` ou nada. */
+    function ordenacao(): string {
+      const m = UPDATE.match(/(?:\S+=\S+ )?sort -u/);
+      return m ? m[0] : "sort -u";
+    }
+
+    /** A linha que compara, inteira e como está no script. */
+    function linhaDeComparacao(): string {
+      const linha = UPDATE.split("\n").find((l) => l.includes("faltando=") && l.includes("comm -23"));
+      return (linha ?? 'faltando="$(comm -23 "$a" "$b")"').trim();
+    }
+
+    /** O script sem o pin — a forma SABOTADA, para medir o ambiente. */
+    const semPin = (s: string) => s.replace(/\bLC_ALL=\S+ /g, "").replace(/\bLC_COLLATE=\S+ /g, "");
+
+    function comparar(
+      a: string[],
+      b: string[],
+      ordem: string,
+      comparacao: string,
+      locale: string | undefined,
+    ): { faltando: string[]; stderr: string } {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "colacao-"));
+      const err = path.join(dir, "err");
+      // A linha REAL do script, com as listas que vierem — nunca uma cópia da
+      // régua. `esperadas`/`existentes` são ordenadas antes, como no script.
+      const script = [
+        `esperadas="$(printf '%s\\n' "$A" | ${ordem})"`,
+        `existentes="$(printf '%s\\n' "$B" | ${ordem})"`,
+        comparacao,
+        `printf '%s' "$faltando"`,
+      ].join("\n");
+      try {
+        const out = execFileSync(BASH, ["-c", script], {
+          encoding: "utf8",
+          maxBuffer: 64 * 1024 * 1024,
+          env: {
+            ...process.env,
+            ...(locale ? { LC_ALL: locale } : {}),
+            A: a.join("\n"),
+            B: b.join("\n"),
+          },
+          stdio: ["ignore", "pipe", fs.openSync(err, "w")],
+        });
+        return {
+          faltando: out.split("\n").map((l) => l.trim()).filter(Boolean),
+          stderr: fs.readFileSync(err, "utf8"),
+        };
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    /** As regras que a conferência ESPERA — a régua awk do próprio script. */
+    function esperadas(): string[] {
+      const baseline = path.join(RAIZ, "supabase", "baseline.sql");
+      const out = execFileSync("awk", [programaAwk(), baseline], {
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      return out.split("\n").map((l) => l.trim()).filter(Boolean);
+    }
+
+    /**
+     * O que a query do `update.sh` devolve: TODA política do schema `public`.
+     *
+     * ⚠️ O par de listas importa, e a primeira tentativa deste caso errou aqui —
+     * listas IDÊNTICAS não reproduzem o defeito (medido: `comm` só reclama
+     * quando as duas entradas DIFEREM). O incidente tinha as duas diferentes, e
+     * a diferença é estrutural: o `esperadas` traz só as regras cuja ÚLTIMA
+     * operação no arquivo é `create`, e o `existentes` traz toda política do
+     * schema — inclusive as que o baseline APAGA de propósito. Medido contra o
+     * baseline real: 114 esperadas, 152 políticas declaradas em `public`, 38 de
+     * diferença. Um banco íntegro é um SUPERCONJUNTO do esperado, e é essa
+     * forma que o defeito precisa para aparecer.
+     *
+     * Isto é dado de entrada, não a régua: a comparação continua sendo a do
+     * `update.sh`, extraída de lá.
+     */
+    function todasAsPoliticasDePublic(): string[] {
+      const sql = fs.readFileSync(path.join(RAIZ, "supabase", "baseline.sql"), "utf8");
+      const achadas = sql.matchAll(
+        /create policy\s+"?([A-Za-z0-9_]+)"?\s+on\s+"?public"?\s*\.\s*"?([A-Za-z0-9_]+)"?/gi,
+      );
+      return [...new Set([...achadas].map((m) => `${m[1]}|${m[2]}`))];
+    }
+
+    /**
+     * Um locale que faz o `comm` reclamar, medido e não presumido: nem todo
+     * UTF-8 reproduz (o `C.UTF-8` ordena por bytes e é inofensivo), e a lista
+     * do que existe muda de máquina para máquina.
+     */
+    function localeHostil(esperadas: string[], existentes: string[]): string | undefined {
+      let disponiveis: string[] = [];
+      try {
+        disponiveis = execFileSync("locale", ["-a"], { encoding: "utf8" })
+          .split("\n")
+          .map((l) => l.trim())
+          .filter((l) => l && !/^(C|POSIX|C\.(UTF-8|utf8))$/i.test(l));
+      } catch {
+        return undefined;
+      }
+      for (const loc of disponiveis) {
+        // Sonda: a mesma comparação SEM o pin, com o locale candidato.
+        const r = comparar(esperadas, existentes, "sort -u", semPin(linhaDeComparacao()), loc);
+        if (r.stderr.includes("not in sorted order") || r.faltando.length > 0) return loc;
+      }
+      return undefined;
+    }
+
+    it("GUARDA DE VACUIDADE: o script tem o pin, e a linha foi achada", () => {
+      // Sem este caso, um `match` que devolvesse o fallback sem pin faria os
+      // casos abaixo medirem uma régua que não é a do script — e o de baixo
+      // passaria por acidente num ambiente onde a ordenação não é hostil.
+      expect(linhaDeComparacao()).toMatch(/comm -23/);
+      expect(linhaDeComparacao()).toMatch(/LC_ALL=C/);
+      expect(ordenacao()).toMatch(/LC_ALL=C sort -u/);
+    });
+
+    it("⛔ TODA comparação e TODA ordenação da conferência carregam o pin", () => {
+      // O par `sort`/`comm` tem de concordar, e o pin é o que garante isso. Um
+      // `sort -u` novo sem o pin, num passo futuro, traria o defeito de volta
+      // pela porta dos fundos — é este caso que o barra.
+      const comComm = UPDATE.split("\n").filter((l) => /\bcomm -23/.test(l));
+      expect(comComm.length).toBeGreaterThan(0);
+      for (const l of comComm) expect(l).toMatch(/LC_ALL=C comm -23/);
+
+      const ordenacoes = UPDATE.split("\n").filter((l) => /\bsort -u/.test(l));
+      expect(ordenacoes.length).toBeGreaterThan(0);
+      for (const l of ordenacoes) expect(l).toMatch(/LC_ALL=C sort -u/);
+    });
+
+    it("⛔ com o banco ÍNTEGRO, a conferência não acusa nada — em qualquer locale", () => {
+      const regras = esperadas();
+      const noBanco = todasAsPoliticasDePublic();
+      expect(regras.length).toBeGreaterThan(50); // o baseline real tem centenas
+      // A forma do banco íntegro: tudo que a régua espera ESTÁ lá, e há mais.
+      expect(noBanco.length).toBeGreaterThan(regras.length);
+      for (const r of regras) expect(noBanco).toContain(r);
+
+      const hostil = localeHostil(regras, noBanco);
+      // O ambiente que reproduz o defeito, quando existe. Onde não existe (uma
+      // imagem sem locale UTF-8 gerado), o caso do pin segue de pé, e o PR
+      // declara o que não foi medido.
+      const locais = hostil ? [hostil, undefined] : [undefined];
+
+      for (const loc of locais) {
+        const r = comparar(regras, noBanco, ordenacao(), linhaDeComparacao(), loc);
+        expect(r.stderr).not.toContain("not in sorted order");
+        expect(r.faltando).toEqual([]);
+      }
+    });
+
+    it("⛔ SABOTAGEM: sem o pin, as mesmas listas acusam regra que existe", () => {
+      // A metade que importa: prova que o caso acima sabe ficar vermelho. Se
+      // aqui der vazio, este ambiente não exercita o defeito — e o verde do
+      // caso anterior não é prova de nada nele.
+      const regras = esperadas();
+      const noBanco = todasAsPoliticasDePublic();
+      const hostil = localeHostil(regras, noBanco);
+      if (!hostil) return; // declarado no PR: sem locale hostil, não medido
+
+      const r = comparar(regras, noBanco, "sort -u", semPin(linhaDeComparacao()), hostil);
+      expect(r.stderr).toContain("not in sorted order");
+      expect(r.faltando.length).toBeGreaterThan(0);
+      // E o que ele acusa existe de verdade no banco — é alarme falso, que é o
+      // que dói: a tela manda procurar uma regra que nunca faltou.
+      for (const f of r.faltando) expect(noBanco).toContain(f);
+    });
+  });
+
   it("CONTROLE VIVO: contra o baseline REAL, recria uma regra de verdade", () => {
     // Os casos acima usam SQL de brinquedo. Este roda contra o arquivo que o
     // cliente aplica de fato — e é ele que pega uma régua que só funciona no

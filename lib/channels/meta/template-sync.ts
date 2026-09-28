@@ -16,6 +16,7 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 
 import { hashContract } from "./contract-hash";
+import { graphBaseUrl } from "./graph-base";
 import { normalizeRejectedReason as rejectedReason } from "./webhook";
 
 /**
@@ -207,7 +208,10 @@ export interface SyncInput {
   wabaId: string;
   /** Token da Graph API. Resolvido de fonte confiável pelo chamador, nunca do body. */
   token: string;
-  /** Ex.: `v22.0`. Explícito de propósito — ver o comentário de `fetchAllTemplates`. */
+  /**
+   * Ex.: `v22.0`. Explícito de propósito — ver o comentário de `fetchAllTemplates`.
+   * É a VERSÃO que vai na base; o HOST vem do knob da instalação.
+   */
   graphVersion: string;
 }
 
@@ -225,7 +229,7 @@ const FIELDS =
  * misturando páginas de contratos de API diferentes.
  */
 async function fetchAllTemplates(input: SyncInput): Promise<unknown[]> {
-  const base = `https://graph.facebook.com/${input.graphVersion}/${input.wabaId}/message_templates?limit=100&fields=${FIELDS}`;
+  const base = `${graphBaseUrl(input.graphVersion)}/${input.wabaId}/message_templates?limit=100&fields=${FIELDS}`;
   const out: unknown[] = [];
   let after: string | null = null;
 

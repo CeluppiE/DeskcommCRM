@@ -62,10 +62,22 @@ interface Props {
   value: string[];
   onChange: (ids: string[]) => void;
   disabled?: boolean;
+  /**
+   * Capacidades que ESTE papel não recebe no runtime, marcadas ou não (ex.:
+   * `FORA_DO_OPERADOR`). Somem do catálogo em vez de aparecerem marcáveis:
+   * uma caixa que se marca e não faz nada é promessa que a tela não cumpre.
+   * Id já salvo com um destes valores é ignorado aqui (e pelo runtime), e sai
+   * da versão na próxima vez que a lista for alterada.
+   */
+  ocultar?: readonly string[];
 }
 
 interface ApiResponse {
-  data: { tools: Array<Omit<McpToolMeta, "name">> };
+  data: {
+    tools: Array<Omit<McpToolMeta, "name">>;
+    /** Capacidades que a ORGANIZAÇÃO desligou (ex.: Propostas) — não são órfãs. */
+    desligadas_pela_organizacao?: string[];
+  };
 }
 
 const TODOS_OS_PACOTES: ReadonlyArray<ToolBundle> = PACOTES.map((p) => p.id);
@@ -147,22 +159,64 @@ function FichaCapacidade({
   );
 }
 
-export function ToolPicker({ value, onChange, disabled }: Props) {
+/**
+ * A recusa por teto. `role="alert"` faz leitor de tela anunciar na hora; o
+ * `scrollIntoView` garante que quem enxerga também veja — no topo ou dentro
+ * do cartão, o aviso só serve se estiver na tela no momento do clique.
+ */
+function AvisoTeto({ texto }: { texto: string }) {
+  const ref = React.useRef<HTMLParagraphElement>(null);
+  React.useEffect(() => {
+    ref.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }, [texto]);
+  return (
+    <p
+      ref={ref}
+      role="alert"
+      data-testid="aviso-teto"
+      className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
+    >
+      {texto}
+    </p>
+  );
+}
+
+export function ToolPicker({ value: valorSalvo, onChange, disabled, ocultar }: Props) {
   const t = useT();
+  const value = React.useMemo(
+    () => (ocultar === undefined ? valorSalvo : valorSalvo.filter((id) => !ocultar.includes(id))),
+    [valorSalvo, ocultar],
+  );
   const [avancado, setAvancado] = React.useState(false);
-  const [recusa, setRecusa] = React.useState<string | null>(null);
+  // `pacote` diz ONDE a recusa aconteceu. O aviso nascia só no topo do seletor,
+  // e quem clicava num pacote lá embaixo (com a tela rolada) via o interruptor
+  // não mudar e nada mais — o aviso ficava fora da tela e o clique parecia
+  // quebrado. Recusa de pacote aparece dentro do cartão do pacote clicado.
+  const [recusa, setRecusa] = React.useState<{ texto: string; pacote: ToolBundle | null } | null>(
+    null,
+  );
 
   const query = useQuery({
     queryKey: ["mcp", "tools"],
     queryFn: async () => {
       const res = await apiClient.get<ApiResponse>("/api/v1/mcp/tools");
       // `name` é o mesmo `id` — a regra de seleção fala em `name`, o wire em `id`.
-      return res.data.tools.map((t) => ({ ...t, name: t.id })) as McpToolMeta[];
+      return {
+        tools: res.data.tools.map((t) => ({ ...t, name: t.id })) as McpToolMeta[],
+        desligadas: res.data.desligadas_pela_organizacao ?? [],
+      };
     },
     staleTime: 60_000,
   });
 
-  const catalogo = React.useMemo<McpToolMeta[]>(() => query.data ?? [], [query.data]);
+  const catalogo = React.useMemo<McpToolMeta[]>(
+    () => (query.data?.tools ?? []).filter((c) => !(ocultar ?? []).includes(c.name)),
+    [query.data, ocultar],
+  );
+  const desligadasPelaOrg = React.useMemo(
+    () => new Set(query.data?.desligadas ?? []),
+    [query.data],
+  );
   const porNome = React.useMemo(
     () => new Map(catalogo.map((c) => [c.name, c])),
     [catalogo],
@@ -172,7 +226,9 @@ export function ToolPicker({ value, onChange, disabled }: Props) {
   const cheio = vagas <= 0;
 
   /** Ids salvos que o servidor não oferece mais — some da tela seria mentir. */
-  const orfas = value.filter((id) => !porNome.has(id));
+  const orfas = value.filter((id) => !porNome.has(id) && !desligadasPelaOrg.has(id));
+  /** Ids salvos de capacidade que a organização desligou — voltam a valer ao ligar. */
+  const desligadasSalvas = value.filter((id) => desligadasPelaOrg.has(id));
 
   /**
    * `vagasExigidas` é o que DECIDE, e por padrão é o tamanho do resultado.
@@ -185,9 +241,14 @@ export function ToolPicker({ value, onChange, disabled }: Props) {
    * Medido na tela: com 3 ligadas, "Atender" (17 automáticas + 1 crítica)
    * chegava a 20, passava, e a crítica nascia desabilitada.
    */
-  function aplicar(proximo: string[], motivoSeRecusar: string, vagasExigidas = proximo.length) {
+  function aplicar(
+    proximo: string[],
+    motivoSeRecusar: string,
+    vagasExigidas = proximo.length,
+    pacote: ToolBundle | null = null,
+  ) {
     if (vagasExigidas > TETO_TOOLS_POR_AGENTE) {
-      setRecusa(motivoSeRecusar);
+      setRecusa({ texto: motivoSeRecusar, pacote });
       return;
     }
     setRecusa(null);
@@ -210,6 +271,7 @@ export function ToolPicker({ value, onChange, disabled }: Props) {
           excedente === 1 ? t("vaga") : t("vagas")
         }${t("). Desligue um pacote que você usa menos antes.")}`,
         exigidas,
+        pacote,
       );
     } else {
       setRecusa(null);
@@ -259,14 +321,7 @@ export function ToolPicker({ value, onChange, disabled }: Props) {
         </p>
       </div>
 
-      {recusa ? (
-        <p
-          data-testid="aviso-teto"
-          className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive"
-        >
-          {recusa}
-        </p>
-      ) : null}
+      {recusa && recusa.pacote === null ? <AvisoTeto texto={recusa.texto} /> : null}
 
       {/* Caminho padrão: pacotes por jornada. */}
       <div className="grid gap-3">
@@ -316,6 +371,8 @@ export function ToolPicker({ value, onChange, disabled }: Props) {
                   </p>
                 </div>
               </div>
+
+              {recusa && recusa.pacote === pacote.id ? <AvisoTeto texto={recusa.texto} /> : null}
 
               {/* Crítico nunca entra por pacote: exige o dedo do humano. */}
               {criticas.length > 0 ? (
@@ -387,6 +444,17 @@ export function ToolPicker({ value, onChange, disabled }: Props) {
           </div>
         ) : null}
       </div>
+
+      {desligadasSalvas.length > 0 ? (
+        <p
+          data-testid="capacidades-desligadas-pela-organizacao"
+          className="rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground"
+        >
+          {t(
+            "Propostas está desligada nesta organização: o rascunho automático de proposta fica guardado e volta a valer quando alguém ligar em Configurações › Propostas.",
+          )}
+        </p>
+      ) : null}
 
       {orfas.length > 0 ? (
         <div

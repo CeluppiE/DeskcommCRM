@@ -20,7 +20,7 @@ import { mkdirSync } from "node:fs";
 import { createServer } from "node:http";
 
 import { createClient } from "@supabase/supabase-js";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./helpers/test";
 
 import { credenciaisSupabaseDeTeste } from "../../scripts/lib/env-de-teste";
 
@@ -28,7 +28,7 @@ const credentials = credenciaisSupabaseDeTeste();
 const db = createClient(credentials.url, credentials.serviceRole, {
   auth: { persistSession: false },
 });
-const EVIDENCIA = ".superpowers/evidence/pareamento-por-codigo";
+const EVIDENCIA = "evidence/pareamento-por-codigo";
 
 test.use({ trace: "on" });
 test.describe.configure({ timeout: 180_000 });
@@ -121,7 +121,7 @@ test("o administrador conecta o WhatsApp digitando o código no celular", async 
     await page.goto("/login");
     await page.getByLabel(/e-?mail/i).fill(email);
     await page.getByLabel(/senha/i).fill(password);
-    await page.getByRole("button", { name: /entrar/i }).click();
+    await page.getByRole("button", { name: "Entrar", exact: true }).click();
     await page.waitForURL(/\/app(?:\/|$)/);
 
     await page.goto("/app/connections");

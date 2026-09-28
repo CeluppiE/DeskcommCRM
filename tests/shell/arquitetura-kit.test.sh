@@ -17,6 +17,14 @@ mkdir -p "$TMP/bin"
 # (conferência de dependências e, se preciso, o clone) antes de carregar o
 # `_common.sh`, e isso fica fora desta prova; o que ela mede é que a recusa vem
 # antes de qualquer trabalho feito pelo próprio `_common.sh`.
+#
+# ⚠️ ESTE ARQUIVO MEDE A INSTALAÇÃO **NOVA** (#1042) — e nova é o diretório de
+# trabalho do teste: rodado de `$TMP`, que não tem compose nem `.env`, é
+# exatamente o estado em que o install.sh chega ao `source _common.sh` logo após
+# clonar (ele escreve o `.env` só depois). A instalação que JÁ EXISTE, em que a
+# recusa vira aviso para o script alcançar a recuperação por build local
+# (#1060/#1143), tem prova própria e de ponta a ponta em
+# `tests/shell/guarda-arm-nao-mata-a-recuperacao.test.sh` (#1266).
 cat > "$TMP/bin/uname" <<'SH'
 #!/usr/bin/env bash
 if [ "${1:-}" = "-m" ]; then
@@ -48,7 +56,14 @@ printf 'DEPOIS_DA_GUARDA\n'
 SH
   chmod +x "$wrapper"
 
-  if out="$(env FAKE_ARCH="$arch" PATH="$TMP/bin:$PATH" bash "$wrapper" 2>&1)"; then rc=0; else rc=$?; fi
+  # O `cd "$TMP"` é o que mantém esta prova medindo a INSTALAÇÃO NOVA. A guarda
+  # do #1266 decide por o que existe no disco (compose + `.env`), e o
+  # diretório de onde o `pnpm test:shell` roda é o clone — que tem o
+  # `docker-compose.prod.yml`. Sem este `cd`, o teste passaria a medir a
+  # instalação existente de quem tem o clone na mão, viraria vermelho com a
+  # mudança do #1266 e, pior, o conserto poderia voltar a ser "verde" por rodar
+  # no diretório errado. `$TMP` não tem nenhum dos dois.
+  if out="$(cd "$TMP" && env FAKE_ARCH="$arch" PATH="$TMP/bin:$PATH" bash "$wrapper" 2>&1)"; then rc=0; else rc=$?; fi
   printf '%s\n' "$rc" > "$TMP/rc-$nome-$arch"
   printf '%s' "$out" > "$TMP/out-$nome-$arch"
 }

@@ -15,6 +15,7 @@ import type { Queryable } from '../../queue/queue';
 import type { CrmEdgeConfig } from './mcp-client';
 import { deriveLgpdFromContact, type LgpdInput } from '../../guardrails/lgpd/legal-basis';
 import { isoLocalComOffset } from '@/lib/tempo/agora';
+import { logger } from '@/lib/logger';
 import { nomeDoContato } from '@/lib/contacts/rotulo-do-contato';
 
 /**
@@ -73,6 +74,23 @@ export interface UltimaDecisaoHumana {
   at: string;
 }
 
+/**
+ * N7 — o desfecho da última proposta com desfecho real, para o agente não
+ * oferecer de novo o que já foi recusado (nem comemorar o que já foi aceito).
+ *
+ * OPCIONAL no tipo pelo MESMO motivo de `contact_id` (ver acima): exigir
+ * obrigaria a editar fixtures em `tests/invariants/**`, que é congelado. A
+ * produção (getLeadContext) sempre o preenche; quem lê trata ausente como
+ * "sem proposta com desfecho".
+ */
+export interface UltimaProposta {
+  status: string;
+  total_cents: number;
+  decision_reason: string | null;
+  numero: number | null;
+  ano: number | null;
+}
+
 /** Payload curado que o modelo recebe. */
 export interface LeadContext {
   /** ⚠️ É o id do CONTATO, não de um lead do funil. Ver `contact_id` abaixo. */
@@ -108,6 +126,13 @@ export interface LeadContext {
    * diferentes, não alternativas.
    */
   last_human_decision: UltimaDecisaoHumana | null;
+  /**
+   * N7 — desfecho da última proposta com desfecho real (`enviada`, `aceita`,
+   * `recusada`, `vencida`). `null` quando só há rascunho aberto ou nenhuma
+   * proposta: rascunho não é desfecho (pode ser o que o próprio agente acabou
+   * de criar).
+   */
+  last_proposal?: UltimaProposta | null;
   /** Últimas N mensagens, da mais antiga para a mais nova. */
   messages: LeadContextMessage[];
 }
@@ -227,6 +252,31 @@ export async function getLeadContext(
   );
   const lastHumanDecision = decisaoRows[0] ? paraDecisao(decisaoRows[0]) : null;
 
+  // N7 — o desfecho da última proposta com desfecho real, no contexto do
+  // turno. `leadId` aqui é o CONTATO (ver o comentário da consulta acima) —
+  // por isso o filtro é por `contact_id`, igual ao da decisão humana logo
+  // acima. Rascunho é excluído NO SQL (nunca é "desfecho"). Falha aberta de
+  // propósito: proposta é contexto auxiliar — se esta consulta falhar, o turno
+  // segue sem ela em vez de morrer.
+  let last_proposal: UltimaProposta | null = null;
+  try {
+    const { rows: propostaRows } = await db.query<UltimaProposta>(
+      `select status, total_cents, decision_reason, numero, ano
+         from crm_proposals
+        where organization_id = $1 and contact_id = $2
+          and status in ('enviada', 'aceita', 'recusada', 'vencida')
+        order by created_at desc
+        limit 1`,
+      [input.tenantId, input.leadId],
+    );
+    last_proposal = propostaRows[0] ?? null;
+  } catch (err) {
+    logger.warn('lead-context: consulta de proposta falhou — contexto segue sem ela', {
+      organizationId: input.tenantId,
+      erro: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   const history: HistoryRow[] = conversationId
     ? (
         await db.query<HistoryRow>(
@@ -286,6 +336,7 @@ export async function getLeadContext(
       },
       conversation_id: conversationId,
       last_human_decision: lastHumanDecision,
+      last_proposal,
     },
     history,
     knobs.maxTokens,
@@ -382,6 +433,9 @@ const MEDIA_NOUN: Record<string, string> = {
   sticker: 'uma figurinha',
 };
 
+/** Como toda mídia enquadrada começa — `textoDoClienteNaUltimaMensagem` a reconhece por ela. */
+const INICIO_DA_MOLDURA_DE_MIDIA = '[Mídia do cliente:';
+
 /**
  * Enquadra o derivado de mídia como PERCEPÇÃO do agente (Onda 3, ajuste pós-prova).
  * Sem isto, o modelo via a transcrição/descrição mas respondia "não consigo ver
@@ -392,13 +446,34 @@ const MEDIA_NOUN: Record<string, string> = {
 export function frameMediaBody(type: string, caption: string | null, derived: string): string {
   const noun = MEDIA_NOUN[type] ?? 'uma mídia';
   const parts = [
-    `[Mídia do cliente: ele enviou ${noun} e o sistema já processou o conteúdo pra você. ` +
+    `${INICIO_DA_MOLDURA_DE_MIDIA} ele enviou ${noun} e o sistema já processou o conteúdo pra você. ` +
       `Trate o texto abaixo como se você mesma tivesse visto/ouvido — NUNCA responda que não ` +
       `consegue ver/ouvir mídia. Comente ou use o conteúdo naturalmente.]`,
   ];
   if (caption && caption.trim() !== '') parts.push(`Legenda do cliente: ${caption.trim()}`);
   parts.push(`Conteúdo: ${derived}`);
   return parts.join('\n');
+}
+
+/**
+ * O que o CLIENTE digitou na última mensagem dele, e nada que o sistema compôs
+ * em volta — `''` quando ela é mídia. É o dado que sai para um fornecedor sob o
+ * aceite "cada mensagem, sozinha" (o Jev, R4).
+ *
+ * O `body` de uma mídia no contexto é COMPOSTO (`corpoDaMensagem`): transcrição,
+ * descrição da imagem ou texto do PDF, e a moldura de instrução do agente. Isso é
+ * o que o sistema derivou, não o que o cliente mandou — nome, endereço e dado de
+ * saúde de um laudo iriam junto. A moldura é conferida além do `type` porque o
+ * derivado sobrevive à mídia apagada (a anonimização zera a mídia, não ele).
+ *
+ * ponytail: a legenda de uma mídia também fica de fora. Separá-la exigiria a
+ * coluna crua no contexto; e o classificador de sempre respondeu sobre o corpo
+ * composto, então comparar os dois ali não seria a mesma pergunta.
+ */
+export function textoDoClienteNaUltimaMensagem(messages: readonly LeadContextMessage[]): string {
+  const ultima = messages.findLast((m) => m.direction === 'inbound');
+  if (!ultima || ultima.type !== undefined || ultima.body.startsWith(INICIO_DA_MOLDURA_DE_MIDIA)) return '';
+  return ultima.body;
 }
 
 /** @internal exposto p/ teste — não usar fora de testes. */

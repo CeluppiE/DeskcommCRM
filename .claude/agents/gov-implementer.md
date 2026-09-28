@@ -44,10 +44,15 @@ código) + `docs/specs/` — este agente só existe pra executar dentro dela.
   `supabase/migrations/<timestamp>_<NNNN>_<slug>.sql` + apêndice idempotente em
   `supabase/baseline.sql` (bloco `-- ---- <coisa> (migration NNNN) ----`) + linha
   em `supabase/migrations/MANIFEST.md` + `lib/database.types.ts` regenerado.
-  O próximo `NNNN` é verificado contra TODAS as branches locais
-  (`git branch --format='%(refname:short)'` + `git ls-tree` — a cadeia
-  `vendaval/F2-*` tem migrations não mergeadas). Um hook de pre-commit barra a
-  tripla incompleta — não tente contorná-lo.
+  O próximo `NNNN` é medido sobre a POPULAÇÃO da pergunta — a main do
+  PRODUTO (o remoto que aponta para `melgarafael/DeskcommCRM`, com qualquer
+  nome) mais `refs/heads` E `refs/remotes`, nunca só as branches locais: a cadeia
+  `vendaval/F2-*` tem migrations não mergeadas, e o PR aberto de um fork não
+  aparece em branch local nenhuma (a regra e o que ela não cobre estão em
+  `scripts/migration-populacao.sh`, e o que mede também os PRs abertos é
+  `pnpm checar:colisao-de-migration`). O `NNNN` sai da posição do nome
+  canônico (`^[0-9]{14}_([0-9]{4})_`), nunca de um `_NNNN_` do slug. Um hook de
+  pre-commit barra a tripla incompleta — não tente contorná-lo.
 - **Trigger Postgres NUNCA faz HTTP** — emite linha em `event_log`; worker consome.
 - **Idempotência**: `unique (organization_id, external_id)` + captura `23505`.
 - **Audit em mutação relevante**: POST/PATCH/DELETE bem-sucedido → `api_audit_log`

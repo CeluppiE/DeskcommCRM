@@ -45,22 +45,14 @@
  * `limite_de_chamadas` e ganha mensagem própria na tela, em vez de virar "erro
  * ao carregar" — o operador precisa saber que a espera resolve.
  */
-import { VERSAO_PADRAO_DA_GRAPH } from "@/lib/graph-version";
 import { logger } from "@/lib/logger";
+
+import { baseDaGraphDeAnuncio } from "./graph-base";
 import type {
   ContaDeAnuncio,
   FalhaDeLeitura,
   ResultadoDeLeitura,
 } from "../types";
-
-/**
- * A MESMA versão que `conversions.ts` fixa, e pelo mesmo motivo: a instalação
- * não deve conviver com duas versões da mesma plataforma. Subir de versão é uma
- * mudança deliberada, feita num arquivo só (`lib/graph-version.ts`), depois de
- * reconferir os campos — a lição do achado 2 acima é justamente que campo
- * válido some entre versões.
- */
-const VERSAO_DA_API = VERSAO_PADRAO_DA_GRAPH;
 
 const TEMPO_LIMITE_MS = 20_000;
 
@@ -314,8 +306,14 @@ async function buscarPaginado<T>(
   return { ok: true, dados: acumulado };
 }
 
-function montarUrl(caminho: string, parametros: Record<string, string>): string {
-  const url = new URL(`https://graph.facebook.com/${VERSAO_DA_API}/${caminho}`);
+/**
+ * Exportada, e não copiada: o endereço da Graph e a versão da API existem UMA
+ * vez neste eixo. Uma segunda cópia em `hierarquia-do-anuncio.ts` sobreviveria à
+ * próxima subida de versão sem ninguém notar — e a lição do achado 2 no
+ * cabeçalho é justamente que campo válido some entre versões.
+ */
+export function montarUrl(caminho: string, parametros: Record<string, string>): string {
+  const url = new URL(`${baseDaGraphDeAnuncio()}/${caminho}`);
   for (const [chave, valor] of Object.entries(parametros)) {
     url.searchParams.set(chave, valor);
   }

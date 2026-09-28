@@ -15,7 +15,7 @@ import {
   MeetingDeliveryBlockedError,
 } from "@/lib/agenda/meet-delivery";
 import { meetVideoUrl } from "@/lib/agenda/google/meet";
-import { textoDoCompromisso } from "@/lib/agenda/texto-do-compromisso";
+import { textoDoCompromisso, type MotivoDaEntrega } from "@/lib/agenda/texto-do-compromisso";
 import { normalizarIdioma, type Idioma } from "@/lib/i18n/idiomas";
 
 export function createMeetDeliveryHandler(deps: {
@@ -108,6 +108,10 @@ export function createMeetDeliveryHandler(deps: {
           channelSessionId: row.channel_session_id,
           crmDailyLimit: row.daily_message_limit,
           body: textoDoCompromisso({
+            // O motivo viaja no payload do job, posto por quem enfileirou. Sem
+            // ele, `primeiro_envio` — o comportamento de antes desta mudança, e
+            // o certo para toda entrega que já estava na fila.
+            motivo: (job.payload.motivo as MotivoDaEntrega | undefined) ?? "primeiro_envio",
             startsAt: row.starts_at,
             timeZone: row.time_zone,
             // Sem Meet não há link, e o texto não inventa um.

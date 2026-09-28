@@ -35,7 +35,7 @@
 import { randomUUID } from "node:crypto";
 
 import { createClient } from "@supabase/supabase-js";
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./helpers/test";
 
 import { credenciaisSupabaseDeTeste } from "../../scripts/lib/env-de-teste";
 
@@ -94,7 +94,7 @@ async function entrar(page: Page, email: string) {
   await page.goto("/login");
   await page.getByLabel(/e-?mail/i).fill(email);
   await page.getByLabel(/senha/i).fill(senha);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app(\/|$)/, { timeout: 30_000 });
 }
 
@@ -157,4 +157,74 @@ test("fuso inutilizável no banco não derruba a tela — ela abre no padrão do
     `com ${FUSO_QUE_O_INTL_RECUSA} gravado, a Agenda não abriu — a escada de fuso deixou de falhar aberta`,
   ).toBeVisible({ timeout: 30_000 });
   await expect(page.locator('[data-testid^="coluna-dia-"]').first()).toBeAttached();
+});
+
+/**
+ * O CASO QUE A DECISÃO DO DONO CRIOU (#1350, 2026-09-20): o relógio é da
+ * ORGANIZAÇÃO, e o navegador de quem abre não decide nada.
+ *
+ * Aqui a organização está em Kiritimati (UTC+14) e o NAVEGADOR em São Paulo
+ * (UTC−3): dezessete horas de diferença, então os dois quase nunca concordam
+ * sobre que dia é hoje.
+ *
+ * ⚠️ A ASSERÇÃO NÃO REFAZ CONTA DE FUSO, de propósito: ela compara o que o
+ * servidor pintou ANTES da hidratação com o que a grade desenha DEPOIS. Um
+ * teste que recalculasse o fuso para conferir o fuso compartilharia o erro do
+ * produto e ficaria verde junto com ele. Ou os dois lados batem, ou não batem.
+ */
+test.describe("com o navegador em outro fuso que a organização", () => {
+  test.use({ timezoneId: "America/Sao_Paulo" });
+
+  test("a grade depois da hidratação mostra a MESMA semana que o servidor pintou", async ({
+    page,
+  }) => {
+    const { email } = await fixture(FUSO_DA_ORG);
+    await entrar(page, email);
+
+    // 1) o que o SERVIDOR pinta, com o JavaScript da aplicação bloqueado.
+    await page.route("**/_next/static/chunks/**", (rota) => rota.abort());
+    await page.goto("/app/agenda");
+    const doServidor = await page
+      .locator('[data-testid^="coluna-dia-"]')
+      .evaluateAll((els) =>
+        els.map((el) => el.getAttribute("data-testid")!.replace("coluna-dia-", "")).sort(),
+      );
+    expect(
+      doServidor,
+      "o servidor não desenhou a semana — sem ela não há o que comparar",
+    ).toHaveLength(7);
+
+    // 2) o que a GRADE mostra com a página viva.
+    await page.unroute("**/_next/static/chunks/**");
+    await page.goto("/app/agenda");
+    await expect(page.getByTestId("tela-agenda")).toBeVisible({ timeout: 30_000 });
+    // A grade repinta na hidratação; espera a semana ESTABILIZAR antes de ler,
+    // senão o que se compara é o meio da troca.
+    await expect
+      .poll(
+        async () =>
+          (
+            await page
+              .locator('[data-testid^="coluna-dia-"]')
+              .evaluateAll((els) =>
+                els.map((el) => el.getAttribute("data-testid")!.replace("coluna-dia-", "")).sort(),
+              )
+          ).join(","),
+        { timeout: 20_000, message: "a grade não chegou a desenhar sete dias com a página viva" },
+      )
+      .toMatch(/^(\d{4}-\d{2}-\d{2},){6}\d{4}-\d{2}-\d{2}$/);
+
+    const doNavegador = await page
+      .locator('[data-testid^="coluna-dia-"]')
+      .evaluateAll((els) =>
+        els.map((el) => el.getAttribute("data-testid")!.replace("coluna-dia-", "")).sort(),
+      );
+
+    expect(
+      doNavegador,
+      `a grade trocou de semana na hidratação: o servidor pintou ${doServidor[0]} e o ` +
+        `navegador desenhou ${doNavegador[0]}. O relógio da organização deixou de valer ` +
+        "para os dois lados (#1350).",
+    ).toEqual(doServidor);
+  });
 });

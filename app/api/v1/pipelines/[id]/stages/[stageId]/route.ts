@@ -44,6 +44,15 @@ const bodySchema = z
     is_won: z.boolean().optional(),
     is_lost: z.boolean().optional(),
     depois_de: z.string().min(1).nullable().optional(),
+    /**
+     * Probabilidade de ganho da etapa, 0–100 (migration 0426). `null` limpa a
+     * calibração — e a previsão passa a reportar a etapa no balde "sem
+     * probabilidade". O CHECK do banco é a rede de segurança; recusar aqui é
+     * para a mensagem sair em português, antes de tocar no banco.
+     */
+    win_probability: z.number().int().min(0).max(100).nullable().optional(),
+    /** Negócio que entra nesta etapa abre um aviso na Central (migration 0440). */
+    avisar_na_central: z.boolean().optional(),
   })
   .strict()
   .refine((b) => Object.keys(b).length > 0, { message: "Nada para alterar." });

@@ -2150,7 +2150,7 @@ EOF
 O E2E prova a tela; ele **não** prova o host. Antes de considerar a feature entregue:
 
 1. Publicar uma tag de teste e deixar a imagem correspondente no GHCR.
-2. Na VPS (`ssh -p 22022 root@129.121.45.100`), rodar `bash hostgator-setup-kit/update.sh` uma vez
+2. Na VPS (`ssh -p 22022 root@203.0.113.10`), rodar `bash hostgator-setup-kit/update.sh` uma vez
    pelo terminal — é o bootstrap que instala o agente.
 3. Confirmar `crontab -l` com a linha do `agent.sh`.
 4. Publicar a tag seguinte e esperar (ou forçar) um ciclo do agente.

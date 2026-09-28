@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/test";
 
 /**
  * DO AVISO ATÉ A JORNADA — o caminho que não existia.
@@ -55,7 +55,7 @@ async function entrar(page: import("@playwright/test").Page, creds: Creds) {
   await page.goto("/login");
   await page.getByLabel(/e-?mail/i).fill(usuario.email);
   await page.getByLabel(/senha/i).fill(creds.password);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app(\/|$)/, { timeout: 20_000 });
 }
 
@@ -211,5 +211,5 @@ test("o selo de plantão distingue de plantão, fora do horário e desligado", a
     "sem jornada publicada o plantão é 24/7 — e ninguém tocou na chave entre um passo e outro",
   ).toBeVisible({ timeout: 15_000 });
 
-  await page.screenshot({ path: ".superpowers/evidence/plantao-tres-estados.png" });
+  await page.screenshot({ path: "evidence/plantao-tres-estados.png" });
 });

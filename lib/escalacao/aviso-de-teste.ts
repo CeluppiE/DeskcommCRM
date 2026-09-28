@@ -12,7 +12,8 @@
  * para um botão que existe para dar certeza.
  *
  * Por isso este arquivo repete a ORDEM do motor (`aviso-ao-suporte.ts`, passos
- * 8 → 15) e reusa as MESMAS portas (`AvisoDb`, `TransporteDoAviso`,
+ * 8 → 15, inclusive o 11b — o destino que voltou a ser número de uma conexão
+ * ativa da organização) e reusa as MESMAS portas (`AvisoDb`, `TransporteDoAviso`,
  * `PacingDoAviso`). O que ele não repete são os dois passos que só fazem
  * sentido com um caso: a reivindicação da entrega e a linha do tempo.
  *
@@ -45,13 +46,13 @@ import type { ErroDaEntregaDeAviso } from "./vocabulario-do-aviso";
 /**
  * As deps são um RECORTE de `AvisoDeps`, e o recorte é a prova.
  *
- * `db` traz só as duas leituras que o teste precisa. Passar o `AvisoDb`
+ * `db` traz só as três leituras que o teste precisa. Passar o `AvisoDb`
  * completo devolveria a garantia de "não escreve na entrega" ao terreno do
  * "confia que ninguém vai chamar" — e o caso de teste que mede isso mede as
  * CHAVES deste objeto, não a ausência de uma linha.
  */
 export interface DepsDoAvisoDeTeste {
-  db: Pick<AvisoDb, "carregaCanal" | "marcaDaOrganizacao">;
+  db: Pick<AvisoDb, "carregaCanal" | "marcaDaOrganizacao" | "destinoEhDaPropriaOrganizacao">;
   transporte: TransporteDoAviso;
   pacing: PacingDoAviso;
   clock: () => Date;
@@ -125,6 +126,18 @@ export async function enviarAvisoDeTeste(
       liberaEm: pacing.liberaEm.toISOString(),
     });
   }
+
+  // ── 11b. O destino ainda é de fora? — a mesma pergunta do motor ─────────
+  // Sem ela, depois de reativar a conexão cujo número é o destino, o teste
+  // mandaria para um número da própria conta e apareceria verde enquanto o
+  // aviso real é recusado — o desfecho que este módulo existe para evitar.
+  let destinoProprio: boolean;
+  try {
+    destinoProprio = await deps.db.destinoEhDaPropriaOrganizacao(orgId, telefone);
+  } catch {
+    return recusa("indeterminado");
+  }
+  if (destinoProprio) return recusa("destino_da_propria_organizacao");
 
   // ── 12. O destino ────────────────────────────────────────────────────────
   const to = await deps.transporte.resolveDestino(orgId, canal, telefone);

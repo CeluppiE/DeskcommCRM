@@ -12,7 +12,7 @@ import { apiClient } from "@/lib/api/client";
  */
 export type { AtRiskLead } from "@/app/api/v1/leads/at-risk/route";
 import type { AtRiskLead } from "@/app/api/v1/leads/at-risk/route";
-import type { DemandaSemProximoPasso } from "@/lib/leads/radar-de-risco";
+import type { DemandaSemProximoPasso, PropostaEsperandoRevisao, PropostaVencidaSemRetomada } from "@/lib/leads/radar-de-risco";
 
 export interface AtRiskData {
   items: AtRiskLead[];
@@ -21,6 +21,10 @@ export interface AtRiskData {
   /** Invariante 4 (passo 4 do cap. 5): demandas abertas sem próximo passo. */
   sem_proximo_passo: DemandaSemProximoPasso[];
   total_sem_proximo_passo: number;
+  /** N3: negócios com proposta vencida e sem proposta mais nova. */
+  propostas_vencidas_sem_retomada: PropostaVencidaSemRetomada[];
+  /** C6: rascunhos com aviso de revisão aberto na Central. */
+  propostas_esperando_revisao: PropostaEsperandoRevisao[];
 }
 
 /** Radar de risco (C1). Polling 60s — a atividade dos leads muda no worker/inbox. */

@@ -24,6 +24,10 @@
  * commit): assim o doc não fica "certo na major e desatualizado na minor" — ele
  * afirma exatamente aquilo que este teste cobre, e nada além. Gate e doc medem a
  * mesma coisa.
+ *
+ * O ESLint entrou na lista com a issue #297: o AGENTS.md declarava "ESLint 9"
+ * à mão e nenhum gate lia a frase — a major 10 viria e o doc ficaria para trás
+ * em silêncio, a mesma classe de defeito do "Zod 3".
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -42,6 +46,7 @@ const BIBLIOTECAS: Array<{ rotulo: string; pacote: string }> = [
   { rotulo: "Vitest", pacote: "vitest" },
   { rotulo: "Playwright", pacote: "@playwright/test" },
   { rotulo: "Sentry", pacote: "@sentry/nextjs" },
+  { rotulo: "ESLint", pacote: "eslint" },
 ];
 
 function versaoInstalada(pkg: Record<string, Record<string, string>>, nome: string): string {

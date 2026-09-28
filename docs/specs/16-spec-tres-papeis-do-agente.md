@@ -110,6 +110,9 @@ capacidade de mexer na operação."*
 - **Vê:** estado do lead, a declaração, o histórico, as 51 capacidades do catálogo.
 - **Tools:** as de escrita do catálogo MCP + as nativas de operação (`update_lead_state`,
   `schedule_followup`, `save_lead_note`, `open_human_case`, `provide_case_update`).
+- `followup.callback_enabled=false` oculta somente a criação de retorno (`schedule_followup` /
+  `crm_schedule_followup`) nos dois papéis. Consulta, cancelamento e inscrição em fluxo
+  configurado mantêm as regras próprias; agendamento de compromisso não é callback.
 - **Não tem canal.** `send_message` não existe no toolset dele. Não é regra de prompt — é ausência.
 - **Saída:** chamadas de ferramenta + registro. Um turno sem ação é **"nada a fazer" registrado**,
   nunca um `return` mudo.

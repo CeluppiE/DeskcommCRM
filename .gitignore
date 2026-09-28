@@ -58,6 +58,16 @@ supabase/.branches/
 # Epic executor (skill artifacts)
 .epic-executor/
 
+# Candidatos a golden set (F3-09/F3-11): os DOIS caminhos que os gravam em runtime — o
+# near-miss do matcher de skills e a divergência do classificador de etapa — escrevem o
+# TEXTO do lead no arquivo, para curadoria humana. É registro de dado do titular, não
+# artefato do produto: versionado, um `git add -A` publica conversa de cliente no repo, e no
+# clone de todo mundo, de onde ela não sai mais. A curadoria é local.
+# Ignora os dois prefixos que o engine grava, e não a pasta: a spec 15 (§11.1) reserva este
+# diretório para os goldens, que são curados à mão e não carregam texto de cliente.
+lib/agent-engine/golden-candidates/skill-miss_*.json
+lib/agent-engine/golden-candidates/stage-divergence_*.json
+
 # Claude Code harness artifacts (scheduled tasks lock, etc)
 # gov-loop: agents/ e commands/ são maquinaria versionada do loop e PRECISAM
 # viajar com o repo (merge de gov/setup → main); o resto de .claude/ segue local.
@@ -144,6 +154,11 @@ backups/
 # Marcas de execução do kit (agent.sh / update.sh)
 .update.lock
 .deskcomm-site-url-avisado
+# Marcador que o install.sh grava quando a instalação termina com o app no ar,
+# e que a guarda de arquitetura (#1042/#1266) lê para distinguir instalação NOVA
+# de instalação existente numa VPS ARM (#1778). É estado da máquina de quem
+# instalou, nunca entra no repositório — igual ao `.env` que mora ao lado dele.
+.deskcomm-instalado
 
 # Dump de banco de QA. A doutrina já estava escrita duas linhas acima e só o
 # PADRÃO faltava: `backups/` não casa com `.qa-backups/`, e um dump de 1,1 MB de
@@ -163,3 +178,6 @@ docker-compose.override.yml
 # rodada. Versionado, ele sujava a árvore de quem rodava os testes.
 __pycache__/
 *.pyc
+
+# Runtime do instalador single-server: Supabase self-hosted, credenciais e dados.
+.runtime/

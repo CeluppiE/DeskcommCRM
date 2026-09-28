@@ -46,7 +46,7 @@ DeskcommCRM é um sistema operacional de vendas open source com agentes de IA na
 
 ### Idempotência & event sourcing leve
 - Mensagens WhatsApp e eventos externos: `unique (organization_id, external_id)` + captura `code === '23505'` no INSERT
-- POSTs de criação na API aceitam header `Idempotency-Key: <uuid>` (TTL 24h via Upstash)
+- POSTs de criação na API aceitam header `Idempotency-Key: <uuid>` (TTL 24h). O recibo mora no **Postgres** (`public.idempotency_keys`, único por organização + chave + endpoint), não no Upstash — ver `lib/api/idempotency.ts`. Quais rotas leem o header: `grep -rln 'Idempotency-Key' app/api/v1 --include='route.ts'`
 - **Trigger Postgres NUNCA faz HTTP.** Trigger emite linha em `event_log`; worker (cron / Realtime listener) consome e dispara side effect
 
 ### API REST `/api/v1/`
@@ -83,6 +83,9 @@ DeskcommCRM é um sistema operacional de vendas open source com agentes de IA na
   - **⚠️ CADASTRAR e PROVAR são perguntas diferentes.** A política decide o cadastro. Já `mfaEmDivida()` — o 403 `mfa_required` das rotas — NÃO consulta a política: quem TEM fator prova na sessão, sempre. Ligá-lo à política faria quem ativa a verificação por vontade própria ter o fator ignorado
   - Ligar/desligar vive em **Configurações › Segurança**; desligar o próprio fator exige sessão `aal2` (senão uma sessão roubada desliga a proteção com um clique)
 - Permissão por pipeline (`user_pipeline_access`) **NÃO** entra no MVP
+- Suporte temporário: todo handler mutante de `app/api/v1` declara `requireSupportWrite(`
+  de `lib/impersonate/support.ts` **antes do efeito**. É guarda de efeito, não de papel — não substitui
+  `requireRole`/RBAC/MFA — e é cobrada pelo gate `tests/unit/suporte-cobertura-de-efeitos.test.ts`
 
 ### Audit log
 - Toda mutação POST/PATCH/DELETE bem-sucedida → 1 entrada em `api_audit_log` (fire-and-forget, p99 ≤500ms)
@@ -328,12 +331,17 @@ O não-negociável:
 
 ```bash
 nvm use                    # node 22
-npm install
+pnpm install               # o gerenciador é pnpm (packageManager no package.json), não npm
 cp .env.example .env.local  # preencher
 docker compose up -d        # WAHA local
-npm run dev                 # http://localhost:3000
+pnpm dev                    # http://localhost:3000
+pnpm worker                 # agent-worker (processo separado do Next)
+pnpm dev:crons              # chama localmente só os crons de PATHS em scripts/dev-crons.ts (não todos)
 ```
 
+Schema: aplique `supabase/baseline.sql`, **não** as migrations (a cadeia não sobe do zero).
+Stack local completa (Supabase via `scripts/local-supabase.sh`; app, worker, scheduler, WAHA e Redis via `docker-compose.local.yml`), depois de rodar
+`./ubuntu-local-installer.sh` uma vez: `pnpm local:up | local:down | local:status | local:logs`.
 Ver `README.md` pra detalhes de setup.
 
 ---
@@ -346,6 +354,19 @@ pnpm lint        # eslint next/core-web-vitals
 pnpm test:unit   # Vitest (NÃO inclui tests/invariants/** — ver abaixo)
 pnpm test:db     # Postgres efêmero + baseline install/update + 364 invariantes
 pnpm test:e2e    # Playwright (requer dev server)
+pnpm gov:verify  # typecheck + lint + lint:channels + lint:role-rank + test:unit
+pnpm cercas      # só as cercas estruturais (projeto vitest "cercas")
+pnpm test:journeys  # Playwright com tests/journeys/playwright.config.ts
+pnpm format:check   # prettier
+```
+
+Um teste só:
+
+```bash
+pnpm vitest run lib/foo/bar.test.ts         # um arquivo unit
+pnpm vitest run -t "nome do caso"           # um caso pelo nome
+pnpm test:db tests/invariants/x.test.ts     # um invariante (o script repassa os args ao vitest)
+pnpm playwright test tests/e2e/x.spec.ts    # uma spec e2e
 ```
 
 **⚠️ `test:unit` NÃO é `tests/unit/`.** O script é `vitest run` **sem caminho**, e ele alcança
@@ -388,8 +409,22 @@ Duas armadilhas irmãs, as duas pagas no mesmo dia:
   echo "rodapé: ${r:-0 failed} | grep contou: $g"   # têm de bater
   ```
 
-  Se não baterem, a sonda está cega — troque por `--reporter=verbose` e rode de
-  novo, em vez de acreditar no silêncio.
+  Se não baterem, antes de diagnosticar *"sonda cega"* e re-rodar a suíte inteira
+  com `--reporter=verbose`, confira se a divergência é explicada por **falha de
+  coleta ou de hook** (que o Vitest imprime na seção dedicada `Failed Suites`,
+  somando às linhas `FAIL` sem entrar no rodapé de casos `Tests ... failed`):
+
+  ```bash
+  grep -aoE "Failed Suites [0-9]+" /tmp/vt.log | grep -oE "[0-9]+"   # > 0 ⇒ arquivo/suíte falhou SEM ser por caso
+  grep -aqE "^ *Test Files" /tmp/vt.log && echo "log inteiro" || echo "log truncado — o zero não vale"
+  ```
+
+  O segundo comando é necessário: a seção só aparece quando existe falha de
+  suíte, então log truncado ou comando que não rodou também devolvem zero.
+  Se `Failed Suites` for > 0 (e o log estiver inteiro), a conta fecha: `Tests failed` + `Failed Suites` = `grep FAIL`.
+  A causa (falha de sintaxe na coleta ou `Hook timed out` em `beforeAll`) está no próprio log.
+  Reserve o diagnóstico de *"sonda cega"* (trocar por `--reporter=verbose`) para quando
+  as seções também não explicarem a divergência.
 
   **E as duas podem bater em zero com a suíte reprovada.** O Vitest sai com
   `exit=1` quando há **erro não tratado** durante a execução, mesmo com todos os
@@ -512,7 +547,7 @@ Ao mexer em schema, RLS, RBAC, atribuição, escopo, roteamento, follow-up, webh
 
 **Registro obrigatório (senão o progresso é invisível):**
 - Mapa de jornadas vivo em `docs/testing/user-journey-map.md` — casos por jornada, prioridade (`[P0]` primeira impressão), e achados. Atualize quando adicionar cobertura ou achar bug.
-- Specs em `tests/e2e/*.spec.ts` que dirigem o **frontend** (não só API). Evidência visual (screenshot/trace) em `.superpowers/evidence/`.
+- Specs em `tests/e2e/*.spec.ts` que dirigem o **frontend** (não só API). Evidência visual (screenshot/trace) em `evidence/<entrega>/`, que é versionada; nunca em pasta que o `.gitignore` ignora, senão a prova não sai da sua máquina.
 - Bug achado executando → **conserta na causa raiz**, com migration versionada se tocar schema (ver doutrina abaixo), commit próprio, e re-teste verde como prova.
 
 **Medidas de front-end por ferramenta, nunca a olho** (`getBoundingClientRect`/`getComputedStyle` no Playwright). Ver `feedback_protocolo_execucao_visivel` na memória.
@@ -542,8 +577,24 @@ Processo padrão (siga sempre):
 1. **Arquivo versionado** em `supabase/migrations/` com o padrão do repo: `<timestamp>_<NNNN>_<slug>.sql` (ex.: `20260706210000_0027_whatsapp_conversation_unification.sql`). `NNNN` é o próximo número sequencial — e **não** é o do último arquivo da listagem:
 
    ```bash
-   ls supabase/migrations/ | grep -oE '_[0-9]{4}_' | tr -d _ | sort -n | tail -1
+   # A POPULAÇÃO da pergunta: main do PRODUTO (o remoto que aponta para
+   # melgarafael/DeskcommCRM, com qualquer nome) + TODO PR ABERTO, inclusive de
+   # fork. O `ls` abaixo mede o DISCO, que responde uma pergunta menor.
+   pnpm checar:colisao-de-migration   # declara o que mediu e o que não mediu
    ```
+
+   Se a leitura for manual, três coisas são obrigatórias: um `git fetch` antes (a árvore em dia
+   não é a main atual), `git ls-tree` da main do PRODUTO e não `ls` do disco, e o `NNNN` tirado
+   com a **âncora do nome canônico** aplicada ao nome **sem a pasta** —
+   `sed 's#.*/##' | sed -nE 's#^[0-9]{14}_([0-9]{4})_.*#\1#p'`. O
+   `ls | grep -oE '_[0-9]{4}_'` que estava aqui pegava um `_NNNN_` do SLUG (com
+   `…_0326_relatorio_2024_anual.sql` o teto virava 2024) e media a árvore de
+   trabalho, onde a 0336 já podia estar reservada por um PR aberto (#1273).
+
+   O `checar` mede o arquivo que você **já** acrescentou: sem migration nova, ele responde
+   `OK — nenhuma migration acrescentada` e não dá número. Crie o arquivo com um número provisório
+   e rode; ou, para alocar antes, use a enumeração do que está em voo em `triagem/TRIAGEM.md`
+   (modo de falha 37). O teto é a main **mais** tudo em voo, em NNNN **e** em timestamp.
 
    O nome do arquivo começa pelo **timestamp**, e timestamp e `NNNN` podem discordar: em
    09/09/2026 o `ls | tail -1` devolvia o `_0230_` (timestamp de 07/09) enquanto o maior `NNNN`
@@ -656,8 +707,8 @@ mudança lá — senão a página ensina um guia que não existe. Ela e a de cha
 
 Antes de declarar uma task pronta:
 
-1. `npm run typecheck` passa zerado
-2. `npm run lint` zerado
+1. `pnpm typecheck` passa zerado
+2. `pnpm lint` zerado
 3. Testes unit/e2e relevantes existem e passam
 4. RLS testada se feature toca tabela tenant-aware
 5. Audit log emitido se há mutação relevante
@@ -667,7 +718,7 @@ Antes de declarar uma task pronta:
 9. Env vars novas adicionadas em `.env.example` + `lib/env.ts`
 10. Doc atualizada se mudou contrato (PRD/spec)
 11. **Mudança de schema saiu como migration versionada + linha no MANIFEST** (ver Doutrina de Migrations) — clones conseguem atualizar
-12. **Se tocou UI/fluxo de usuário: provado pela tela como um leigo faria**, em ambiente fresco estilo VPS, com evidência visual (ver Doutrina de QA Visual com Recursos Reais) — curl não conta
+12. **Se tocou UI/fluxo de usuário: provado pela tela como um leigo faria**, em ambiente fresco estilo VPS, com evidência visual (ver Doutrina de QA Visual com Recursos Reais) — curl não conta. Quando o caminho passa por um agente de IA, o caso de aceite mede o **par** (a tela pelo agente + a ferramenta chamada direto, com o mesmo texto cru) e só conta como prova quando os dois concordam — emenda em [`docs/doctrine/prova-em-par.md`](docs/doctrine/prova-em-par.md) (#489)
 13. **Living System Checklist respondido** (lei em `docs/doctrine/sistema-vivo.md`; racional no manual `docs/doctrine/sistema-vivo/`) — a feature não é ilha: tem entrada + saída, emite atividade/log, aparece na tela, tem porta na navegação, tem mecanismo anti-morte, **declara seu laço de retorno** (invariante 7 — o que muda no sistema quando ela erra), e o mapa vivo (`docs/architecture/`) reflete peça nova com ≥2 arestas. Resposta que não **nomeia o artefato concreto** (consumidor real, tela real, log real) não conta
 14. **Tela nova tem porta** — declarada em **`lib/navigation/catalogo.ts`** (no `NAV_CATALOG`, com seu grupo), ou na allowlist de `tests/unit/navegacao-completude.test.ts` **com justificativa escrita**. Ter tela e ser alcançável são coisas diferentes: o CI reprova tela que existe mas em que só se chega digitando a URL.
 

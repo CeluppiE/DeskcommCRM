@@ -20,7 +20,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./helpers/test";
 
 import { TETO_TOOLS_POR_AGENTE } from "@/lib/mcp/tools/selecao-por-pacote";
 
@@ -69,33 +69,37 @@ const TOOLS_DO_SEED = [
   "crm_get_lead",
   "crm_move_lead_stage",
   "crm_list_leads",
-  // ⚠️ AS SEIS ABAIXO NÃO SÃO ENFEITE: elas existem para o cenário ESTOURAR.
+  // ⚠️ AS OITO ABAIXO NÃO SÃO ENFEITE: elas existem para o cenário ESTOURAR.
   //
   // A jornada do teto (issue #162) só existe se a soma passar do teto: eram 3
   // do seed + 18 de "Atender" = 21 contra teto 20, e a tela recusava dizendo
   // "faltam 1 vaga". Com teto 25 essas mesmas 21 passam, a recusa nunca acontece
   // e o caso vira um clique que sempre dá certo — verde sem medir nada.
   //
-  // Nove reproduzem a MESMA aritmética no teto novo: 9 + 17 = 26 > 25, recusa
-  // por 1 vaga; desligar uma deixa 8 + 17 = 25, que é o teto exato e passa.
+  // A cada subida do teto a aritmética ameaçava caber de novo. Com teto 27
+  // (a proposta comercial entrou no `vender` e o teto subiu com ela) as oito
+  // reproduzem a MESMA conta: com os 3 do seed, 11 + 17 = 28 > 27, recusa por
+  // 1 vaga; desligar uma das oito deixa 10 + 17 = 27, que é o teto exato e
+  // passa. O que segura o caso é essa soma estourar por exatamente UMA vaga —
+  // estourar por 2 muda o texto da tela e o caso morre, caber no teto faz a
+  // recusa sumir e o caso virar verde sem medir nada.
   //
   // Os 17 são o pacote "Atender" DEPOIS da #528, e foi ela que mudou o número:
   // a crítica que o pacote contava (o envio de WhatsApp, que o motor descarta
   // em todo turno) deixou de ser oferecida, e com ela saiu uma vaga da conta.
-  // Com as oito antigas, 8 + 17 = 25 exatas — o pacote passaria a caber e o
-  // caso de recusa morreria calado, que é o desfecho que se quer evitar.
   //
   // As escolhidas ficam FORA do pacote "Atender" de propósito — se alguma
   // estivesse dentro, a união seria menor que a soma e a conta acima não valeria.
-  // Quatro são a família de agenda, que é o assunto do defeito que subiu o teto.
+  // Quatro são a família de agenda, que é o assunto do defeito que subiu o teto
+  // pela primeira vez; as quatro últimas são leitura pura de outros pacotes,
+  // para a aritmética continuar estourando a cada subida.
   "crm_find_free_slots",
   "crm_list_appointments",
   "crm_book_appointment",
   "crm_reschedule_appointment",
   "crm_list_pipelines",
-  // A NONA: leitura pura, fora de "Atender" — que é o que a conta acima exige.
-  // Existe para a aritmética continuar estourando depois da #528; sem ela o
-  // cenário de recusa vira um clique que sempre dá certo.
+  "crm_list_event_types",
+  "crm_list_human_cases",
   "crm_list_knowledge_sources",
 ];
 
@@ -111,7 +115,7 @@ async function login(page: Page, email: string): Promise<void> {
   await page.goto("/login");
   await page.locator("#email").fill(email);
   await page.locator("#password").fill(creds.password);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app(\/|$)/);
 }
 
@@ -228,15 +232,19 @@ test.describe("Configurar o que o agente pode fazer", () => {
     //
     // "Atender" exige 17 vagas: 17 automáticas e nenhuma crítica — a única que
     // ele tinha (o envio de WhatsApp) deixou de ser oferecida na #528, e com ela
-    // saiu uma vaga da conta. Com as 9 do seed dá 26, acima do teto de 25.
+    // saiu uma vaga da conta. Com os 11 do seed (3 + 8) dá 28, acima do teto de 27.
     //
-    // ⚠️ AS 9 SÃO O QUE MANTÉM ESTE CASO VIVO. Eram 3, e 3 + 18 = 21 estourava o
-    // teto de 20. Quando o teto foi para 25 essas mesmas 21 passaram a caber: a
-    // recusa nunca aconteceria e o caso viraria um clique que sempre dá certo —
-    // verde sem medir nada, que é o pior desfecho para um teste de recusa. As 5
-    // novas entraram aí; a NONA entrou com a #528, que tirou uma vaga do pacote
-    // (8 + 17 = 25 exatas: o pacote caberia e a recusa sumiria de novo).
-    // Todas estão FORA de "Atender", senão a união seria menor que a soma.
+    // ⚠️ AS 8 EXTRAS SÃO O QUE MANTÉM ESTE CASO VIVO. Eram 3, e 3 + 18 = 21
+    // estourava o teto de 20. A cada subida do teto (20 → 25 → 27, a última
+    // quando a proposta comercial entrou no `vender`) e a cada queda do pacote
+    // "Atender" (18 → 17, na #528), a mesma soma ameaçava caber de novo — e cada
+    // vez que isso acontece a recusa deixa de existir e o caso vira um clique que
+    // sempre dá certo, verde sem medir nada, o pior desfecho para um teste de
+    // recusa. As 8 (4 de agenda + 4 de leitura pura) estão FORA de "Atender", senão
+    // a união seria menor que a soma.
+    //
+    // Aritmética atual: 11 + 17 = 28 > 27, recusa por 1 vaga; desligar uma das
+    // oito deixa 10 + 17 = 27, o teto exato.
     //
     // Antes da correção a tela aceitava o pacote, chegava a 20 exatas e deixava
     // o checkbox da crítica DESABILITADO — prometia uma escolha que o produto
@@ -244,6 +252,13 @@ test.describe("Configurar o que o agente pode fazer", () => {
     // faltam, e o operador faz o que a própria tela manda.
     await page.getByTestId("switch-pacote-atender").click();
     await expect(page.getByTestId("aviso-teto")).toContainText(/faltam? 1 vaga/);
+    // O aviso nasce DENTRO do cartão clicado, não no topo do seletor: com a
+    // tela rolada até um pacote lá de baixo, o aviso do topo ficava fora da
+    // vista e o clique parecia não fazer nada.
+    await expect(
+      page.getByTestId("pacote-atender").getByTestId("aviso-teto"),
+      "a recusa precisa aparecer onde a pessoa clicou",
+    ).toBeVisible();
     await expect(
       page.getByTestId("pacote-atender"),
       "recusar significa NÃO aplicar: pacote meio-ligado seria o pior dos dois mundos",

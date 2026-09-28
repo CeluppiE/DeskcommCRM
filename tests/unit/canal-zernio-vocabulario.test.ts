@@ -34,6 +34,7 @@ describe("capabilities do canal intermediado", () => {
       voiceNote: "opus-only",
       groups: "limited",
       costPerMessage: true,
+      alteraMensagemEnviada: false,
     });
   });
 
@@ -121,21 +122,23 @@ describe("o envelope carrega a thread do provider", () => {
     expect(convSelect, "falta a coluna no select da conversa").toContain(
       "provider_conversation_id",
     );
-    // QUATRO desde que o cartão de contato passou a sair pelo canal: texto,
-    // mídia, modelo e contato. O número é conferido, e não `>= 1`, justamente
-    // para obrigar quem acrescenta um call site novo a DECIDIR se ele também
-    // carrega a thread — foi assim que este caso pegou a rama de modelo, que a
-    // princípio não precisaria dela mas precisa quando o provider reaproveita a
-    // conversa existente, e foi assim que ele pegou a de contato agora.
+    // CINCO desde que o envio por media_url (documento/imagem externa — achado
+    // ao investigar o PDF de proposta que saía sem anexo) ganhou call site
+    // próprio: texto, mídia (storage-first), modelo, contato e media_url. O
+    // número é conferido, e não `>= 1`, justamente para obrigar quem acrescenta
+    // um call site novo a DECIDIR se ele também carrega a thread — foi assim
+    // que este caso pegou a rama de modelo, que a princípio não precisaria
+    // dela mas precisa quando o provider reaproveita a conversa existente, e
+    // foi assim que ele pegou a de contato e agora a de media_url.
     //
-    // A resposta para o cartão de contato é a mesma das outras três: o canal
-    // oficial endereça por thread própria, e um cartão enviado sem ela abriria
-    // conversa nova em vez de continuar a que está aberta.
+    // A resposta é a mesma das outras: o canal oficial endereça por thread
+    // própria, e um envio sem ela abriria conversa nova em vez de continuar a
+    // que está aberta.
     const passagens = [...fonte.matchAll(/providerConversationId:\s*c\.provider_conversation_id/g)];
     expect(
       passagens.length,
-      "todos os call sites (texto, mídia, modelo e contato) precisam passar",
-    ).toBe(4);
+      "todos os call sites (texto, mídia, modelo, contato e media_url) precisam passar",
+    ).toBe(5);
   });
 });
 

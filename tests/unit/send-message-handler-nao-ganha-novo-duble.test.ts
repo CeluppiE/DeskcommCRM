@@ -8,18 +8,14 @@ const UNIT = join(RAIZ, "tests", "unit");
 const IMPORT_COMPARTILHADO = '@/tests/helpers/duble-do-handler';
 
 /**
- * Dívida já existente quando o helper nasceu. A lista só pode ENCOLHER.
+ * A dívida que existia quando o helper nasceu. A lista só pode ENCOLHER.
  *
- * Cada migração remove um nome daqui. Um arquivo novo nunca entra: se um sexto
- * teste de `sendMessageHandler` inventar outro `makeSupabase`, este gate falha e
- * aponta para o helper compartilhado.
+ * Hoje ela está VAZIA: a onda da #286 migrou os quatro dublês legados que
+ * restavam para `tests/helpers/duble-do-handler.ts`. Um arquivo novo nunca
+ * entra: se outro teste de `sendMessageHandler` inventar um `makeSupabase`
+ * local, este gate falha e aponta para o helper compartilhado.
  */
-const DUBLES_LEGADOS = new Set([
-  "messages-handler-desfechos.test.ts",
-  "messages-handler-eco-duplicado.test.ts",
-  "messages-handler-silencio-ia-apos-humano.test.ts",
-  "messages-handler-canal-intermediado.test.ts",
-]);
+const DUBLES_LEGADOS = new Set<string>();
 
 function arquivosUnitarios(): string[] {
   return readdirSync(UNIT)

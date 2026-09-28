@@ -77,14 +77,29 @@ const followupSendWindowSchema = z
 //
 // #490 acrescenta `send_window`: `null` preserva o comportamento histórico; uma
 // faixa limita SOMENTE envios proativos, sem tocar o horário do inbound.
-const followupConfigSchema = z
+const followupConfigObjectSchema = z
   .object({
     enabled: z.boolean().default(false),
     flow_pointer_ids: z.array(UUID).max(20).default([]),
     send_window: followupSendWindowSchema.nullable().optional().default(null),
+    callback_enabled: z.boolean().optional(),
   })
-  .strict()
-  .default({ enabled: false, flow_pointer_ids: [], send_window: null });
+  .strict();
+
+const followupConfigSchema = followupConfigObjectSchema.default({
+  enabled: false,
+  flow_pointer_ids: [],
+  send_window: null,
+});
+
+const followupPatchSchema = followupConfigObjectSchema
+  .extend({
+    enabled: followupConfigObjectSchema.shape.enabled.removeDefault(),
+    flow_pointer_ids: followupConfigObjectSchema.shape.flow_pointer_ids.removeDefault(),
+    send_window: followupConfigObjectSchema.shape.send_window.removeDefault(),
+    callback_enabled: followupConfigObjectSchema.shape.callback_enabled,
+  })
+  .partial();
 
 export type FollowupConfig = z.infer<typeof followupConfigSchema>;
 
@@ -148,6 +163,7 @@ const versionShapeSchema = z
       .max(20)
       .default(["falar com humano", "atendente", "pessoa real"]),
     handoff_tool_enabled: z.boolean().default(true),
+    proposal_ai_draft_enabled: z.boolean().default(true),
     cases_enabled: z.boolean().default(false),
     // Onda 4 — quebra a resposta em bolhas curtas (splitIntoBubbles) espaçadas
     // pelo pacing anti-ban. Defaults espelham a migration 0059.
@@ -208,8 +224,29 @@ export type VersionInput = z.infer<typeof versionShapeSchema>;
 
 export const versionCreateSchema = versionShapeSchema;
 
-/** Edits permitted only on draft versions. All fields optional. */
-export const versionPatchSchema = versionShapeSchema.partial();
+/** Edits permitted only on draft versions. Omitted fields never receive create defaults. */
+export const versionPatchSchema = versionShapeSchema
+  .extend({
+    tool_ids: versionShapeSchema.shape.tool_ids.removeDefault(),
+    max_steps: versionShapeSchema.shape.max_steps.removeDefault(),
+    token_budget: versionShapeSchema.shape.token_budget.removeDefault(),
+    cost_budget_cents: versionShapeSchema.shape.cost_budget_cents.removeDefault(),
+    history_message_window: versionShapeSchema.shape.history_message_window.removeDefault(),
+    history_token_window: versionShapeSchema.shape.history_token_window.removeDefault(),
+    handoff_keywords: versionShapeSchema.shape.handoff_keywords.removeDefault(),
+    handoff_tool_enabled: versionShapeSchema.shape.handoff_tool_enabled.removeDefault(),
+    proposal_ai_draft_enabled: versionShapeSchema.shape.proposal_ai_draft_enabled.removeDefault(),
+    cases_enabled: versionShapeSchema.shape.cases_enabled.removeDefault(),
+    split_messages: versionShapeSchema.shape.split_messages.removeDefault(),
+    split_max_chars: versionShapeSchema.shape.split_max_chars.removeDefault(),
+    followup: followupPatchSchema,
+    operator_enabled: versionShapeSchema.shape.operator_enabled.removeDefault(),
+    operator_model: versionShapeSchema.shape.operator_model.removeDefault(),
+    operator_tool_ids: versionShapeSchema.shape.operator_tool_ids.removeDefault(),
+    pipeline_ids: versionShapeSchema.shape.pipeline_ids.removeDefault(),
+    knowledge_source_ids: versionShapeSchema.shape.knowledge_source_ids.removeDefault(),
+  })
+  .partial();
 
 export const agentMcpCreateSchema = z
   .object({

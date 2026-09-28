@@ -24,6 +24,7 @@
  * saber o que está guardando.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
+import type { Localizacao } from "@/lib/messaging/localizacao";
 
 /** Assinatura HMAC-SHA256 no header `X-Zernio-Signature`. */
 export function verifyZernioSignature(
@@ -66,6 +67,12 @@ export interface ZernioInboundMessage {
   status?: "sent" | "delivered" | "read" | "failed";
   /** Motivo, quando o evento é de falha — é o que explica ao operador. */
   errorReason?: string | null;
+  /**
+   * Quando o desfecho aconteceu no WhatsApp (`statusAt` do evento; `timestamp`
+   * como reserva). É o carimbo de `delivered_at`/`read_at` — a hora em que o
+   * webhook CHEGOU é outra, alguns segundos depois.
+   */
+  statusAt?: string | null;
   /** Id da THREAD no provider — o que endereça o envio livre depois. */
   conversationId: string;
   /** Id da mensagem na plataforma (wamid) — chave de idempotência. */
@@ -83,6 +90,11 @@ export interface ZernioInboundMessage {
    * diz*) — quem interpreta é `lib/leads/atribuicao-de-anuncio.ts`.
    */
   referral: unknown;
+  /**
+   * Coordenadas do pino, quando a mensagem é uma localização. O webhook NÃO as
+   * traz — quem preenche é a ingestão, pela API (`./localizacao.ts`).
+   */
+  location?: Localizacao | null;
 }
 
 export interface ZernioIdentity {
@@ -222,6 +234,7 @@ export function parseZernioInbound(payload: unknown): ZernioInboundMessage | nul
     kind: deStatus ? "status" : "message",
     ...(deStatus ? { status: deStatus } : evento === "message.sent" ? { status: "sent" as const } : {}),
     errorReason: deStatus === "failed" ? explicacaoDoErro(obj(p.error)) : null,
+    ...(deStatus ? { statusAt: str(p.statusAt) ?? str(p.timestamp) } : {}),
     conversationId,
     externalId,
     accountId: str(obj(p.account)?.id) ?? str(obj(p.account)?.accountId) ?? str(p.accountId),
@@ -237,10 +250,14 @@ export function parseZernioInbound(payload: unknown): ZernioInboundMessage | nul
     identity: saida
       ? resolveZernioIdentity(participanteDaConversa(obj(p.conversation)))
       : resolveZernioIdentity(obj(m.sender)),
-    // Posição exata NÃO VERIFICADA contra o provider real (nunca chegou um
-    // clique de anúncio nesta instalação) — tenta na mensagem primeiro (forma
-    // documentada da Cloud API), cai para o nível do evento como fallback.
-    referral: m.referral ?? p.referral ?? null,
+    // MEDIDO no provider real (24/09/2026, 4 cliques de anúncio "Clique para o
+    // WhatsApp"): o Zernio entrega o `referral` em `metadata.referral`, no nível
+    // do EVENTO — nem na mensagem, nem na raiz. Enquanto só as duas primeiras
+    // posições eram lidas (e esta linha dizia "NÃO VERIFICADA"), nenhum contato
+    // vindo de anúncio era marcado: o agente não sabia de qual anúncio o cliente
+    // veio e nenhuma venda chegava à Meta. As outras duas ficam como fallback
+    // (forma documentada da Cloud API).
+    referral: obj(p.metadata)?.referral ?? m.referral ?? p.referral ?? null,
   };
 }
 

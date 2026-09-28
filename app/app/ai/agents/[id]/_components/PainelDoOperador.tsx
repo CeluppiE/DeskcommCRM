@@ -24,6 +24,7 @@ import { useOperatorMetrics } from "@/hooks/ai/useOperatorMetrics";
 
 import { ModelPicker } from "./ModelPicker";
 import { ToolPicker } from "./ToolPicker";
+import { FORA_DO_OPERADOR } from "@/lib/agent-engine/agent/entrega-de-capacidade";
 import type { Provider } from "@/hooks/ai/useCredentials";
 
 interface Props {
@@ -37,6 +38,8 @@ interface Props {
   onToolIdsChange: (ids: string[]) => void;
   /** o modelo do Conversador, para dizer o que "herdar" significa na prática. */
   modeloDoConversador: string;
+  /** O agente desta página. A medida do papel é DELE — ver `ComoOPapelEstaIndo`. */
+  agentId: string | null;
   disabled?: boolean;
 }
 
@@ -53,9 +56,9 @@ interface Props {
  * "quis agir e não pôde" é o único que aponta uma ação de configuração — por isso
  * vem com o caminho, não só com a contagem.
  */
-function ComoOPapelEstaIndo() {
+function ComoOPapelEstaIndo({ agentId }: { agentId: string | null }) {
   const t = useT();
-  const m = useOperatorMetrics(true);
+  const m = useOperatorMetrics(true, agentId);
   if (m.data === undefined) return null;
   const { turnos, agiu, promessas, quisAgirENaoPode, dias } = m.data;
 
@@ -113,7 +116,7 @@ export function PainelDoOperador(props: Props) {
 
   return (
     <div className="space-y-4">
-      {props.enabled ? <ComoOPapelEstaIndo /> : null}
+      {props.enabled ? <ComoOPapelEstaIndo agentId={props.agentId} /> : null}
       <Card className="space-y-3 p-4">
         <div className="flex items-start gap-3">
           <Switch
@@ -215,8 +218,14 @@ export function PainelDoOperador(props: Props) {
                 value={props.toolIds}
                 onChange={props.onToolIdsChange}
                 disabled={desabilitado}
+                ocultar={FORA_DO_OPERADOR}
               />
             </div>
+            <p data-testid="operador-sem-proposta" className="text-xs text-muted-foreground">
+              {t(
+                "Criar rascunho de proposta fica só com o assistente que conversa: ele segue o seu roteiro e sabe quando o cliente já explicou o que quer.",
+              )}
+            </p>
             {props.toolIds.length === 0 ? (
               // Estado legítimo, mas que precisa ser explicado: sem isto o
               // usuário liga o papel, não escolhe nada, e conclui que quebrou.

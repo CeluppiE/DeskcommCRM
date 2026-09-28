@@ -54,7 +54,11 @@ A tripla é indivisível: arquivo em `supabase/migrations/`, apêndice **idempot
 `create or replace function`, `drop policy if exists` + `create policy`), linha no `MANIFEST.md`.
 O kit self-host aplica **só o baseline** — migration sem apêndice não existe para quem instalou.
 
-- `NNNN` e timestamp únicos contra `origin/main` (o hook confere; o script também). Ao renumerar,
+- `NNNN` e timestamp únicos contra a POPULAÇÃO da pergunta: a main do PRODUTO (o remoto que
+  aponta para `melgarafael/DeskcommCRM`, com qualquer nome — num fork, `origin/main` é a main do
+  fork) mais `refs/heads` e `refs/remotes`; os PRs abertos saem por fora, declarados, e quem os
+  mede é `pnpm checar:colisao-de-migration` (issue #1273). O `NNNN` sai da posição do nome
+  canônico (`^[0-9]{14}_([0-9]{4})_`), nunca de um `_NNNN_` do slug. Ao renumerar,
   troque o timestamp junto: renumerar só o `NNNN` é o que fabrica colisão de timestamp.
 - Tabela tenant-aware: `organization_id uuid not null references organizations(id) on delete cascade`,
   `enable row level security`, policy `tenant_isolation_<tabela>_all` via `fn_user_org_ids()`, e a
@@ -91,6 +95,17 @@ Mudou comportamento sem teste? Escreva o teste que fica vermelho sem a sua mudan
 **commite e sabote**: reverta só a linha do conserto (nunca o commit), preveja quantos casos caem
 e quais, rode, confira, restaure. Molde de teste: qualquer `tests/unit/*.test.ts` recente — cabeçalho
 com o defeito que motivou, guarda de vacuidade, asserção no valor (não na presença).
+
+### Caso de aceite que atravessa agente de IA
+Todo caso de aceite que atravessa o agente **vem em par** com a medição direta da ferramenta, com
+o **mesmo texto cru** — não é "além de", é "junto de", e **o par é a unidade**: um lado sozinho não
+diz o que foi medido. Meça os dois (pela tela, pelo agente; e pela ferramenta chamada direto), leve
+as duas medições no PR, e o caso só vale como prova quando as duas **concordam**. Verde do
+agente com vermelho da ferramenta significa que você mediu a capacidade do modelo de compensar a
+ferramenta, e o defeito continua onde estava — foi o que aconteceu com `"quero 2 iphone 15"` (#476),
+que passou por uma bateria que o esperava reprovar. Lei em
+[`docs/doctrine/prova-em-par.md`](../../../../docs/doctrine/prova-em-par.md). O par **não**
+substitui a prova pela tela.
 
 ### Spec e2e nova
 Entra em `SPECS_PARTE_N` do `.github/workflows/e2e.yml`, ou em `FORA_DO_CI` **com o motivo escrito**

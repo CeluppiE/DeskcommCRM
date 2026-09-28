@@ -23,13 +23,15 @@ export interface AgentInboxData {
   open_count: number;
 }
 
-/** Central de avisos do runtime (F1). Polling 60s — avisos nascem no worker. */
+/** Central de avisos do runtime (F1). Polling 30s — avisos nascem no worker. */
 export function useAgentInbox(status: "open" | "resolved" = "open") {
   const podeConsultar = usePermission("ai.inbox.view");
   return useQuery({
     enabled: podeConsultar,
     queryKey: ["agent-inbox", status],
-    refetchInterval: 60_000,
+    // 30 s: é esta leitura que toca o som da etapa que avisa e do pedido de
+    // pessoa (`useSonsDaCentral`) — um minuto de atraso num pedido de pessoa pesa.
+    refetchInterval: 30_000,
     queryFn: () =>
       apiClient
         .get<{ data: AgentInboxData }>(`/api/v1/ai/inbox?status=${status}`)

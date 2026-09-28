@@ -541,6 +541,14 @@ await boss.start();
 - **Retry:** backoff (§8). Após 8 falhas → DLQ. Após **10 falhas consecutivas** numa subscription → `webhook.subscription_disabled` + desabilita `webhook_subscriptions.enabled = false`.
 - **Idempotência:** header `X-Deskcomm-Idempotency-Key = event.id`.
 
+> **Estado real (#1529).** Não existe `webhook-dispatch-worker` nem o header
+> `X-Deskcomm-Idempotency-Key`. O envio é a ação `call_webhook` das automações
+> (`lib/automation/actions/call-webhook.ts`), e a chave de deduplicação é o
+> `X-Webhook-Delivery` — estável entre retentativas e no Reenviar —, ao lado de
+> `X-Webhook-Attempt`, `X-Webhook-Timestamp` e `X-Webhook-Signature`. O
+> contrato para quem recebe está em
+> [`docs/integracao/webhooks-de-saida.md`](../integracao/webhooks-de-saida.md).
+
 ### 6.8 `rag-indexer-worker`
 
 - **Consome:** `nuvemshop.product_synced`, `contact.created/merged`, `lead.created/updated`, eventos KB-edit.
@@ -690,6 +698,10 @@ if (msg.status === 'sent' || msg.waha_message_id) {
 
 - **DB:** `unique constraint` em `(messages.organization_id, waha_message_id)`, `(orders.organization_id, ns_order_id)`.
 - **HTTP outbound (webhooks):** header `X-Deskcomm-Idempotency-Key = event_id`.
+  > **Estado real (#1529):** a chave é o `X-Webhook-Delivery` (uuid v5 de
+  > evento + regra + posição da ação + lista de ações da regra), não o
+  > `event_id` — ver §6.7 e
+  > [`docs/integracao/webhooks-de-saida.md`](../integracao/webhooks-de-saida.md).
 - **WAHA send:** WAHA aceita `idempotency_key` em `sendText` (se não, usar `clientMessageId`).
 - **Embeddings:** chunk_id = `sha256(content + version)`; upsert idempotente.
 

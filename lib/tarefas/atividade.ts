@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+import type { Actor } from "@/lib/api/handlers/types";
 import { emitLeadActivity } from "@/lib/leads/activity-emitter";
 import type { Tarefa } from "@/lib/tarefas/tipos";
 
@@ -19,6 +20,20 @@ import type { Tarefa } from "@/lib/tarefas/tipos";
  * achar que a tarefa não foi criada e criar de novo). O que a falha não pode é
  * sumir — por isso ela vai para o `console` do servidor via o logger padrão do
  * emissor, que devolve `{ ok, error }` em vez de lançar.
+ *
+ * O LAÇO também vale para a tarefa automática (#1540): `lib/tarefas/criar-tarefa.ts`
+ * faz o MESMO INSERT — sem ele, o card do lead mostrava a conversa parar sem
+ * nenhum sinal de que o sistema marcou um retorno.
+ *
+ * ═══ QUEM ASSINA A LINHA ═══
+ *
+ * É `Actor` e não um `actorUserId: string` porque a terceira porta desta
+ * função — a tarefa criada pelo SISTEMA (cron de silêncio, nó `internal_task`)
+ * — não tem pessoa a nomear, e aí a escolha é entre atribuir a linha a alguém
+ * que não fez nada ou não escrever a linha. Nenhuma das duas. O ator vai
+ * explícito em cada chamador: `user` nas rotas da tela, `webhook_source` na
+ * tarefa automática, que `actorParaAtividade` traduz para `system`
+ * (`lib/leads/activity-emitter.ts`, o mesmo padrão de `nascimento-do-lead.ts`).
  */
 export async function registraAtividadeDaTarefa(
   supabase: SupabaseClient,
@@ -26,7 +41,7 @@ export async function registraAtividadeDaTarefa(
     organizationId: string;
     tarefa: Pick<Tarefa, "id" | "title" | "due_date" | "priority" | "lead_id" | "contact_id">;
     tipo: "task_created" | "task_completed";
-    actorUserId: string;
+    actor: Actor;
   },
 ): Promise<{ ok: boolean; error?: string }> {
   // Sem negócio não há linha do tempo onde escrever: `crm_lead_activities.lead_id`
@@ -41,7 +56,7 @@ export async function registraAtividadeDaTarefa(
     type: args.tipo,
     sourceModule: "tarefas",
     sourceId: args.tarefa.id,
-    actor: { type: "user", id: args.actorUserId },
+    actor: args.actor,
     // O título é texto que o operador escreveu SOBRE ESTE negócio — a mesma
     // classe do `reason` que a Agenda já grava. Cortado porque o campo aparece
     // numa linha da timeline, não num parágrafo.

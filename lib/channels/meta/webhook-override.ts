@@ -24,7 +24,7 @@
  * `message_template_status_update` NÃO aceita override na Meta — ele continua indo
  * para a URL do app. É limite da plataforma, não escolha deste módulo (issue #850).
  */
-import { graphVersion } from "@/lib/graph-version";
+import { graphBaseUrl } from "./graph-base";
 
 /** Qual das duas chamadas da Meta falhou. A tela mostra isto junto do motivo. */
 export type EtapaDoWebhook = "inscricao_na_waba" | "configuracao_do_numero";
@@ -95,10 +95,8 @@ export async function registrarWebhookDoNumero(input: {
   callbackUrl: string;
   verifyToken: string;
 }): Promise<DesfechoDoWebhook> {
-  const versao = graphVersion();
-
   const inscricao = await postNaGraph(
-    `https://graph.facebook.com/${versao}/${input.wabaId}/subscribed_apps`,
+    `${graphBaseUrl()}/${input.wabaId}/subscribed_apps`,
     input.token,
     {},
   );
@@ -107,7 +105,7 @@ export async function registrarWebhookDoNumero(input: {
   }
 
   const configuracao = await postNaGraph(
-    `https://graph.facebook.com/${versao}/${input.phoneNumberId}`,
+    `${graphBaseUrl()}/${input.phoneNumberId}`,
     input.token,
     {
       webhook_configuration: {
@@ -135,7 +133,7 @@ export async function desfazerWebhookDoNumero(input: {
   token: string;
 }): Promise<DesfechoDoWebhook> {
   const resposta = await postNaGraph(
-    `https://graph.facebook.com/${graphVersion()}/${input.phoneNumberId}`,
+    `${graphBaseUrl()}/${input.phoneNumberId}`,
     input.token,
     { webhook_configuration: { override_callback_uri: "" } },
   );

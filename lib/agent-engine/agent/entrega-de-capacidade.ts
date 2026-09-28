@@ -122,3 +122,47 @@ export function capacidadesEntreguesAoOperador(input: {
     .filter(([, equivalentes]) => equivalentes.some((e) => doOperador.has(e)))
     .map(([nativa]) => nativa);
 }
+
+/**
+ * Ferramentas que o Operador NUNCA recebe, marcadas ou não.
+ *
+ * ═══ POR QUE A PROPOSTA ESTÁ AQUI, medido em operação em 2026-09-27 ═══
+ *
+ * O rascunho de proposta nascia na primeira mensagem do cliente ("oi, preciso
+ * de um site"), antes de qualquer briefing. Quem chamava não era o
+ * Conversador — o log do worker mostrou o Operador chamando
+ * `crm_draft_proposal` em TODOS os quatro turnos da conversa. Ele não tem como
+ * acertar o momento: não lê o prompt do agente (onde mora o roteiro "colete o
+ * briefing antes"), não lê a conversa (só o resumo de intenções do turno), e o
+ * system dele manda "abrir o que precisa ser aberto". "O cliente quer um site"
+ * vira rascunho vazio — e, como o negócio só aceita UM rascunho aberto, o
+ * rascunho vazio trava o bom que viria depois.
+ *
+ * Decidir QUANDO a conversa já sustenta uma proposta é do papel que conversa.
+ * A chave `proposal_ai_draft_enabled` acrescentava a ferramenta aos dois papéis;
+ * a partir daqui ela vale só para o Conversador.
+ *
+ * `crm_preparar_proposta` vai junto na mesma lista: é a primeira metade da
+ * mesma decisão (levantar o que perguntar), e o Operador não tem a conversa
+ * para perguntar nada.
+ */
+export const FORA_DO_OPERADOR: readonly string[] = ['crm_draft_proposal', 'crm_preparar_proposta'];
+
+/**
+ * A configuração com que a MÃO do Operador é montada: a lista dele
+ * (`operator_tool_ids`) no lugar da do Conversador, sem o que é
+ * `FORA_DO_OPERADOR`, e sem o acréscimo automático da proposta.
+ *
+ * `proposalAiDraftEnabled: false` não é redundante com o filtro: a chave manda
+ * nos dois sentidos em `pickToolsFromMcp` — com ela ligada, a ferramenta é
+ * ACRESCENTADA mesmo fora da lista. O filtro sozinho não bastaria.
+ */
+export function maoDoOperador<T extends { operatorToolIds: readonly string[] }>(
+  cfg: T,
+): T & { toolIds: string[]; proposalAiDraftEnabled: false } {
+  return {
+    ...cfg,
+    toolIds: cfg.operatorToolIds.filter((t) => !FORA_DO_OPERADOR.includes(t)),
+    proposalAiDraftEnabled: false,
+  };
+}

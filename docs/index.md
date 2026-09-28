@@ -80,6 +80,7 @@ Detalham schema SQL e payloads exatos. **Consulte antes de modelar qualquer cois
 | [`specs/17`](specs/17-spec-indice-de-atrito.md) | **Índice de Atrito** — medir o propósito (menor atrito p/ os dois lados), não a atividade |
 | [`specs/18`](specs/18-spec-voice-calls-wacalls.md) | Chamada de voz WhatsApp (WaCalls) — rascunho, sem sub-PRD dedicado |
 | [`specs/extensoes-declarativas-v1.md`](specs/extensoes-declarativas-v1.md) | **Extensões declarativas v1** — pacote JSON estrito, catálogo admitido pelo dono da instalação, ativação por organização, guia no hub CRM |
+| [`integracao/webhooks-de-saida.md`](integracao/webhooks-de-saida.md) | Webhook de saída do lado de quem recebe: cabeçalhos, assinatura com carimbo de tempo, id de entrega, exemplos em Node e Python |
 | [`specs/RECONCILIATION-LOG.md`](specs/RECONCILIATION-LOG.md) | Log de reconciliação entre specs |
 
 ## 4. Doutrina e arquitetura
@@ -91,6 +92,7 @@ Detalham schema SQL e payloads exatos. **Consulte antes de modelar qualquer cois
 | [`doctrine/restricao-de-canal.md`](doctrine/restricao-de-canal.md) | Auto-restrição × hetero-restrição de canais externos; contrato de parâmetros derivado |
 | [`doctrine/separacao-fala-e-operacao.md`](doctrine/separacao-fala-e-operacao.md) | Vocabulário interno nunca vaza para o cliente |
 | [`doctrine/packaging.md`](doctrine/packaging.md) | **Doutrina de Packaging — a LEI.** 8 invariantes + política de canais + checklist de release (item 15 do DoD) |
+| [`doctrine/prova-em-par.md`](doctrine/prova-em-par.md) | **Prova em Par — emenda ao item 12 do DoD.** Caso de aceite que atravessa agente de IA mede tela + ferramenta com o mesmo texto cru, e só conta quando os dois concordam |
 | [`doctrine/destrutivo-pede-confirmacao.md`](doctrine/destrutivo-pede-confirmacao.md) | Ação destrutiva pede confirmação que **nomeia o alvo** — dois botões gêmeos, o mesmo contrato |
 | [`doctrine/extensoes.md`](doctrine/extensoes.md) | **Doutrina de Extensões — a LEI.** Núcleo × extensão pela pergunta "com zero ativações a operação comum continua inteira?" + 13 não-negociáveis, com as políticas do DEC-004 (item 18 do DoD) |
 | [`specs/19`](specs/19-spec-console-de-agencia.md) | **Console de Agência** — operar N organizações clientes; unidade de cobrança decidida (retainer por cliente operado). Lei em [`doctrine/operacao-de-agentes.md`](doctrine/operacao-de-agentes.md) |
@@ -152,11 +154,14 @@ acessibilidade).
 
 Documentação de *processo*. Alta rotatividade; trate como estado, não como contrato.
 
-**Convenção observada:** épico **vivo** mantém o HANDOFF na **raiz** do repo; épico
-**encerrado** é arquivado em [`handoffs/`](handoffs/). Use isso para saber o que está em voo.
+**Convenção:** todo `HANDOFF*.md` vive em [`handoffs/`](handoffs/), indexado
+pelo [`handoffs/README.md`](handoffs/README.md) — encerrado ou não. Até
+setembro de 2026 valia "épico **vivo** mantém o HANDOFF na **raiz**", e a regra
+não segurou: 12 arquivos se acumularam na raiz e quatro carregavam identificador
+de produção num repositório público (#638). O gate que impede a volta é
+`tests/unit/handoff-na-raiz-nao-volta.test.ts`.
 
-- **Raiz (em voo):** `HANDOFF.md` (follow-up), `HANDOFF-harness-evolution.md`, `HANDOFF-operacao-visivel.md`
-- [`handoffs/`](handoffs/) — arquivados: casos humanos, inbox multimodal, CRM vivo, LGPD, wave1-devvivo, contrato wave5, briefing CRM vivo
+- [`handoffs/`](handoffs/) — **todo** o arquivo de handoff, com o índice e a convenção em [`handoffs/README.md`](handoffs/README.md). Quantos: `git ls-files 'docs/handoffs/HANDOFF*.md' | wc -l` (20 em 2026-09-26), mais briefing, contrato e `waves/`
 - [`stories/`](stories/) — épicos e stories (`epics/MASTER.md` = plano por epic/wave)
 - [`superpowers/`](superpowers/) — `plans/` e `specs/` datados por onda, mais `handoffs/`
 - [`growth/`](growth/) — material de crescimento · [`brand/`](brand/) — marca · [`white-label.md`](white-label.md) — instalação com marca própria, também em [en](white-label.en.md) e [es](white-label.es.md) (traduções seladas pelo hash do original; ver `scripts/selar-traducao.ts`)

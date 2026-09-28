@@ -13,12 +13,12 @@
  * lê — ver `lib/ai/handoff/orchestrator.ts` e `human-handoff.ts:performHumanHandoff`).
  */
 import { createServer } from 'node:http';
-import type { SupabaseClient } from '@supabase/supabase-js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { sendMessageHandler } from '@/app/api/v1/messages/_handler';
 import type { HandlerCtx } from '@/lib/api/handlers/types';
 import type { SendMessageInput } from '@/lib/schemas';
+import { criarDubleDoHandler } from '@/tests/helpers/duble-do-handler';
 
 import { getAction } from "@/lib/automation/actions";
 import "@/lib/automation/actions/send-whatsapp";
@@ -61,69 +61,30 @@ function conversationRow(botSilencedUntil: string | null): Row {
   };
 }
 
-/** Captura o patch do UPDATE em `conversations` — é isso que os casos verificam. */
-function makeSupabase(botSilencedUntil: string | null, snapshot?: () => Record<string, unknown>) {
-  const patches: Row[] = [];
-  const client = {
-    from(table: string) {
-      if (table === "channel_sessions") {
-        const query = {
-          select: () => query,
-          eq: () => query,
-          maybeSingle: async () => ({ data: { metadata: {} }, error: null }),
-        };
-        return query;
-      }
-      if(table==='calendar_appointments'){
-        const q={select:()=>q,eq:()=>q,in:()=>q,order:()=>q,limit:()=>q,then:(resolve:(v:unknown)=>unknown)=>Promise.resolve({data:[],error:null}).then(resolve)};
-        return q;
-      }
-      if(table==='organizations'){
-        const q={select:()=>q,eq:()=>q,single:async()=>({data:{settings:{}},error:null})};return q;
-      }
+const RPC_PADRAO = {
+  organization_id: ORG,
+  contact_id: CONTACT,
+  conversation_id: CONV,
+  service_revision: 1,
+  demanda_id: null,
+  demanda_revision: null,
+  status: "open",
+  demanda_fechada_em: null,
+};
 
-      if (table === 'conversations') {
-        return {
-          select: () => {
-            const chain = { eq: () => chain, maybeSingle: async () => ({ data: conversationRow(botSilencedUntil), error: null }) };
-            return chain;
-          },
-          update: (patch: Row) => {
-            patches.push(patch);
-            return { eq: async () => ({ error: null }) };
-          },
-        };
-      }
-      if (table === 'messages') {
-        return {
-          insert: (row: Row) => {
-            const nova = { id: 'msg-1', external_id: null, ack: null, error_code: null, error_message: null, ...row };
-            return { select: () => ({ single: async () => ({ data: nova, error: null }) }) };
-          },
-          update: (patch: Row) => ({
-            eq: () => ({ select: () => ({ maybeSingle: async () => ({ data: { id: 'msg-1', ...patch }, error: null }) }) }),
-          }),
-        };
-      }
-      if (table === "contacts") {
-        // O envio carimba `contacts.last_activity_at` (migration 0162). O dublê
-        // é encadeável SEM LIMITE de propósito: a consulta filtra por id E por
-        // organização (este handler também roda com o client de service role,
-        // que bypassa RLS), e um dublê que fixa a quantidade de `eq` quebra
-        // quando a consulta ganha um filtro novo — com um erro que não fala do
-        // comportamento sob teste.
-        const cadeiaContacts: Record<string, unknown> = {
-          eq: () => cadeiaContacts,
-          then: (resolve: (v: { error: null }) => unknown) =>
-            Promise.resolve({ error: null }).then(resolve),
-        };
-        return { update: () => cadeiaContacts };
-      }
-      throw new Error(`fake_supabase: tabela inesperada '${table}'`);
-    },
-    rpc: async () => ({ data: snapshot ? snapshot() : { organization_id: ORG, contact_id: CONTACT, conversation_id: CONV, service_revision: 1, demanda_id: null, demanda_revision: null, status: "open", demanda_fechada_em: null }, error: null }),
-  };
-  return { supabase: client as unknown as SupabaseClient, patches };
+/**
+ * O dublê é o COMPARTILHADO (`tests/helpers/duble-do-handler.ts`): as tabelas
+ * que o handler e os caminhos que ele chama tocam (conversations, messages,
+ * contacts, channel_sessions, organizations, calendar_appointments) moram lá,
+ * uma vez só. Aqui ficam só os dados por caso: a linha da conversa com o
+ * silêncio sob teste e o snapshot que cada `rpc` devolve.
+ */
+function dubleDo(botSilencedUntil: string | null, snapshot?: () => Record<string, unknown>) {
+  const { supabase, capturas } = criarDubleDoHandler({
+    conversation: conversationRow(botSilencedUntil),
+    rpcData: snapshot ?? RPC_PADRAO,
+  });
+  return { supabase, patches: capturas.patches.conversations! };
 }
 
 const input = { conversation_id: CONV, type: 'text', body: 'oi' } as SendMessageInput;
@@ -144,7 +105,7 @@ describe('sendMessageHandler — silêncio da IA de 5min após resposta manual h
   it('humano manda mensagem numa conversa sem silêncio → bot_silenced_until vira ~agora+5min', async () => {
     wahaConfigured();
     const ctx: HandlerCtx = { organization_id: ORG, actor: { type: 'user', id: USER }, requestId: 'req-1' };
-    const { supabase, patches } = makeSupabase(null);
+    const { supabase, patches } = dubleDo(null);
 
     const before = Date.now();
     await sendMessageHandler(supabase, ctx, input);
@@ -160,7 +121,7 @@ describe('sendMessageHandler — silêncio da IA de 5min após resposta manual h
   it('IA envia mensagem (ai_agent) → NÃO mexe em bot_silenced_until', async () => {
     wahaConfigured();
     const ctx: HandlerCtx = { organization_id: ORG, actor: { type: 'ai_agent', id: AGENT_RUN, role: 'agent' }, requestId: 'req-2', serviceBoundary: { organization_id: ORG, contact_id: CONTACT, conversation_id: CONV, service_revision: 1, demanda_id: null, demanda_revision: null } };
-    const { supabase, patches } = makeSupabase(null);
+    const { supabase, patches } = dubleDo(null);
 
     await sendMessageHandler(supabase, ctx, input);
 
@@ -171,7 +132,7 @@ describe('sendMessageHandler — silêncio da IA de 5min após resposta manual h
   it('handoff permanente (infinity) já ativo → resposta manual NÃO encurta para 5min', async () => {
     wahaConfigured();
     const ctx: HandlerCtx = { organization_id: ORG, actor: { type: 'user', id: USER }, requestId: 'req-3' };
-    const { supabase, patches } = makeSupabase('infinity');
+    const { supabase, patches } = dubleDo('infinity');
 
     await sendMessageHandler(supabase, ctx, input);
 
@@ -183,7 +144,7 @@ describe('sendMessageHandler — silêncio da IA de 5min após resposta manual h
     wahaConfigured();
     const ctx: HandlerCtx = { organization_id: ORG, actor: { type: 'user', id: USER }, requestId: 'req-4' };
     const trintaMin = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-    const { supabase, patches } = makeSupabase(trintaMin);
+    const { supabase, patches } = dubleDo(trintaMin);
 
     await sendMessageHandler(supabase, ctx, input);
 
@@ -195,7 +156,7 @@ describe('sendMessageHandler — silêncio da IA de 5min após resposta manual h
     wahaConfigured();
     const ctx: HandlerCtx = { organization_id: ORG, actor: { type: 'user', id: USER }, requestId: 'req-5' };
     const umMin = new Date(Date.now() + 60 * 1000).toISOString();
-    const { supabase, patches } = makeSupabase(umMin);
+    const { supabase, patches } = dubleDo(umMin);
 
     const before = Date.now();
     await sendMessageHandler(supabase, ctx, input);
@@ -220,7 +181,7 @@ it('sink recusa close/reopen ocorrido depois da primeira leitura e receiver rece
     const ctx: HandlerCtx = { organization_id: ORG, actor: { type: 'ai_agent', id: AGENT_RUN, role: 'agent' }, requestId: 'sink-test', serviceBoundary: boundary };
     for (const changed of [{ status: 'closed', service_revision: 2 }, { status: 'open', service_revision: 3 }]) {
       let reads = 0;
-      const { supabase } = makeSupabase(null, () => ({ ...boundary, status: 'open', demanda_fechada_em: null, ...(reads++ === 0 ? {} : changed) }));
+      const { supabase } = dubleDo(null, () => ({ ...boundary, status: 'open', demanda_fechada_em: null, ...(reads++ === 0 ? {} : changed) }));
       await expect(sendMessageHandler(supabase, ctx, input)).rejects.toThrow('service_boundary_stale');
       expect(reads).toBe(2);
       expect(received).toHaveLength(0);
@@ -228,12 +189,12 @@ it('sink recusa close/reopen ocorrido depois da primeira leitura e receiver rece
     // Close/reopen durante resolução assíncrona do destinatário no adapter:
     // leituras do provider podem ocorrer, mas nenhum envio é aceito.
     let reads = 0;
-    const late = makeSupabase(null, () => ({ ...boundary, status: 'open', demanda_fechada_em: null, service_revision: reads++ < 2 ? 1 : 3 }));
+    const late = dubleDo(null, () => ({ ...boundary, status: 'open', demanda_fechada_em: null, service_revision: reads++ < 2 ? 1 : 3 }));
     await expect(sendMessageHandler(late.supabase, ctx, input)).rejects.toThrow('service_boundary_stale');
     expect(reads).toBe(3);
     expect(received.filter((url) => url.endsWith('/sendText'))).toHaveLength(0);
     // Controle positivo: o mesmo handler e transporte chegam ao receiver quando vigente.
-    await sendMessageHandler(makeSupabase(null).supabase, ctx, input);
+    await sendMessageHandler(dubleDo(null).supabase, ctx, input);
     expect(received.filter((url) => url.endsWith("/sendText"))).toHaveLength(1);
   } finally { await new Promise<void>((resolve) => receiver.close(() => resolve())); }
 });
@@ -249,7 +210,7 @@ it("ação de automação conserva origem durante pacing e dois envios vigentes 
     vi.stubEnv("WAHA_API_KEY", "local-test");
     const boundary = { organization_id: ORG, contact_id: CONTACT, conversation_id: CONV, service_revision: 1, demanda_id: null, demanda_revision: null };
     let revision = 1;
-    const { supabase } = makeSupabase(null, () => ({ ...boundary, service_revision: revision, status: "open", demanda_fechada_em: null }));
+    const { supabase } = dubleDo(null, () => ({ ...boundary, service_revision: revision, status: "open", demanda_fechada_em: null }));
     const ctx = { admin: supabase, organizationId: ORG, ruleId: USER, ruleName: "Teste", requestId: "rule-test",
       serviceBoundaries: new Map(), event: { event_type: "lead.created", payload: { service_origin: { kind: "continuation", boundary } } },
       context: { contact: { id: CONTACT, phone_number: "+5531999998888" } } } as unknown as ActionCtx;
@@ -279,12 +240,17 @@ it("ação de automação conserva origem durante pacing e dois envios vigentes 
     expect(generation.authorize).toHaveBeenCalledTimes(1);
     expect(hits.filter((url) => url.endsWith("/sendText"))).toHaveLength(3);
     revision = 3;
+    // O aviso com fronteira VENCIDA vem ANTES do vigente: depois de um aviso
+    // enviado, a guarda de um aviso por 24 h barraria este também, e o caso
+    // passaria a medir a guarda em vez da fronteira. Aqui a IA já falou (as
+    // respostas acima) e ainda não houve aviso — só a fronteira pode barrar.
+    const antigo = await avisarLeadDoCrm(supabase, { organizationId: ORG, contactId: CONTACT, conversationId: CONV, reason: "Caso antigo", serviceBoundary: boundary });
+    expect(antigo.avisado).toBe(false);
+    expect(antigo.avisado ? null : antigo.porque).not.toMatch(/^(ia_nunca_falou_nesta_conversa|aviso_ja_enviado_na_janela)$/);
+    expect(hits.filter((url) => url.endsWith("/sendText"))).toHaveLength(3);
     // Aviso humano independente conserva autoria de sistema sem exigir job.
     const aviso = await avisarLeadDoCrm(supabase, { organizationId: ORG, contactId: CONTACT, conversationId: CONV, reason: "requested_human" });
     expect(aviso.avisado).toBe(true);
-    expect(hits.filter((url) => url.endsWith("/sendText"))).toHaveLength(4);
-    const antigo = await avisarLeadDoCrm(supabase, { organizationId: ORG, contactId: CONTACT, conversationId: CONV, reason: "Caso antigo", serviceBoundary: boundary });
-    expect(antigo.avisado).toBe(false);
     expect(hits.filter((url) => url.endsWith("/sendText"))).toHaveLength(4);
   } finally { await new Promise<void>((resolve) => receiver.close(() => resolve())); }
 });

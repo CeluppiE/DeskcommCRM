@@ -1,7 +1,7 @@
 "use client";
 import { useT } from "@/hooks/i18n/useT";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { MagnifyingGlass } from "@/lib/ui/icons";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CaretLeft, CaretRight, MagnifyingGlass } from "@/lib/ui/icons";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
@@ -67,6 +67,40 @@ interface Props {
 export function InboxFilters({ value, onChange }: Props) {
   const t = useT();
   const [searchInput, setSearchInput] = useState(value.search);
+  const tabsListRef = useRef<HTMLDivElement>(null);
+  const [moreTabs, setMoreTabs] = useState({ left: false, right: false });
+  const updateMoreTabs = useCallback(() => {
+    const list = tabsListRef.current;
+    if (!list) return;
+    const maxScroll = Math.max(0, list.scrollWidth - list.clientWidth);
+    const next = { left: list.scrollLeft > 1, right: list.scrollLeft < maxScroll - 1 };
+    setMoreTabs((previous) =>
+      previous.left === next.left && previous.right === next.right ? previous : next,
+    );
+  }, []);
+  useEffect(() => {
+    const list = tabsListRef.current;
+    if (!list) return;
+    const centerSelectedTab = () => {
+      // Deixar a aba só na borda esconde as vizinhas. Centralizar mostra o
+      // contexto dos dois lados, salvo nas extremidades naturais da faixa.
+      const selected = list.querySelector<HTMLElement>('[role="tab"][data-state="active"]');
+      if (selected) {
+        const selectedCenter =
+          selected.getBoundingClientRect().left - list.getBoundingClientRect().left +
+          list.scrollLeft + selected.offsetWidth / 2;
+        const maxScroll = Math.max(0, list.scrollWidth - list.clientWidth);
+        list.scrollLeft = Math.max(0, Math.min(maxScroll, selectedCenter - list.clientWidth / 2));
+      }
+      updateMoreTabs();
+    };
+    centerSelectedTab();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(centerSelectedTab);
+    observer.observe(list);
+    list.querySelectorAll<HTMLElement>('[role="tab"]').forEach((tab) => observer.observe(tab));
+    return () => observer.disconnect();
+  }, [value.tab, updateMoreTabs]);
   /**
    * O campo escuta o valor de FORA — e só ele.
    *
@@ -128,6 +162,10 @@ export function InboxFilters({ value, onChange }: Props) {
   const tabs = activeOrg
     ? visibleInboxTabs(activeOrg.role, activeOrg.visibility_mode)
     : INBOX_TABS.map((t) => t.value);
+  const moveTab = (direction: -1 | 1) => {
+    const next = tabs[tabs.indexOf(value.tab) + direction];
+    if (next) onChange({ ...value, tab: next });
+  };
   const countFor: Partial<Record<InboxTab, number>> = {
     // `fila` é o nome novo; `unassigned` é o alias que a rota versionada mantém.
     // O `??` cobre a janela em que a página ainda lê um cache de react-query
@@ -153,15 +191,52 @@ export function InboxFilters({ value, onChange }: Props) {
     !channels.some((c) => c.id === value.channel_session_id);
   // Alternador só aparece com 2+ números — com um só não há o que alternar.
   const showChannelSwitch = (channels?.length ?? 0) >= 2 || filtroForaDaLista;
+  /**
+   * O SELETOR NÃO PODE SUMIR DEBAIXO DO MENU ABERTO.
+   *
+   * A condicional abaixo decide a EXISTÊNCIA do `<Select>`, e ela lê duas
+   * queries em voo — as duas com `orgId` na chave e `enabled: !!orgId`. Um
+   * único render em que o vocabulário volte a indefinido ou vazio (chave nova,
+   * refetch, organização piscando) não escondia só o controle: DESMONTAVA o
+   * Select, e o menu que o operador tinha acabado de abrir fechava sozinho, com
+   * o gatilho de volta em "Todas as tags". Era o filtro fechando na cara de
+   * quem ia escolher, e o `filtro-por-marcador-pela-tela.spec.ts` intermitente.
+   *
+   * Por isso o seletor passa a usar o último vocabulário NÃO-VAZIO que esta
+   * tela conheceu: enquanto o de agora oscila, o de antes segura o controle
+   * montado. O quadro nunca teve o defeito pelo mesmo motivo por outro caminho
+   * — `components/kanban/FilterBar.tsx` mantém o gatilho montado e só o desliga
+   * (`disabled`) sem opções. A lembrança faz o mesmo serviço sem estrear um
+   * controle morto para a organização que ainda não tem etiqueta nenhuma: essa
+   * continua sem o seletor, que é o que a condicional sempre quis dizer.
+   *
+   * Medido em `tests/unit/inbox-filtro-de-tag-nao-desmonta.test.tsx`.
+   */
+  const [ultimoVocabulario, setUltimoVocabulario] = useState<string[]>([]);
+  if (tagVocabulary != null && tagVocabulary.length > 0 && tagVocabulary !== ultimoVocabulario) {
+    // Ajuste de estado DURANTE a renderização (o padrão que a documentação do
+    // React chama de "adjusting state when props change"): o React reinicia o
+    // render deste componente com o valor novo antes de pintar, então o seletor
+    // nunca chega à tela com o vocabulário velho. Efeito aqui não serviria —
+    // ele roda DEPOIS da pintura, e a janela de um frame é exatamente a que
+    // desmonta o Select.
+    setUltimoVocabulario(tagVocabulary);
+  }
+  const vocabularioDoSeletor =
+    tagVocabulary != null && tagVocabulary.length > 0 ? tagVocabulary : ultimoVocabulario;
   // O MESMO tratamento, agora para a etiqueta. Sem ele, o seletor inteiro some
   // com o filtro AINDA APLICADO — a lista fica num subconjunto, às vezes vazio,
   // e nada na tela diz que há filtro nem oferece como tirá-lo.
+  // "Conhecido" e "não-vazio" são coisas diferentes, e é o primeiro que vale
+  // aqui: a organização cuja ÚLTIMA etiqueta acabou de ser apagada responde
+  // vocabulário vazio, e é justamente ela que precisa do seletor de volta para
+  // desfazer o filtro que continua valendo.
+  const vocabularioConhecido = tagVocabulary != null || ultimoVocabulario.length > 0;
   const tagForaDoVocabulario =
     value.tag != null &&
-    tagVocabulary != null &&
-    !tagVocabulary.includes(value.tag);
-  const mostrarSeletorDeTag =
-    (tagVocabulary?.length ?? 0) > 0 || tagForaDoVocabulario;
+    vocabularioConhecido &&
+    !vocabularioDoSeletor.includes(value.tag);
+  const mostrarSeletorDeTag = vocabularioDoSeletor.length > 0 || tagForaDoVocabulario;
 
   // O timer lê o valor MAIS RECENTE, não o do render em que foi agendado.
   //
@@ -306,7 +381,7 @@ export function InboxFilters({ value, onChange }: Props) {
                       placeholder no lugar do valor JÁ selecionado, e o operador
                       veria "Todas as tags" com um filtro ativo. */}
                   {[
-                    ...(tagVocabulary ?? []),
+                    ...vocabularioDoSeletor,
                     ...(tagForaDoVocabulario && value.tag ? [value.tag] : []),
                   ].map((tag) => (
                     <SelectItem key={tag} value={tag}>
@@ -327,31 +402,61 @@ export function InboxFilters({ value, onChange }: Props) {
         )}
       </div>
 
-      {/* Faixa sublinhada, não caixa cinza: cinco abas num grid de 280px
-          espremiam "Fechadas" contra "Automático" até os rótulos se tocarem. */}
+      {/* As setas aparecem só quando há abas fora da área visível; a faixa e o
+          sublinhado continuam com a altura compacta do Inbox. */}
       <Tabs
         value={value.tab}
         onValueChange={(v) => onChange({ ...value, tab: v as InboxTab })}
         className="px-3"
       >
-        <TabsList className="h-auto w-full justify-between gap-2 rounded-none bg-transparent p-0 [scrollbar-width:none]">
-          {tabs.map((tab) => {
-            const meta = INBOX_TABS.find((t) => t.value === tab)!;
-            const count = countFor[tab];
-            return (
-              <TabsTrigger
-                key={tab}
-                value={tab}
-                className="-mb-px shrink-0 gap-1 rounded-none border-b-2 border-transparent px-0 pb-2 pt-1 text-xs font-medium text-text-muted data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:text-text data-[state=active]:shadow-none"
-              >
-                {t(meta.label)}
-                {typeof count === "number" && count > 0 && (
-                  <span className="text-[11px] tabular-nums text-text-subtle">{count}</span>
-                )}
-              </TabsTrigger>
-            );
-          })}
-        </TabsList>
+        <div className="flex items-center gap-1">
+          {moreTabs.left ? (
+            <button
+              type="button"
+              onClick={() => moveTab(-1)}
+              aria-label={t("Aba anterior")}
+              className="flex w-4 shrink-0 items-center justify-center text-text-muted hover:text-text focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <CaretLeft size={13} aria-hidden />
+            </button>
+          ) : (
+            <span className="w-4 shrink-0" aria-hidden />
+          )}
+          <TabsList
+            ref={tabsListRef}
+            onScroll={updateMoreTabs}
+            className="h-auto min-w-0 flex-1 justify-between gap-2 rounded-none bg-transparent p-0 [scrollbar-width:none]"
+          >
+            {tabs.map((tab) => {
+              const meta = INBOX_TABS.find((t) => t.value === tab)!;
+              const count = countFor[tab];
+              return (
+                <TabsTrigger
+                  key={tab}
+                  value={tab}
+                  className="shrink-0 gap-1 rounded-none border-b-2 border-transparent px-0 pb-2 pt-1 text-xs font-medium text-text-muted data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:text-text data-[state=active]:shadow-none"
+                >
+                  {t(meta.label)}
+                  {typeof count === "number" && count > 0 && (
+                    <span className="text-[11px] tabular-nums text-text-subtle">{count}</span>
+                  )}
+                </TabsTrigger>
+              );
+            })}
+          </TabsList>
+          {moreTabs.right ? (
+            <button
+              type="button"
+              onClick={() => moveTab(1)}
+              aria-label={t("Próxima aba")}
+              className="flex w-4 shrink-0 items-center justify-center text-text-muted hover:text-text focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <CaretRight size={13} aria-hidden />
+            </button>
+          ) : (
+            <span className="w-4 shrink-0" aria-hidden />
+          )}
+        </div>
       </Tabs>
     </div>
   );

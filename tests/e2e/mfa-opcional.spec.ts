@@ -14,7 +14,7 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./helpers/test";
 import { createClient } from "@supabase/supabase-js";
 
 const svc = createClient(
@@ -76,7 +76,7 @@ async function entrar(page: Page): Promise<void> {
   await page.goto("/login");
   await page.locator("#email").fill(email);
   await page.locator("#password").fill(SENHA);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
 }
 
 /** O bloqueador de tela cheia, pelo texto que só ele mostra. */

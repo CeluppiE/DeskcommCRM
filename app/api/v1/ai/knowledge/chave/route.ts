@@ -11,7 +11,7 @@
  * A resposta diz três coisas, e as três são acionáveis na tela:
  *   * se dá para indexar agora;
  *   * de ONDE a chave sai (a pessoa precisa saber qual está valendo);
- *   * quais chaves OpenAI a organização já tem, para escolher em vez de digitar
+ *   * quais chaves de embedding a organização já tem, para escolher em vez de digitar
  *     outra.
  *
  * Nunca devolve material de credencial: só rótulo e os quatro últimos dígitos,
@@ -41,9 +41,9 @@ export async function GET(): Promise<Response> {
   const supabase = await createClient();
   const { data: credenciais } = await supabase
     .from("ai_provider_credentials_safe")
-    .select("id, label, api_key_last4, validated_at, validation_error, is_active")
+    .select("id, provider, label, api_key_last4, validated_at, validation_error, is_active")
     .eq("organization_id", activeOrg.orgId)
-    .eq("provider", "openai")
+    .in("provider", ["openai", "openrouter"])
     .order("created_at", { ascending: true });
 
   return ok(
@@ -53,7 +53,9 @@ export async function GET(): Promise<Response> {
       explicacao: chave ? EXPLICACAO_DA_ORIGEM[chave.origem] : null,
       chave_em_uso: chave?.rotulo ?? null,
       avisos: chave?.avisos ?? [],
-      credenciais_openai: credenciais ?? [],
+      credenciais_embedding: credenciais ?? [],
+      // Compatibilidade com clientes da rota anterior.
+      credenciais_openai: (credenciais ?? []).filter((c) => c.provider === "openai"),
     },
     { requestId },
   );

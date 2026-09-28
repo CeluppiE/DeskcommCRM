@@ -62,3 +62,30 @@ export function semanaSemente(agora: Date, fuso: string): SemanaSemente {
 
   return { de: meiaNoiteLocal(domingo), ate: meiaNoiteLocal(proximo) };
 }
+
+/**
+ * O DIA DE HOJE no fuso pedido, como a grade o desenha: `yyyy-MM-dd`.
+ *
+ * Existe para o CLIENTE poder ancorar no MESMO dia que o servidor, sem receber
+ * um instante. Receber instante seria a armadilha: `domingo 00:00` em São Paulo
+ * é `sábado 22:00` em UTC-5, e um `startOfWeek` sobre ele, em hora local do
+ * navegador, cairia na semana ANTERIOR. O que atravessa a fronteira é a DATA;
+ * quem a transforma em `Date` local é `ancoraLocalDoDia`, logo abaixo.
+ */
+export function diaDeHojeNoFuso(agora: Date, fuso: string): string {
+  const p = partesNoFuso(agora, fuso);
+  const dd = (n: number) => String(n).padStart(2, "0");
+  return `${p.ano}-${dd(p.mes)}-${dd(p.dia)}`;
+}
+
+/**
+ * A âncora local que representa aquele dia — ao MEIO-DIA, de propósito.
+ *
+ * A grade formata as chaves (`coluna-dia-…`) em hora local do navegador. Ancorar
+ * à meia-noite deixaria a data a um passo de horário de verão de virar o dia
+ * anterior; o meio-dia está a doze horas de qualquer borda que exista.
+ */
+export function ancoraLocalDoDia(dia: string): Date {
+  const [ano, mes, d] = dia.split("-").map(Number);
+  return new Date(ano!, mes! - 1, d!, 12, 0, 0, 0);
+}

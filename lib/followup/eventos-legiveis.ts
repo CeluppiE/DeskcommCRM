@@ -82,6 +82,7 @@ const STATUS: Record<string, { rotulo: string; tom: TomDoStatus }> = {
   dormente: { rotulo: "Aguardando a data do retorno", tom: "info" },
   paused_handoff: { rotulo: "Pausado (atendimento humano)", tom: "warning" },
   paused_manual: { rotulo: "Pausado por uma pessoa", tom: "warning" },
+  coletando: { rotulo: "Coletando respostas do roteiro", tom: "info" },
   completed: { rotulo: "Concluído", tom: "neutral" },
   cancelled: { rotulo: "Cancelado", tom: "neutral" },
   dead: { rotulo: "Parou de tentar", tom: "error" },
@@ -128,7 +129,11 @@ const TIPO_DO_NO: Record<FlowNode["type"], string> = {
   ai_classify: "Interpretação da resposta",
   match_reply: "Resposta (texto)",
   repeat: "Repetição",
+  collect: "Pergunta",
+  skill: "Skill",
   action: "Mensagem",
+  // #1540 — não é "Mensagem": é o passo que NÃO fala com o cliente.
+  internal_task: "Lembrete interno",
   end: "Fim",
 };
 
@@ -176,6 +181,13 @@ export function resumoDoNo(node: FlowNode): NoDoDossie {
         ...base,
         resumo: `repete até ${node.config.max_count} voltas conforme a resposta`,
       };
+    case "collect":
+      return {
+        ...base,
+        resumo: `pergunta "${node.config.label}" (campo ${node.config.key})`,
+      };
+    case "skill":
+      return { ...base, resumo: `puxa a skill ${node.config.skill_name}` };
     case "action":
       return {
         ...base,
@@ -186,6 +198,10 @@ export function resumoDoNo(node: FlowNode): NoDoDossie {
               ? "envia um texto fixo"
               : "envia uma mensagem de modelo pronto",
       };
+    case "internal_task": {
+      const prazo = node.config.vence_em_dias === 0 ? "hoje" : `em ${node.config.vence_em_dias} dia(s)`;
+      return { ...base, resumo: `cria a tarefa "${node.config.titulo}" para ${prazo} — sem mensagem ao cliente` };
+    }
     case "end":
       return { ...base, resumo: `encerra — ${DESFECHO[node.config.outcome] ?? node.config.outcome}` };
   }
@@ -381,6 +397,17 @@ export function descreveEvento(
         ...motor,
       };
     }
+    case "held_by_return": {
+      // Como o adiamento pela janela: segurar NÃO é falhar. Sem esta linha o
+      // operador veria o fluxo parado por dias sem saber que ele está esperando
+      // o retorno que o agente combinou com o cliente.
+      const ate = quandoLegivel(p.next_eval_at, idioma);
+      return {
+        titulo: "Segurou o fluxo por causa de um retorno agendado",
+        detalhe: ate ? `volta a andar em ${ate}, um dia depois do retorno` : null,
+        ...motor,
+      };
+    }
     case "action_sent":
       return { titulo: "Mensagem enviada", detalhe: null, ...motor };
     case "ai_classified":
@@ -471,6 +498,18 @@ export function descreveEvento(
           texto(p.source) === "guardrail_autofallback"
             ? "o caso foi aberto por uma trava de segurança, não por decisão do agente"
             : "o agente abriu um caso de atendimento",
+        ...motor,
+      };
+    case "enrolled_by_lead_created":
+      return {
+        titulo: "Começou porque o negócio nasceu",
+        detalhe: "o card acabou de ser criado",
+        ...motor,
+      };
+    case "enrolled_by_inbound_after_silence":
+      return {
+        titulo: "Começou porque o cliente voltou a escrever",
+        detalhe: "depois do tempo de silêncio escolhido no gatilho deste fluxo",
         ...motor,
       };
     case "cancelled_by_case_closed":

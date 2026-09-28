@@ -88,7 +88,7 @@ describe("create_or_move_lead — pontuação/classificação nunca bloqueia o E
   ];
 
   it.each(CLASSIFICACOES)("%s → move normalmente, status success", async (_nome, customFields) => {
-    const db = makeDb({
+    const db = makeDb({ contacts: [{ id: "contato-1", organization_id: ORG_ID }],
       pipelines: [funilRow({ id: PIPE, name: "funil comercial imobiliário" })],
       stages: [ETAPA_ORIGEM, ETAPA_DESTINO],
       leads: [negocio("lead-1", "novo")],
@@ -106,9 +106,98 @@ describe("create_or_move_lead — pontuação/classificação nunca bloqueia o E
   });
 });
 
+// ── CAMINHO 6 dos campos obrigatórios (issue #1536) ─────────────────────────
+//
+// Esta ação delega o move ao `moveLeadHandler` e o fecho a `encerraDemanda` —
+// os dois já testados —, mas o critério pede teste POR CAMINHO: a promessa é
+// que a recusa da régua sobreviva à camada da automação (que engole erro em
+// `status: failed` em vez de 422) e o lead NÃO mude de etapa em silêncio.
+// `obrigatorio_em.etapas` é `z.string().uuid()` — um id literal seria
+// DESCARTADO por `camposDoFunil` (o parse falha e o campo some), então a etapa
+// de destino deste teste é um UUID, como na instalação de verdade.
+const ETAPA_PROPOSTA_UUID = "77777777-7777-4777-8777-777777777777";
+
+describe("create_or_move_lead — a régua de campos obrigatórios chega aqui (#1536)", () => {
+  it("etapa de destino com campo exigido vazio: a ação falha e o lead continua na origem", async () => {
+    const db = makeDb({
+      contacts: [{ id: "contato-1", organization_id: ORG_ID }],
+      pipelines: [
+        funilRow({
+          id: PIPE,
+          name: "funil comercial imobiliário",
+          settings: {
+            fields: [
+              {
+                key: "concorrente",
+                label: "Concorrente",
+                type: "text",
+                obrigatorio_em: { etapas: [ETAPA_PROPOSTA_UUID] },
+              },
+            ],
+          },
+        }),
+      ],
+      stages: [
+        ETAPA_ORIGEM,
+        etapa({ id: ETAPA_PROPOSTA_UUID, name: "Proposta enviada", position: 3000 }),
+      ],
+      leads: [negocio("lead-1", "novo")],
+    });
+    const action = getAction("create_or_move_lead");
+
+    const resultado = await action!.execute(
+      ctxComLead({}, db.client as unknown as ActionCtx["admin"]),
+      { pipeline_id: PIPE, stage_id: ETAPA_PROPOSTA_UUID },
+    );
+
+    // A automação reporta `failed` com a FRASE da recusa — é o que a aba
+    // Atividade mostra ao operador, e sem ela o erro vira um sucesso calado.
+    expect(resultado.status).toBe("failed");
+    expect(JSON.stringify(resultado)).toContain("Concorrente");
+    // E a prova de que nada foi movido.
+    expect(db.tabelas.crm_leads.find((l) => l.id === "lead-1")?.stage_id).toBe("novo");
+  });
+
+  it("mesma ação com o campo preenchido: move (controle positivo)", async () => {
+    const db = makeDb({
+      contacts: [{ id: "contato-1", organization_id: ORG_ID }],
+      pipelines: [
+        funilRow({
+          id: PIPE,
+          name: "funil comercial imobiliário",
+          settings: {
+            fields: [
+              {
+                key: "concorrente",
+                label: "Concorrente",
+                type: "text",
+                obrigatorio_em: { etapas: [ETAPA_PROPOSTA_UUID] },
+              },
+            ],
+          },
+        }),
+      ],
+      stages: [
+        ETAPA_ORIGEM,
+        etapa({ id: ETAPA_PROPOSTA_UUID, name: "Proposta enviada", position: 3000 }),
+      ],
+      leads: [negocio("lead-1", "novo", { custom_fields: { concorrente: "ACME" } } as never)],
+    });
+    const action = getAction("create_or_move_lead");
+
+    const resultado = await action!.execute(
+      ctxComLead({ concorrente: "ACME" }, db.client as unknown as ActionCtx["admin"]),
+      { pipeline_id: PIPE, stage_id: ETAPA_PROPOSTA_UUID },
+    );
+
+    expect(resultado).toEqual({ type: "create_or_move_lead", status: "success", detail: { moved: "lead-1" } });
+    expect(db.tabelas.crm_leads.find((l) => l.id === "lead-1")?.stage_id).toBe(ETAPA_PROPOSTA_UUID);
+  });
+});
+
 describe("create_or_move_lead — pontuação/classificação nunca bloqueia a CRIAÇÃO", () => {
   it("contato com custom_fields de classe D no contexto: cria o lead normalmente", async () => {
-    const db = makeDb({
+    const db = makeDb({ contacts: [{ id: "contato-1", organization_id: ORG_ID }],
       pipelines: [funilRow({ id: PIPE, name: "funil comercial imobiliário" })],
       stages: [ETAPA_ORIGEM, ETAPA_DESTINO],
       leads: [],
@@ -175,7 +264,7 @@ describe("create_or_move_lead — gatilho de contato (#958)", () => {
   }
 
   it("contato que já tem negócio aberto no funil de destino: MOVE, não duplica", async () => {
-    const db = makeDb({
+    const db = makeDb({ contacts: [{ id: "contato-1", organization_id: ORG_ID }],
       pipelines: [funilRow({ id: PIPE, name: "Funil" })],
       stages: [ETAPA_ORIGEM, ETAPA_DESTINO],
       leads: [negocio("lead-1", "novo", { contact_id: "contato-1", status: "open" } as Partial<
@@ -194,7 +283,7 @@ describe("create_or_move_lead — gatilho de contato (#958)", () => {
   });
 
   it("contato SEM negócio no funil de destino: cria, como antes", async () => {
-    const db = makeDb({
+    const db = makeDb({ contacts: [{ id: "contato-1", organization_id: ORG_ID }],
       pipelines: [funilRow({ id: PIPE, name: "Funil" })],
       stages: [ETAPA_ORIGEM, ETAPA_DESTINO],
       leads: [],
@@ -210,7 +299,7 @@ describe("create_or_move_lead — gatilho de contato (#958)", () => {
   });
 
   it("o lead fica no contexto para a ação seguinte da regra — fim do missing_input", async () => {
-    const db = makeDb({
+    const db = makeDb({ contacts: [{ id: "contato-1", organization_id: ORG_ID }],
       pipelines: [funilRow({ id: PIPE, name: "Funil" })],
       stages: [ETAPA_ORIGEM, ETAPA_DESTINO],
       leads: [],
@@ -242,7 +331,7 @@ describe("create_or_move_lead — gatilho de contato (#958)", () => {
  */
 describe("create_or_move_lead — o contexto publicado é a linha inteira", () => {
   it("move: as tags do negócio sobrevivem no contexto para a ação seguinte", async () => {
-    const db = makeDb({
+    const db = makeDb({ contacts: [{ id: "contato-1", organization_id: ORG_ID }],
       pipelines: [funilRow({ id: PIPE, name: "Funil" })],
       stages: [ETAPA_ORIGEM, ETAPA_DESTINO],
       leads: [
@@ -264,7 +353,7 @@ describe("create_or_move_lead — o contexto publicado é a linha inteira", () =
   });
 
   it("criação: o contexto traz a linha criada, não só o id", async () => {
-    const db = makeDb({
+    const db = makeDb({ contacts: [{ id: "contato-1", organization_id: ORG_ID }],
       pipelines: [funilRow({ id: PIPE, name: "Funil" })],
       stages: [ETAPA_ORIGEM, ETAPA_DESTINO],
       leads: [],
@@ -301,7 +390,7 @@ describe("create_or_move_lead — não lê nenhuma chave classificacao_inicial_*
 
 it("CRM derivado propaga referência original sem observar ou abrir atendimento", async () => {
   originRpc.mockClear();
-  const db = makeDb({ pipelines: [funilRow({ id: PIPE, name: "Funil" })], stages: [ETAPA_ORIGEM, ETAPA_DESTINO], leads: [negocio("lead-1", "novo")] });
+  const db = makeDb({ contacts: [{ id: "contato-1", organization_id: ORG_ID }], pipelines: [funilRow({ id: PIPE, name: "Funil" })], stages: [ETAPA_ORIGEM, ETAPA_DESTINO], leads: [negocio("lead-1", "novo")] });
   const ctx = ctxComLead({}, db.client as unknown as ActionCtx["admin"]);
   ctx.event = { id: "evento-original", event_type: "message.received" } as ActionCtx["event"];
   ctx.context.contact = { id: "contato-1" };

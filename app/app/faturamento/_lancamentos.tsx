@@ -21,6 +21,8 @@ export type Lancamento = {
   id: string;
   direction: "in" | "out";
   amount_cents: number;
+  /** A moeda da própria linha: o valor é escrito nela, nunca numa moeda fixa (#1531). */
+  currency: string;
   description: string | null;
   entry_date: string;
   status: "pending" | "paid";
@@ -178,7 +180,7 @@ export function ListaDeLancamentos({
                 </td>
                 <td className="py-1 text-right tabular-nums">
                   {l.direction === "out" ? "-" : "+"}
-                  {formatCents(l.amount_cents, "BRL")}
+                  {formatCents(l.amount_cents, l.currency)}
                 </td>
                 <td className="py-1 text-right text-xs text-text-muted">
                   {l.status === "paid" ? t("pago") : t("pendente")}

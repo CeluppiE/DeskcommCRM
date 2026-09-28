@@ -22,6 +22,8 @@ export type Recorrencia = {
   account_id: string;
   direction: "in" | "out";
   amount_cents: number;
+  /** A moeda da própria linha: o valor é escrito nela, nunca numa moeda fixa (#1531). */
+  currency: string;
   day_of_month: number;
 };
 
@@ -161,7 +163,7 @@ export function Recorrencias({
             >
               <span>
                 {r.name} · {r.direction === "out" ? t("Saída") : t("Entrada")} ·{" "}
-                {formatCents(r.amount_cents, "BRL")} · {t("dia")} {r.day_of_month}
+                {formatCents(r.amount_cents, r.currency)} · {t("dia")} {r.day_of_month}
               </span>
               {podeEditar ? (
                 <button

@@ -2,6 +2,8 @@ import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { cookieSecure } from "@/lib/supabase/cookie-secure";
 import { NextResponse, type NextRequest } from "next/server";
 import { env } from "@/lib/env";
+import { fetchDoServidor } from "@/lib/supabase/fetch-do-servidor";
+import { urlDoSupabaseNoServidor } from "@/lib/supabase/url-do-servidor";
 import { isPublicPath } from "@/lib/auth/public-paths";
 import {
   verifyImpersonateCookieEdge,
@@ -18,6 +20,20 @@ export async function proxy(request: NextRequest) {
   response.headers.set("x-request-id", requestId);
 
   const { pathname, search } = request.nextUrl;
+  // Recupera retornos de OAuth social já emitidos antes da landing pública existir.
+  // Apenas a navegação é tratada: o vínculo de conta segue protegido pelos guards canônicos.
+  // Passa adiante só o SINAL `connected=1` — nunca o `connect_token` nem o valor recebido.
+  if (
+    request.method === "GET" &&
+    pathname === "/app/connections" &&
+    request.nextUrl.searchParams.has("connected") &&
+    request.nextUrl.searchParams.has("connect_token")
+  ) {
+    const landing = NextResponse.redirect(new URL("/auth/social-return?connected=1", request.url));
+    landing.headers.set("Cache-Control", "no-store");
+    landing.headers.set("Referrer-Policy", "no-referrer");
+    return landing;
+  }
   // Expose pathname to Server Components via header (used by onboarding layout).
   response.headers.set("x-pathname", pathname);
   request.headers.set("x-pathname", pathname);
@@ -34,9 +50,18 @@ export async function proxy(request: NextRequest) {
   }
 
   const supabase = createServerClient(
+    // #1082: base na URL pública, endereço interno só no transporte (ver
+    // `lib/supabase/fetch-do-servidor.ts`). O middleware não gera link, mas
+    // segue a mesma regra dos outros dois clients — um desenho só.
     env.NEXT_PUBLIC_SUPABASE_URL,
     env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
     {
+      global: {
+        fetch: fetchDoServidor(
+          urlDoSupabaseNoServidor(env.SUPABASE_SERVER_URL, env.NEXT_PUBLIC_SUPABASE_URL),
+          env.NEXT_PUBLIC_SUPABASE_URL,
+        ),
+      },
       cookies: {
         getAll() {
           return request.cookies.getAll();

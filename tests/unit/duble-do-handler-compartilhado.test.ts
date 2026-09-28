@@ -37,4 +37,13 @@ describe("dublê compartilhado do sendMessageHandler", () => {
     expect(capturas.patches.conversations).toEqual([{ unread_count_for_assignee: 0 }]);
     expect(capturas.filtros.conversations).toHaveLength(2);
   });
+
+  it("grava o select de organizations na captura própria, não na da conversa", async () => {
+    const { supabase, capturas } = criarDubleDoHandler({ conversation: { id: "conv-1" } });
+
+    await supabase.from("organizations").select("settings").eq("id", "org-1").maybeSingle();
+
+    expect(capturas.selects.organizations).toEqual(["settings"]);
+    expect(capturas.selects.conversations).toEqual([]);
+  });
 });

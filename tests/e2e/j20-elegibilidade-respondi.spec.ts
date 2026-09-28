@@ -29,12 +29,12 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./helpers/test";
 
 const APP_URL = `http://localhost:${process.env.E2E_PORT ?? "3001"}`;
 const CREDS_PATH = path.join(process.cwd(), ".e2e-creds.json");
 const RESPONDI_FIXTURE = path.join(process.cwd(), "tests/fixtures/webhooks/respondi-imobiliario.json");
-const EVIDENCIA = path.join(process.cwd(), ".superpowers/evidence/j20-elegibilidade");
+const EVIDENCIA = path.join(process.cwd(), "evidence/j20-elegibilidade");
 
 const RESPONDI_PHONE_ALIAS = "Qual é o melhor WhatsApp para falarmos sobre essa análise?";
 
@@ -79,7 +79,7 @@ async function login(page: Page, email: string): Promise<void> {
   await page.goto(`${APP_URL}/login`);
   await page.locator("#email").fill(email);
   await page.locator("#password").fill(creds.password);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app\//);
 }
 

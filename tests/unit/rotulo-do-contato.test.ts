@@ -23,7 +23,7 @@ describe("ehIdentificadorTecnico", () => {
     expect(ehIdentificadorTecnico("Contato 543134@lid")).toBe(true);
     expect(ehIdentificadorTecnico("5531988887777@c.us")).toBe(true);
     expect(ehIdentificadorTecnico("120363@g.us")).toBe(true);
-    expect(ehIdentificadorTecnico("558183647258@s.whatsapp.net")).toBe(true);
+    expect(ehIdentificadorTecnico("5511900000001@s.whatsapp.net")).toBe(true);
   });
 
   it("reconhece o rótulo que o código antigo inventava", () => {

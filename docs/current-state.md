@@ -119,9 +119,9 @@ o contrato de governança para agentes de IA externos.
 
 | Épico | Estado relatado | O que falta |
 |---|---|---|
-| **Follow-up inteligente** (`HANDOFF.md`) | Ondas 1–7 ✅; Onda 8 **em andamento** (8.1 gatilho de silêncio ✅, 8.3 jornada E2E ✅) | gatilho `stage_change`, flywheel, e o fechamento do checklist DoD/PRD da 8.3 |
-| **Evolução do harness** (`HANDOFF-harness-evolution.md`) | **ÉPICO COMPLETO** — Fases 0–4 fecharam, a última (Painel de Evolução) em 2026-07-27. Mais duas continuações entregues: mapeamento de funil do agente (27/jul) e gerenciar etapas do funil (28/jul) | **uma prova em aberto, e é do dono:** ninguém mandou uma mensagem real de WhatsApp fechando o ciclo completo. Receita de 1 min no fim do HANDOFF |
-| **Operação visível** (`HANDOFF-operacao-visivel.md`) | F1, F2(i), F2(ii), F3 ✅ localhost com evidência Playwright | prova na VPS após publicar (cada feature exige prova dupla: localhost **e** VPS) |
+| **Follow-up inteligente** (`docs/handoffs/HANDOFF.md`) | Ondas 1–7 ✅; Onda 8 **em andamento** (8.1 gatilho de silêncio ✅, 8.3 jornada E2E ✅) | gatilho `stage_change`, flywheel, e o fechamento do checklist DoD/PRD da 8.3 |
+| **Evolução do harness** (`docs/handoffs/HANDOFF-harness-evolution.md`) | **ÉPICO COMPLETO** — Fases 0–4 fecharam, a última (Painel de Evolução) em 2026-07-27. Mais duas continuações entregues: mapeamento de funil do agente (27/jul) e gerenciar etapas do funil (28/jul) | **uma prova em aberto, e é do dono:** ninguém mandou uma mensagem real de WhatsApp fechando o ciclo completo. Receita de 1 min no fim do HANDOFF |
+| **Operação visível** (`docs/handoffs/HANDOFF-operacao-visivel.md`) | F1, F2(i), F2(ii), F3 ✅ localhost com evidência Playwright | prova na VPS após publicar (cada feature exige prova dupla: localhost **e** VPS) |
 | **Casos humanos** (`docs/handoffs/HANDOFF-casos-humanos.md`) | Waves 1–6 ✅ e revisadas; Wave 7 (prova E2E) relatada PARCIAL — interrompida por limite de API, não por bug | **A CONFIRMAR** se fechou: o HANDOFF saiu da raiz para `docs/handoffs/`, o que normalmente sinaliza épico encerrado |
 | **Inbox multimodal** (`docs/handoffs/HANDOFF-inbox-multimodal.md`) | Ondas 0–3.1 ✅ com prova real (WhatsApp real, mídia real) | **A CONFIRMAR** o estado das ondas 4–6. **Bloqueios externos que valem revalidar:** chave Google era de gateway (gemini real inacessível) e credencial Anthropic era placeholder (`last4 1234`) — o agente multimodal foi provado só em OpenAI/gpt-4o |
 | **Fase FG / Vendaval** | Não iniciada | O gatilho era a aprovação de G6, que existe (`G6.approved`). O README **não lista mais** a Fase FG em "Próximo" — **A CONFIRMAR** se saiu de escopo ou foi absorvida |
@@ -263,9 +263,9 @@ Registrado porque a primeira passada desta auditoria apontou 11 PNGs de evidênc
 commitados na raiz. **Já foram movidos**: hoje há **zero** PNGs rastreados na raiz — a
 evidência vive em `evidence/` (85, contando as subpastas), `docs/evidence/` (18) e
 `loop/checkpoints/evidence/` (13) — **116** no total.
-Dois HANDOFFs também migraram para `docs/handoffs/`. Restam 3 na raiz (`HANDOFF.md`,
-`-harness-evolution`, `-operacao-visivel`), o que é consistente com "épico vivo fica visível,
-épico encerrado é arquivado".
+Desde a #638 nenhum HANDOFF fica na raiz: `git ls-files "HANDOFF*.md" | wc -l` devolve 0,
+e todos vivem em `docs/handoffs/`, com índice em `docs/handoffs/README.md`. Um teste
+(`tests/unit/handoff-na-raiz-nao-volta.test.ts`) reprova a volta.
 
 ### 4.9 Divergências de estado nos HANDOFFs 🟡
 
@@ -369,3 +369,8 @@ Duas lições que valem para quem mantiver este documento:
 2. **Este arquivo apodrece rápido.** O repo moveu 556 commits em poucos dias. Trate as datas
    do frontmatter como prazo de validade, não como enfeite — e prefira reconferir os números
    com os comandos citados a confiar na tabela.
+
+
+### Conversões de anúncios: confirmação e reprocessamento
+
+A integração de vendas oferece Data Manager nas novas autorizações do Google, preserva conexões anteriores e acompanha protocolos assíncronos. Configurações → Conversões mostra falhas temporárias, teste Meta e pendências com ação de reprocessamento. Contratos, limites e roteiro de piloto: [conversões de anúncios](runbooks/conversoes-de-anuncios.md). A captura web oferece links nomeados e script por número; regras Google por etapa, histórico e diagnóstico ficam em Configurações → Conversões. Os testes e limites de validação desta continuação estão no mapa de jornadas. Entrega real às plataformas exige um piloto com credenciais e recibos da conta.

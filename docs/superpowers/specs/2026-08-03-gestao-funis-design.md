@@ -187,7 +187,7 @@ escrita passam a concordar sobre o que é "meu funil".
    403 sem manager, 422 nas recusas, audit emitido, compensação do POST.
 3. **E2E Playwright pela tela** (`tests/e2e/pipelines-gestao.spec.ts`): criar → abrir
    o board novo → renomear → reordenar → tornar padrão → arquivar → conferir a recusa
-   do último funil. Screenshot em `.superpowers/evidence/`.
+   do último funil. Screenshot em `evidence/`.
 4. **Escopo por org** — teste que prova que a lista mostra só a org ativa (o bug do print).
 
 ## Fora de escopo

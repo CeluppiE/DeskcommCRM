@@ -4,8 +4,8 @@ import { useT } from "@/hooks/i18n/useT";
 /**
  * A CHAVE QUE FAZ O MATERIAL VIRAR CONHECIMENTO — dita na tela, resolvida ali.
  *
- * Preparar um material para o agente encontrá-lo exige uma chave da OpenAI. Isso
- * era verdade e não estava escrito em lugar nenhum do caminho: a tela de
+ * Preparar um material para o agente encontrá-lo exige uma chave de embedding,
+ * da OpenAI ou OpenRouter. Antes, a tela de
  * conhecimento prometia "a indexação começa em instantes", o material subia, e
  * numa instalação sem chave nada acontecia — para sempre, sem erro, sem estado,
  * sem aviso.
@@ -39,8 +39,9 @@ export interface EstadoDaChave {
   explicacao: string | null;
   chave_em_uso: string | null;
   avisos: string[];
-  credenciais_openai: Array<{
+  credenciais_embedding: Array<{
     id: string;
+    provider: "openai" | "openrouter";
     label: string;
     api_key_last4: string | null;
     validated_at: string | null;
@@ -58,11 +59,11 @@ interface Props {
 export function ChaveDeConhecimento({ estado, onChaveCadastrada }: Props) {
   const t = useT();
   const [abrindo, setAbrindo] = useState(false);
-  // O rótulo padrão é traduzido porque é o que a pessoa vê preenchido e o que
-  // ela grava — não um identificador técnico.
-  const [rotulo, setRotulo] = useState(t("Chave da OpenAI"));
+  const [provedor, setProvedor] = useState<"openai" | "openrouter">("openai");
+  const [rotulo, setRotulo] = useState("");
   const [chave, setChave] = useState("");
   const [enviando, setEnviando] = useState(false);
+  const nomeDaChave = provedor === "openrouter" ? t("Chave da OpenRouter") : t("Chave da OpenAI");
 
   async function cadastrar() {
     if (chave.trim().length < 8) {
@@ -72,11 +73,11 @@ export function ChaveDeConhecimento({ estado, onChaveCadastrada }: Props) {
     setEnviando(true);
     try {
       await apiClient.post("/api/v1/ai/credentials", {
-        provider: "openai",
-        label: rotulo.trim() || t("Chave da OpenAI"),
+        provider: provedor,
+        label: rotulo.trim() || nomeDaChave,
         api_key: chave.trim(),
       });
-      toast.success(t("Chave salva. Estamos conferindo com a OpenAI — leva alguns segundos."));
+      toast.success(t("Chave salva. Estamos conferindo com o provedor — leva alguns segundos."));
       setChave("");
       setAbrindo(false);
       // Quem recarrega até a validação voltar é o `refetchInterval` do hook: a
@@ -95,7 +96,7 @@ export function ChaveDeConhecimento({ estado, onChaveCadastrada }: Props) {
   // uma — e a pessoa cola outra, achando que errou a primeira.
   const conferindo =
     !estado.pode_indexar &&
-    estado.credenciais_openai.some((c) => c.is_active && !c.validated_at && !c.validation_error);
+    estado.credenciais_embedding.some((c) => c.is_active && !c.validated_at && !c.validation_error);
 
   if (conferindo) {
     return (
@@ -104,7 +105,7 @@ export function ChaveDeConhecimento({ estado, onChaveCadastrada }: Props) {
         className="flex items-center gap-2 text-xs text-text-muted"
       >
         <KeyRound className="h-3.5 w-3.5 animate-pulse" aria-hidden />
-        <span>{t("Conferindo a chave com a OpenAI — leva alguns segundos.")}</span>
+        <span>{t("Conferindo a chave de embedding — leva alguns segundos.")}</span>
       </div>
     );
   }
@@ -149,11 +150,11 @@ export function ChaveDeConhecimento({ estado, onChaveCadastrada }: Props) {
         <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-warning-fg" aria-hidden />
         <div className="space-y-1">
           <h3 className="text-sm font-medium">
-            {t("Falta uma chave da OpenAI para o agente aprender o seu material")}
+            {t("Falta uma chave de embedding para o agente aprender o seu material")}
           </h3>
           <p className="text-xs text-text-muted">
             {t(
-              "Preparar um documento para o agente encontrá-lo usa a OpenAI, mesmo que o resto do seu assistente rode em outro provedor. Sem ela você consegue cadastrar o material, mas ele fica esperando — e o agente segue sem saber o que está nele.",
+              "O material usa text-embedding-3-small, acessível pela OpenAI ou OpenRouter. Sem uma dessas chaves, você pode cadastrar o documento, mas ele fica esperando para ser preparado.",
             )}
           </p>
         </div>
@@ -161,22 +162,54 @@ export function ChaveDeConhecimento({ estado, onChaveCadastrada }: Props) {
 
       {abrindo ? (
         <div className="space-y-3">
+          <fieldset className="space-y-2">
+            <legend className="text-sm font-medium">{t("Provedor da chave de embedding")}</legend>
+            <div className="flex gap-4 text-sm">
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="embedding-provider"
+                  value="openai"
+                  checked={provedor === "openai"}
+                  onChange={() => setProvedor("openai")}
+                  disabled={enviando}
+                />
+                OpenAI
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="embedding-provider"
+                  value="openrouter"
+                  data-testid="conhecimento-provedor-openrouter"
+                  checked={provedor === "openrouter"}
+                  onChange={() => setProvedor("openrouter")}
+                  disabled={enviando}
+                />
+                OpenRouter
+              </label>
+            </div>
+            <p className="text-xs text-text-muted">
+              {t("O texto dos materiais é enviado ao provedor escolhido para preparar a busca.")}
+            </p>
+          </fieldset>
           <div className="space-y-1">
             <Label htmlFor="chave-rotulo">{t("Como você quer chamar esta chave")}</Label>
             <Input
               id="chave-rotulo"
               value={rotulo}
               onChange={(e) => setRotulo(e.target.value)}
+              placeholder={nomeDaChave}
               disabled={enviando}
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="chave-valor">{t("Chave da OpenAI")}</Label>
+            <Label htmlFor="chave-valor">{nomeDaChave}</Label>
             <Input
               id="chave-valor"
               data-testid="conhecimento-chave-input"
               type="password"
-              placeholder="sk-…"
+              placeholder={provedor === "openrouter" ? "sk-or-…" : "sk-…"}
               value={chave}
               onChange={(e) => setChave(e.target.value)}
               disabled={enviando}
@@ -185,12 +218,16 @@ export function ChaveDeConhecimento({ estado, onChaveCadastrada }: Props) {
             <p className="text-xs text-text-muted">
               {t("Você pega em")}{" "}
               <a
-                href="https://platform.openai.com/api-keys"
+                href={
+                  provedor === "openrouter"
+                    ? "https://openrouter.ai/keys"
+                    : "https://platform.openai.com/api-keys"
+                }
                 target="_blank"
                 rel="noreferrer"
                 className="font-medium text-foreground underline underline-offset-4"
               >
-                platform.openai.com/api-keys
+                {provedor === "openrouter" ? "openrouter.ai/keys" : "platform.openai.com/api-keys"}
               </a>
               . {t("Ela é guardada cifrada e nunca aparece de volta na tela.")}
             </p>

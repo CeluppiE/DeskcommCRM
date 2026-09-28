@@ -46,6 +46,11 @@ export type TabelaOperacional =
   | "conversations"
   | "calendar_appointments"
   | "orders"
+  // D10: `crm_proposals` tem FK SET NULL (não mais CASCADE) para lead e
+  // contato — sem raiz própria aqui, uma proposta enviada ficaria órfã PARA
+  // SEMPRE num reset "total" da organização, e o PDF dela continuaria
+  // ocupando o bucket sem nenhuma linha apontando pra ele.
+  | "crm_proposals"
   | "crm_leads"
   | "contacts";
 
@@ -58,6 +63,7 @@ export const RAIZES_DO_APAGAMENTO: readonly Raiz[] = [
   { tabela: "conversations", porque: "FK RESTRICT para contacts" },
   { tabela: "calendar_appointments", porque: "FK RESTRICT para contacts" },
   { tabela: "orders", porque: "FK SET NULL para contacts; ninguém a referencia" },
+  { tabela: "crm_proposals", porque: "FK SET NULL para contacts e crm_leads (D10) — raiz própria" },
   { tabela: "crm_leads", porque: "FK SET NULL para contacts" },
   { tabela: "contacts", porque: "a raiz do grafo — sempre por último" },
 ] as const;
@@ -70,8 +76,8 @@ export interface FalhaAoApagar {
 }
 
 export type ResultadoDoApagamento =
-  | { readonly ok: true; readonly counts: ContagensApagadas }
-  | { readonly ok: false; readonly falha: FalhaAoApagar; readonly counts: ContagensApagadas };
+  | { readonly ok: true; readonly counts: ContagensApagadas; readonly pdfsRemovidos: number }
+  | { readonly ok: false; readonly falha: FalhaAoApagar; readonly counts: ContagensApagadas; readonly pdfsRemovidos: number };
 
 function contagensZeradas(): ContagensApagadas {
   return {
@@ -79,6 +85,7 @@ function contagensZeradas(): ContagensApagadas {
     conversations: 0,
     calendar_appointments: 0,
     orders: 0,
+    crm_proposals: 0,
     crm_leads: 0,
     contacts: 0,
   };
@@ -110,10 +117,40 @@ export async function apagarDadosOperacionaisDaOrg(
       .eq("organization_id", organizationId);
 
     if (error) {
-      return { ok: false, falha: { tabela, mensagem: error.message }, counts };
+      return { ok: false, falha: { tabela, mensagem: error.message }, counts, pdfsRemovidos: 0 };
     }
     counts[tabela] = count ?? 0;
   }
 
-  return { ok: true, counts };
+  // D10: os PDFs de proposta (bucket `propostas`, path `<org>/<id>.pdf` —
+  // lib/propostas/storage.ts) não têm FK nenhuma que os apague sozinhos; o
+  // reset "total" só está completo quando a pasta da organização some junto
+  // com as linhas de `crm_proposals` apagadas acima. O contador de numeração
+  // (`crm_proposal_counters`) NÃO é tocado por este reset — a organização
+  // pode zerar o atendimento e continuar numerando propostas de onde parou.
+  // `storage.list()` pagina em 100 por padrão (storage-js) — sem o laço,
+  // qualquer organização com mais de 100 propostas ficava com PDFs órfãos
+  // no bucket depois do reset. Sempre lista do zero: cada `remove()` já tira
+  // do bucket os arquivos que acabaram de ser listados, então a próxima
+  // chamada devolve o lote seguinte na mesma posição — não precisa (nem pode
+  // confiar em) offset, que uma listagem que muda debaixo do pé tornaria
+  // instável.
+  let pdfsRemovidos = 0;
+  const LOTE = 100;
+  for (;;) {
+    const { data: arquivos, error: listErr } = await client.storage
+      .from("propostas")
+      .list(organizationId, { limit: LOTE });
+    if (listErr || !arquivos || arquivos.length === 0) break;
+
+    const { error: removeErr } = await client.storage
+      .from("propostas")
+      .remove(arquivos.map((a) => `${organizationId}/${a.name}`));
+    if (removeErr) break;
+    pdfsRemovidos += arquivos.length;
+
+    if (arquivos.length < LOTE) break;
+  }
+
+  return { ok: true, counts, pdfsRemovidos };
 }

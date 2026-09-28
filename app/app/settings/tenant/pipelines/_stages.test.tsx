@@ -602,3 +602,37 @@ describe("StagesSection — arquivar", () => {
     expect(aviso).toHaveTextContent("Não deu para salvar");
   });
 });
+
+describe("StagesSection — a etapa que avisa na Central (migration 0440)", () => {
+  it("a chave vem desligada e ligá-la manda só `avisar_na_central: true` para AQUELA etapa", async () => {
+    const user = userEvent.setup();
+    vi.mocked(apiClient.patch).mockResolvedValue({ data: { etapas: [] } });
+    montar();
+    const chave = await screen.findByTestId("avisar-e2");
+    expect(chave).toHaveAttribute("aria-checked", "false");
+    // Rótulo com o NOME da etapa: num funil de doze colunas, "Avisar" sozinho
+    // não diz qual chave é qual para quem usa leitor de tela.
+    expect(chave).toHaveAccessibleName(/«Aguardando pagamento»/);
+
+    await user.click(chave);
+    await waitFor(() => expect(apiClient.patch).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(apiClient.patch).mock.calls[0]![0]).toContain(`/stages/e2`);
+    expect(vi.mocked(apiClient.patch).mock.calls[0]![1]).toEqual({ avisar_na_central: true });
+  });
+
+  it("a etapa marcada no servidor aparece ligada, e desligar manda `false`", async () => {
+    const user = userEvent.setup();
+    vi.mocked(apiClient.get).mockResolvedValue({
+      data: estado({}, ETAPAS.map((e) => (e.id === "e2" ? { ...e, avisar_na_central: true } : e))),
+    });
+    vi.mocked(apiClient.patch).mockResolvedValue({ data: { etapas: [] } });
+    montar();
+    const chave = await screen.findByTestId("avisar-e2");
+    expect(chave).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("avisar-e1")).toHaveAttribute("aria-checked", "false");
+
+    await user.click(chave);
+    await waitFor(() => expect(apiClient.patch).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(apiClient.patch).mock.calls[0]![1]).toEqual({ avisar_na_central: false });
+  });
+});

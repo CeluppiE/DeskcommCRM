@@ -31,6 +31,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { performHumanHandoff } from "@/lib/agent-engine/agent/human-handoff";
 import { montarBriefingDaPassagem } from "@/lib/escalacao/briefing-da-passagem";
+import { avisarLeadDoCrm } from "@/lib/ai/handoff/aviso-ao-lead";
 
 // ── O motor do CRM. Ele fala supabase-js, então o dublê é outro — e é por isso
 //    que os dois motores precisam estar no MESMO arquivo: o defeito que esta
@@ -355,6 +356,12 @@ describe("o motor do CRM grava a passagem", () => {
     expect(linha?.linha.origem).toBe("sentimento");
     expect(linha?.linha.motivo_codigo).toBe("low_sentiment");
     expect(linha?.linha.cliente_avisado).toBe(true);
+    // A origem chega ao aviso: é ela que libera a guarda "a IA falou" quando a
+    // passagem vem de um agente externo via MCP (falas gravadas como `system`).
+    expect(vi.mocked(avisarLeadDoCrm)).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ origem: "sentimento" }),
+    );
   });
 
   it("o aviso deste motor também aponta para a CONVERSA", async () => {
@@ -371,6 +378,33 @@ describe("o motor do CRM grava a passagem", () => {
     expect(String(aviso?.linha.body), "código cru na tela de quem opera").not.toContain(
       "low_sentiment",
     );
+  });
+
+  it("D11: irritação percebida pelo Jev é dita à equipe — no resumo e no aviso", async () => {
+    await triggerHandoff({
+      conversationId: CONVERSA,
+      organizationId: ORG,
+      reason: "low_sentiment",
+      origem: "sentimento",
+      metadata: { sentiment_score: 0, sentiment_engine: "jev" },
+    });
+    const passagem = inseridos.find((i) => i.tabela === "passagens_de_atendimento");
+    const aviso = inseridos.find((i) => i.tabela === "agent_inbox_items");
+    expect(String(passagem?.linha.body)).toContain("O cliente demonstrou irritação na conversa (percebido pelo Jev)");
+    expect(String(aviso?.linha.body)).toContain("O cliente demonstrou irritação na conversa (percebido pelo Jev)");
+  });
+
+  it("D11: sem o Jev na medição, nenhuma marca (controle)", async () => {
+    await triggerHandoff({
+      conversationId: CONVERSA,
+      organizationId: ORG,
+      reason: "low_sentiment",
+      origem: "sentimento",
+      metadata: { sentiment_score: 0, sentiment_engine: "llm" },
+    });
+    const aviso = inseridos.find((i) => i.tabela === "agent_inbox_items");
+    expect(String(aviso?.linha.body)).toContain("O cliente demonstrou irritação");
+    expect(String(aviso?.linha.body)).not.toContain("Jev");
   });
 
   it("com aviso JÁ aberto, a segunda passagem vira ADENDO — não é descartada", async () => {

@@ -140,14 +140,18 @@ describe("crm_find_free_slots", () => {
     expect(params.ate.toISOString()).toBe("2026-09-14T14:00:00.000Z");
   });
 
-  it("não aceita dia específico e período relativo juntos", async () => {
+  it("prioriza dia específico quando dia e dias_a_frente forem informados juntos (#1436)", async () => {
+    respondeCom(SUCESSO);
     const r = (await crmFindFreeSlots.handler(
-      { event_type_slug: "c", dia: "2026-09-13", dias_a_frente: 7 },
+      { event_type_slug: "c", dia: "2026-09-01", dias_a_frente: 7 },
       ctx,
-    )) as { motivo: string; mensagem: string };
-    expect(r.motivo).toBe("periodo_ambiguo");
-    expect(r.mensagem).toMatch(/não os dois/);
-    expect(horariosLivresDaOrg).not.toHaveBeenCalled();
+    )) as { horarios: unknown[]; total_de_horarios: number };
+    expect(r.total_de_horarios).toBe(1);
+    expect(horariosLivresDaOrg).toHaveBeenCalled();
+    const params = vi.mocked(horariosLivresDaOrg).mock.calls[0]![2];
+    // A janela consultada é a ampla do dia 2026-09-01 (-14h/+38h), ignorando o dias_a_frente: 7
+    expect(params.de.toISOString()).toBe("2026-08-31T10:00:00.000Z");
+    expect(params.ate.toISOString()).toBe("2026-09-02T14:00:00.000Z");
   });
 
   it("⚠️ a recusa que sai é a do CLIENTE, nunca a do OPERADOR", async () => {
@@ -388,4 +392,35 @@ describe('Meet no contrato do atendimento',()=>{
   const result=await crmListAppointments.handler({contact_id:'contact'},ctx);
   expect(JSON.stringify(result)).toContain('https://meet.google.com/abc-defg-hij');expect(JSON.stringify(result)).not.toContain('old-link');
  });
+});
+
+describe("idempotência da marcação", () => {
+  it("encaminha a chave externa e o job estável ao handler compartilhado", async () => {
+    vi.clearAllMocks();
+    vi.mocked(idDoTipoPorSlug).mockResolvedValue({ id: "t-1", nome: "Consulta" });
+    vi.mocked(handlers.marcarAgendamentoHandler).mockResolvedValue({
+      id: "a-1",
+      status: "confirmed",
+      meeting_state: "none",
+      meeting_url: null,
+    });
+
+    await crmBookAppointment.handler(
+      {
+        event_type_slug: "consulta",
+        starts_at: "2026-09-01T14:00:00Z",
+        contact_id: "11111111-1111-4111-8111-111111111111",
+      },
+      {
+        ...ctx,
+        idempotencyKey: "00000000-0000-4000-8000-0000000000cc",
+        sourceJobId: "00000000-0000-4000-8000-0000000000bb",
+      },
+    );
+
+    expect(vi.mocked(handlers.marcarAgendamentoHandler).mock.calls[0]?.[1]).toMatchObject({
+      idempotencyKey: "00000000-0000-4000-8000-0000000000cc",
+      sourceJobId: "00000000-0000-4000-8000-0000000000bb",
+    });
+  });
 });

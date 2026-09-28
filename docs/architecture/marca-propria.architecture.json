@@ -72,7 +72,7 @@
 
     { "id": "updatebranding", "lane": "escrita", "col": 2, "type": "api", "label": "updateBranding (server action)", "sublabel": "gate is_platform_admin + admin client + invalidarMarcaDaInstalacao()" },
     { "id": "updateorg", "lane": "escrita", "col": 2, "type": "api", "label": "updateMarcaDaOrganizacao (server action)", "sublabel": "RPC atômica: SELECT→spread→UPDATE no mesmo jsonb perderia visibility_mode" },
-    { "id": "rotalogo", "lane": "escrita", "col": 2, "type": "api", "label": "POST/DELETE /api/v1/marca/logo", "sublabel": "gate POR ESCOPO · tipo pelos BYTES (file.type só no details) · 512 KB · sobe → grava → só então apaga, com o prefixo asseverado" },
+    { "id": "rotalogo", "lane": "escrita", "col": 2, "type": "api", "label": "POST/DELETE /api/v1/marca/logo", "sublabel": "gate POR ESCOPO · tipo pelos BYTES (file.type só no details) · 512 KB por arte · claro/escuro opcionais · sobe → grava → só então apaga, com o prefixo asseverado" },
 
     { "id": "bucketlogos", "lane": "banco", "col": 3, "type": "database", "label": "storage/brand-logos (PÚBLICO)", "sublabel": "o 1º bucket público do repo · zero policy em storage.objects · <prefixo>/<uuid>.<png|jpg> · a URL é DERIVADA do caminho, nunca gravada" },
     { "id": "fnlogoorg", "lane": "banco", "col": 4, "type": "database", "label": "fn_definir_logo_da_organizacao (0158)", "sublabel": "assevera o prefixo contra p_org DENTRO do banco · merge no CAMPO · a 0157 ganhou forward-fix para não apagar logo_path" },
@@ -100,7 +100,9 @@
     { "id": "enrollmfa", "lane": "saida", "col": 7, "type": "api", "label": "app/actions/auth/enrollMfa.ts", "sublabel": "issuer (o campo que o celular grava), não friendlyName — medido contra GoTrue v2.188.1" },
     { "id": "resend", "lane": "saida", "col": 7, "type": "service", "label": "lib/email/resend.ts", "sublabel": "nome de exibição = marca; endereço = do OPERADOR (domínio verificado). Vazio = not_configured" },
     { "id": "lgpdworker", "lane": "saida", "col": 6, "type": "service", "label": "workers/lgpd-export-worker.ts + export-collector", "sublabel": "monta o ExportPayload; roda pelo scheduler (event-log-drain), nunca no contêiner worker" },
-    { "id": "pdf", "lane": "saida", "col": 7, "type": "service", "label": "lib/lgpd/pdf-renderer.tsx", "sublabel": "DESLIGADO da marca de propósito — ver o card vermelho" }
+    { "id": "pdf", "lane": "saida", "col": 7, "type": "service", "label": "lib/lgpd/pdf-renderer.tsx", "sublabel": "DESLIGADO da marca de propósito — ver o card vermelho" },
+    {"id": "iconeapp", "lane": "saida", "col": 9, "type": "service", "label": "/app-icon/192 e /app-icon/512", "sublabel": "arquivo platform/favicon_path limitado; falha retorna desenho e log"},
+    {"id": "manifestapp", "lane": "saida", "col": 10, "type": "frontend", "label": "manifest → aplicativo instalado", "sublabel": "marca pública da instalação; 192/512 PNG; leitura em runtime"}
   ],
   "edges": [
     { "id": "e1", "from": "installsh", "to": "env", "label": "grava a marca no .env — e o arquivo é escrito com truncamento: chave que o script não grava some no update seguinte" },
@@ -163,10 +165,12 @@
     { "id": "e58", "from": "rotalogo", "to": "platformbranding", "label": "escopo=instalacao: upsert de logo_path (CHECK ^platform/<uuid>.(png|jpg)) + seeded_from_env=false" },
     { "id": "e59", "from": "rotalogo", "to": "fnlogoorg", "label": "escopo=organizacao: RPC com row_count de volta — a catraca da issue #144" },
     { "id": "e60", "from": "fnlogoorg", "to": "orgbranding", "label": "jsonb_set em {branding} preservando app_name/accent_hex — merge no CAMPO, não no objeto" },
-    { "id": "e61", "from": "bucketlogos", "to": "resolver", "label": "logoDaCamada(): o ARQUIVO vence a URL colada; urlPublicaDoLogo deriva a URL do caminho + host em runtime" },
+    { "id": "e61", "from": "bucketlogos", "to": "resolver", "label": "logoDaCamada(): o ARQUIVO vence a URL colada; par de logos não mistura marcas entre camadas; urlPublicaDoLogo deriva a URL do caminho + host em runtime" },
     { "id": "e62", "from": "rotalogo", "to": "auditlog", "label": "reusa platform_branding.updated / org.branding_updated — código de ação novo não responderia pergunta nova" },
     { "id": "e63", "from": "layout", "to": "marcacliente", "label": "a MESMA marcaResolvida() do título e do CSS desce por prop, no payload do RSC — mesma rota de user/activeOrg" },
-    { "id": "e64", "from": "marcacliente", "to": "interface", "label": "useMarcaDaInstalacao(): SSR e hidratação leem o mesmo objeto, então o logo do revendedor não troca de elemento no meio do caminho" }
+    { "id": "e64", "from": "marcacliente", "to": "interface", "label": "useMarcaDaInstalacao(): SSR e hidratação leem o mesmo objeto, então o logo do revendedor não troca de elemento no meio do caminho" },
+    {"id": "e-icon-app-a", "from": "platformbranding", "to": "iconeapp", "label": "favicon_path validado; Storage da instalação; fallback limitado"},
+    {"id": "e-icon-app-b", "from": "iconeapp", "to": "manifestapp", "label": "PNG 192/512 públicos, sem cookie de organização"}
   ],
   "cards": [
     {

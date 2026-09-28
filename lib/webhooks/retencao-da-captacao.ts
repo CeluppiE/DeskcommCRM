@@ -38,6 +38,31 @@
  * que escreveu `LEAD_CAPTURE_RETENTION_DAYS=1` descobriria pela ausência de
  * efeito — falha fechada na ação e fechada também na informação, que é o pior
  * dos dois mundos.
+ *
+ * ─── A ordem e o erro, na MESMA régua das podas irmãs (issue #1721) ─────────
+ *
+ * Esta poda nasceu no molde antigo e ficou nele em dois pontos, ambos medidos
+ * contra a décima poda do `data-retention`, que a casa já corrigiu no #1719:
+ *
+ *   1. o DELETE ia `.limit(lote)` SEM `order`. O PostgREST 12.2 recusa isso
+ *      com 400 PGRST109 (medido no v12.2.12 pelo mantenedor; com `order=id`
+ *      volta 200) — e, aqui, a recusa virava `apagadas: 0`. A ordem também é o
+ *      que torna a drenagem DETERMINÍSTICA: sem `order`, cada lote apaga um
+ *      subconjunto arbitrário, e a sequência de lotes deixa de ser repetível.
+ *      A coluna é `id`, ASCENDENTE — a mesma da décima poda, e pela mesma
+ *      razão: é a chave primária, logo a ordem é estável e o recorte é
+ *      repetível, e é a coluna que casa com o índice de `received_at` sem
+ *      exigir que o planner troque de caminho;
+ *   2. o erro do DELETE era ENGOLIDO (`logger.warn` + `apagadas: 0`). O
+ *      `warn` é a evidência, não o aviso: a resposta do cron dizia "não havia
+ *      nada vencido", indistinguível de uma instalação em dia, e o único sinal
+ *      vivia num log dentro do contêiner, atrás de um `curl` que joga tudo
+ *      para /dev/null. Agora a falha SOBE, como em `drenar`
+ *      (`app/api/v1/cron/data-retention/route.ts`): quem chama involve a
+ *      captação num `try` próprio, escreve a linha `retention.sweep_run` com
+ *      `falhou: true` e responde 500. O que se perde é UMA rodada de um
+ *      expurgo — o que já foi apagado no banco não volta atrás, porque cada
+ *      lote fecha a própria transação.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -88,17 +113,28 @@ export async function podarHistoricoDeCaptacao(
     .delete()
     .lt("received_at", limite)
     .select("id")
+    // O `order` ANTES do `limit` (issue #1721), na MESMA coluna e na mesma
+    // direção da décima poda do `data-retention`: `id` ascendente. Duas
+    // propriedades, e as duas importam. A PRIMEIRA é o que o PostgREST 12.2
+    // exige: `limit` sem `order` num DELETE volta 400 PGRST109, e sem esta
+    // linha a poda da captação nunca apaga nada em nenhum clone novo. A
+    // SEGUNDA é a drenagem: sem ordem o banco escolhe um subconjunto
+    // arbitrário a cada lote, então duas rodadas com o mesmo backlog não
+    // apagam as mesmas linhas e a sequência de lotes não é reproduzível.
+    .order("id")
     .limit(lote);
 
   if (error) {
-    // Falha ABERTA na ação (o banco cresce um pouco mais) e ABERTA na
-    // informação: uma poda que falha em silêncio vira "o disco encheu e
-    // ninguém sabe por quê" seis meses depois.
-    logger.warn("[retencao-captacao] não consegui apagar o lote", {
-      detail: error.message.slice(0, 160),
-      dias_aplicados: dias,
-    });
-    return { apagadas: 0, temMais: false, diasAplicados: dias };
+    // A falha SOBE — o mesmo caminho de `drenar`
+    // (`app/api/v1/cron/data-retention/route.ts`). O `warn` que vivia aqui
+    // dizia a causa e devolvia `apagadas: 0`, que na resposta do cron é
+    // indistinguível de "não havia nada vencido": um banco que parou de
+    // aceitar o DELETE ficava indistinguível de um banco em dia, e o sinal
+    // morava num log de contêiner atrás de um `curl` que joga tudo para
+    // /dev/null. Quem chama pega a exceção num `try` PRÓPRIO — o que já
+    // foi apagado no arquivo forense não se perde com ela, cada lote fecha a
+    // sua transação — e responde 500 com a linha `falhou: true` na trilha.
+    throw new Error(`webhook_lead_captures: ${error.message}`);
   }
 
   const apagadas = (data ?? []).length;

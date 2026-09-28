@@ -18,6 +18,10 @@ import { podarArquivoDeWebhooks } from "@/lib/channels/retencao-do-arquivo";
  * apagando o que ainda serve, segurando a tabela em que todo webhook escreve,
  * ou escrevendo de novo o que já escreveu. Por isso quase todo caso aqui é um
  * limite, não um caminho feliz.
+ *
+ * A ORDEM do DELETE e o CANAL da falha não moram aqui: medidos em
+ * `retencao-arquivo-webhooks-ordena-e-fala-a-falha.test.ts`, o arquivo criado
+ * junto com o conserto do #1769.
  */
 
 interface Chamada {
@@ -107,10 +111,18 @@ describe("o lote é o que impede a poda de derrubar a entrada", () => {
   });
 });
 
-describe("falha do banco não derruba a rodada", () => {
+describe("falha do banco na BUSCA não derruba a rodada", () => {
   it("erro ao escolher devolve zero, não lança", async () => {
     // Este cron roda ao lado dos que entregam mensagem. Uma exceção aqui não
     // pode virar 500 numa rota que o scheduler chama de minuto em minuto.
+    //
+    // O escopo deste caso é o PASSO 1, e ele é estreito de propósito: a busca
+    // é idempotente e o mesmo lote volta a ser escolhido na rodada seguinte de
+    // 5 em 5 minutos, enquanto o DELETE do passo 2 é a linha que some para
+    // sempre. Por isso a falha da busca continua devolvendo zero — e a do
+    // DELETE passou a SUBIR no #1769, com a mesma régua da poda irmã. Os dois
+    // canais estão medidos em
+    // `retencao-arquivo-webhooks-ordena-e-fala-a-falha.test.ts`.
     const admin = {
       from: () => ({
         select: () => ({ is: () => ({ lt: () => ({ order: () => ({

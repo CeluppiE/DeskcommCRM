@@ -42,6 +42,7 @@ import { ModelPicker, useModelMeta } from "./ModelPicker";
 import { CHAVE_DA_INSTALACAO, CredentialPicker, STATUS_LABEL, findCredential } from "./CredentialPicker";
 import { rotuloDoEstadoDoCanal } from "@/lib/channels/estado";
 import { bloqueioDePublicacao } from "@/lib/ai/agents/bloqueio-de-publicacao";
+import { mesmoRascunho } from "@/lib/ai/agents/mesmo-rascunho";
 import { ToolPicker } from "./ToolPicker";
 import { TriggerEditor, type TriggerValue } from "./TriggerEditor";
 import { HandoffKeywordsInput } from "./HandoffKeywordsInput";
@@ -55,6 +56,7 @@ import { PainelDeSeguranca } from "./PainelDeSeguranca";
 import { BasesDoAgente, type MaterialDoAcervo } from "./BasesDoAgente";
 import { FunisDoAgente, type CoberturaPorFunil } from "./FunisDoAgente";
 import { PublishConfirmDialog } from "./PublishConfirmDialog";
+import { ComandosDoCelular } from "./ComandosDoCelular";
 import {
   saveAgentDraftAction,
   publishAgentAction,
@@ -72,6 +74,7 @@ import type { AgentVersionRow } from "@/hooks/ai/useAgentVersions";
 import type { CredentialRow, Provider } from "@/hooks/ai/useCredentials";
 import { credentialStatus } from "@/hooks/ai/useCredentials";
 import type { FunilDaResposta } from "@/hooks/pipelines/usePipelines";
+import { callbacksHabilitados } from "@/lib/followup/callback-policy";
 
 /**
  * O canal oferecido no seletor é exatamente o que `listSelectableChannels`
@@ -101,9 +104,20 @@ interface BaseProps {
    * conseguia salvar nada.
    */
   provedoresDaInstalacao?: string[];
+  /**
+   * O provedor que a organização já usa — `organizations.settings.llm.provider`,
+   * lido pela página de CRIAÇÃO junto com as credenciais.
+   *
+   * É o defeito do "agente novo já nasce Anthropic": o formulário oferecia
+   * `anthropic` (e "Cadastrar credencial anthropic") para uma organização cuja
+   * única chave é da OpenAI. Aqui só o valor chega; quem lê `settings` é a
+   * página server component, do mesmo jeito que as credenciais.
+   */
+  provedorPadrao?: string;
   channelSessions: ChannelSessionLite[];
   routerMembership?: { routerId: string; routerName: string } | null;
   readOnly?: boolean;
+  organizationTimezone?: string;
 }
 
 interface EditProps extends BaseProps {
@@ -166,6 +180,7 @@ interface FormState {
   history_token_window: number;
   handoff_keywords: string[];
   handoff_tool_enabled: boolean;
+  proposal_ai_draft_enabled: boolean;
   cases_enabled: boolean;
   split_messages: boolean;
   split_max_chars: number;
@@ -182,6 +197,7 @@ interface FormState {
 interface FollowupValue {
   enabled: boolean;
   flow_pointer_ids: string[];
+  callback_enabled: boolean;
   /** Ausente em versões antigas; null = sem janela própria. */
   send_window?: FollowupWindowValue | null;
 }
@@ -190,6 +206,7 @@ const DEFAULT_FOLLOWUP: FollowupValue = {
   enabled: false,
   flow_pointer_ids: [],
   send_window: null,
+  callback_enabled: true,
 };
 
 const DEFAULT_TRIGGER: TriggerValue = {
@@ -203,17 +220,42 @@ const DEFAULT_TRIGGER: TriggerValue = {
   concurrency: "one_per_conversation",
 };
 
-function buildState(args: {
+/**
+ * O provedor inicial de um agente que ainda não tem versão.
+ *
+ * Só a lista que o seletor OFERECE vale como resposta: `settings.llm` é jsonb
+ * gravado por várias telas, e um id que `PROVEDORES` não conhece cairia num
+ * `<Select>` sem opção correspondente — o campo abrindo em branco e o
+ * formulário pedindo para escolher de novo. Fora da lista, `anthropic` (o que
+ * o seed da instalação sempre teve).
+ */
+export function provedorInicial(provedorPadrao?: string): Provider {
+  if (provedorPadrao && PROVEDORES.some((p) => p.id === provedorPadrao)) {
+    return provedorPadrao as Provider;
+  }
+  return "anthropic";
+}
+
+export function buildState(args: {
   agent?: AgentRow;
   version: AgentVersionRow | null;
   t: (texto: string) => string;
+  /**
+   * O provedor que a ORGANIZAÇÃO já usa (`organizations.settings.llm.provider`).
+   *
+   * Sem isto, um agente NOVO nascia `anthropic` — e o formulário mostrava
+   * "Cadastrar credencial anthropic" para uma organização que só tem chave da
+   * OpenAI. A escolha passa a herdar o que a instalação já decidiu; o `anthropic`
+   * continua sendo o último degrau, para instalação que ainda não escolheu nada.
+   */
+  provedorPadrao?: string;
 }): FormState {
-  const { agent, version, t } = args;
+  const { agent, version, t, provedorPadrao } = args;
   return {
     name: agent?.name ?? "",
     description: agent?.description ?? "",
     priority: agent?.priority ?? 0,
-    provider: (version?.provider as Provider) ?? "anthropic",
+    provider: (version?.provider as Provider) ?? provedorInicial(provedorPadrao),
     model: version?.model ?? "",
     // `null` gravado = a versão usa a chave da instalação. Sem esta tradução,
     // reabrir o agente mostraria o campo em branco e pediria para escolher de novo.
@@ -238,10 +280,17 @@ function buildState(args: {
       "pessoa real",
     ],
     handoff_tool_enabled: version?.handoff_tool_enabled ?? true,
+    proposal_ai_draft_enabled: version?.proposal_ai_draft_enabled ?? true,
     cases_enabled: version?.cases_enabled ?? false,
     split_messages: version?.split_messages ?? false,
     split_max_chars: version?.split_max_chars ?? 600,
-    followup: version?.followup ?? DEFAULT_FOLLOWUP,
+    followup: version?.followup
+      ? {
+          ...DEFAULT_FOLLOWUP,
+          ...version.followup,
+          callback_enabled: callbacksHabilitados(version.followup),
+        }
+      : DEFAULT_FOLLOWUP,
     operator_enabled: version?.operator_enabled ?? false,
     // O form usa "" onde o banco usa null — Select controlado não aceita null.
     // A conversão de volta acontece em `toVersionPayload`, num ponto só.
@@ -294,6 +343,7 @@ function toVersionPayload(s: FormState) {
     history_token_window: s.history_token_window,
     handoff_keywords: s.handoff_keywords,
     handoff_tool_enabled: s.handoff_tool_enabled,
+    proposal_ai_draft_enabled: s.proposal_ai_draft_enabled,
     cases_enabled: s.cases_enabled,
     split_messages: s.split_messages,
     split_max_chars: s.split_max_chars,
@@ -324,7 +374,7 @@ export function AgentForm(props: Props) {
       const ref = props.base ?? props.draft ?? props.published;
       return buildState({ agent: props.agent, version: ref, t });
     }
-    return buildState({ version: null, t });
+    return buildState({ version: null, t, provedorPadrao: props.provedorPadrao });
   }, [isEdit, props, t]);
 
   const [form, setForm] = React.useState<FormState>(baseline);
@@ -338,7 +388,19 @@ export function AgentForm(props: Props) {
    */
   const [papel, setPapel] = React.useState<"conversa" | "operacao" | "seguranca">("conversa");
 
-  const dirty = JSON.stringify(form) !== JSON.stringify(baseline);
+  /**
+   * A pergunta é "salvar mudaria alguma coisa?", e não "os dois objetos são
+   * idênticos". Por isso a comparação é feita sobre o que SERIA GRAVADO, de
+   * forma canônica (ver `lib/ai/agents/mesmo-rascunho.ts`): campo que o servidor
+   * completa sozinho e ordem de chaves do `jsonb` deixavam `dirty` verdadeiro
+   * para sempre, e o botão "Publicar" cinza com "Salve o rascunho antes de
+   * publicar" — medido numa instalação em produção, com o agente preso na versão
+   * anterior até alguém publicar por fora da tela.
+   */
+  const dirty = !mesmoRascunho(
+    { cadastro: toCadastroPayload(form), versao: toVersionPayload(form) },
+    { cadastro: toCadastroPayload(baseline), versao: toVersionPayload(baseline) },
+  );
 
   function patch(p: Partial<FormState>) {
     setForm((prev) => ({ ...prev, ...p }));
@@ -481,8 +543,11 @@ export function AgentForm(props: Props) {
     setSaving(true);
     try {
       if (isEdit) {
-        // A mesma régua do servidor, aqui, para o erro aparecer no campo em vez
-        // de voltar como 500 depois de a versão já ter sido gravada.
+        // A mesma régua do cadastro que a Server Action valida de novo
+        // (_actions.ts, `agentMcpPatchSchema` — não a da rota REST, que é
+        // `agentPatchSchema` e diverge em name/description), aqui só para o erro
+        // aparecer no campo em vez de voltar como 500 depois de a versão já ter
+        // sido gravada.
         const cadastro = agentMcpPatchSchema.safeParse(toCadastroPayload(form));
         if (!cadastro.success) {
           toast.error(t("Validação falhou."));
@@ -712,6 +777,7 @@ export function AgentForm(props: Props) {
           toolIds={form.operator_tool_ids}
           onToolIdsChange={(ids) => patch({ operator_tool_ids: ids })}
           modeloDoConversador={form.model}
+          agentId={props.mode === "edit" ? props.agent.id : null}
           disabled={disabled}
         />
       ) : null}
@@ -1126,6 +1192,7 @@ export function AgentForm(props: Props) {
               value={form.trigger_config}
               onChange={(v) => patch({ trigger_config: v })}
               disabled={disabled}
+              organizationTimezone={props.organizationTimezone}
             />
           </Card>
 
@@ -1171,12 +1238,46 @@ export function AgentForm(props: Props) {
             </p>
           </Card>
 
+          {/* Propostas comerciais */}
+          <Card className="space-y-3 p-4">
+            <h3 className="text-sm font-medium">{t("Propostas comerciais")}</h3>
+            <div className="flex items-center gap-2">
+              <Switch
+                id="proposal_ai_draft_enabled"
+                checked={form.proposal_ai_draft_enabled}
+                onCheckedChange={(v) => patch({ proposal_ai_draft_enabled: v })}
+                disabled={disabled}
+              />
+              <Label htmlFor="proposal_ai_draft_enabled">
+                {t("Deixar o agente rascunhar uma proposta quando o cliente pedir orçamento")}
+              </Label>
+            </div>
+          </Card>
+
           {/* Follow-up */}
           <Card className="space-y-3 p-4">
             <h3 className="text-sm font-medium">{t("Follow-up")}</h3>
             <p className="text-xs text-muted-foreground">
               {t(
                 "Retomar sozinho quem parou de responder, para o interessado não sumir sem ninguém perceber.",
+              )}
+            </p>
+            <div className="flex items-center gap-2">
+              <Switch
+                id="callback_enabled"
+                checked={form.followup.callback_enabled}
+                onCheckedChange={(v) =>
+                  patch({ followup: { ...form.followup, callback_enabled: v } })
+                }
+                disabled={disabled}
+              />
+              <Label htmlFor="callback_enabled">
+                {t("Permitir que o agente marque novos retornos por conta própria")}
+              </Label>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                "Desligar impede novos retornos prometidos pelo agente. Os fluxos configurados abaixo e a consulta ou o cancelamento de retornos existentes continuam disponíveis.",
               )}
             </p>
             <div className="flex items-center gap-2">
@@ -1212,6 +1313,16 @@ export function AgentForm(props: Props) {
               disabled={disabled}
             />
           </Card>
+
+          {/* Comandos pelo celular (`#on`/`#off`, C-076). Salva em
+              `ai_agents.config.aceita_comandos_celular`. */}
+          {isEdit && (
+            <ComandosDoCelular
+              agentId={props.agent.id}
+              inicial={(props.agent.config ?? {}).aceita_comandos_celular}
+              disabled={disabled}
+            />
+          )}
         </div>
       </div>
 

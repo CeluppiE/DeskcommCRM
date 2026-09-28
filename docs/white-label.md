@@ -16,6 +16,8 @@ A cor é **derivada**, não aplicada crua: de um hex saem onze tons nos dois tem
 
 **O logo também.** Na mesma tela você **sobe o arquivo** — PNG ou JPG, até 512 KB. Ele vai para o storage da sua própria instalação e passa a valer na hora, sem reiniciar nada e sem você hospedar imagem em lugar nenhum. Altura fixa e largura livre, para não distorcer arte de proporção qualquer; sem logo, o nome aparece como texto.
 
+**E o ícone do aplicativo e do navegador.** Logo abaixo do logo, esse campo recebe uma imagem quadrada — PNG ou JPG, até 512 KB, de preferência 512×512 ou maior. A mesma imagem aparece na aba de todas as telas, inclusive o login, e no aplicativo instalado. O manifest anuncia PNGs de 192×192 e 512×512, renderizados no servidor a partir do arquivo limitado no Storage; nenhum endereço arbitrário é buscado. Sem arquivo válido, mantém o símbolo do produto ou a inicial sobre a cor da marca. Remover o arquivo volta a esse desenho. O ícone é da instalação, não de cada organização; trocar de organização não renomeia o aplicativo. Navegadores podem demorar para atualizar um app já instalado; remover o aplicativo e instalá-lo novamente permite conferir a nova marca.
+
 O arquivo é aceito **pelos bytes, não pela extensão**. Renomear um `.svg` para `.png` não engana: o sistema lê o conteúdo, recusa e diz por quê. Isso não é preciosismo — SVG é XML e pode carregar script, que executaria se alguém abrisse a imagem direto pelo endereço dela, num bucket que é público por necessidade.
 
 Quem preferir hospedar por conta própria continua podendo, pelo `.env`:
@@ -163,7 +165,9 @@ Se o seu cliente pergunta "onde ficam meus dados?", a instalação dedicada tem 
 
 A **Resolução CD/ANPD nº 19/2024** tornou obrigatórias as cláusulas-padrão contratuais para **transferência internacional de dados pessoais**, com o prazo de adequação encerrado em **23 de agosto de 2025**.
 
-Todo cliente seu que usa um CRM estrangeiro realiza essa transferência e precisa do artefato contratual. Hospedando em VPS no Brasil, **não há transferência internacional** — e a obrigação não se aplica.
+Todo cliente seu que usa um CRM estrangeiro realiza essa transferência e precisa do artefato contratual. Hospedando em VPS no Brasil, **o CRM em si não transfere dados para fora do país** — e, para ele, a obrigação não se aplica.
+
+⚠️ **A ressalva é a IA, e ela vale para quase toda instalação.** A frase acima só é inteira enquanto nenhum provedor de IA estrangeiro estiver ligado. O atendimento automático manda a conversa ao provedor que o cliente conectou (Anthropic, OpenAI, Google, DeepSeek ou OpenRouter, todos fora do Brasil). O Jev, quando o administrador o liga em IA › Provedores, manda cada mensagem dos clientes à TypeSafe AI, nos Estados Unidos, uma de cada vez e sem o resto da conversa, depois de apagar CPF, telefone e e-mail. Cada tarefa do Jev tem a sua finalidade — medir o clima da conversa, perceber tentativa de manipulação do atendimento automático e escolher qual agente atende — e todas usam só essa mensagem, sozinha. Para escolher o agente, vão junto as intenções que a própria empresa cadastrou no roteador (texto dela, não do cliente). Nesses fluxos há transferência internacional, e as cláusulas-padrão valem para eles. O Jev nasce desligado e pede o aceite de quem administra antes de enviar qualquer coisa; a IA de atendimento, não.
 
 ⚠️ **Não venda como "servidor no Brasil = conformidade com a LGPD".** Isso é falso e um advogado desmonta na primeira pergunta: conformidade depende de base legal, finalidade, segurança e direitos do titular. O argumento correto e defensável é o de cima: sem transferência internacional, não há exigência de cláusulas-padrão.
 
@@ -198,3 +202,9 @@ Guia completo de instalação: [`hostgator-setup-kit/README.md`](../hostgator-se
 *Este documento existe em três idiomas, e o pré-requisito que a versão anterior deste rodapé nomeava foi pago: as traduções carregam na primeira linha um selo com o hash do original, e editar `docs/white-label.md` sem re-selar reprova `pnpm test:unit`. Depois de traduzir, re-sele com `pnpm exec tsx scripts/selar-traducao.ts --todas`.*
 
 *Os três READMEs ficaram **fora** do selo de propósito. São o arquivo mais editado do repositório: com selo, cada conserto viraria um PR bloqueado até ~490 linhas serem re-traduzidas duas vezes — e o desfecho realista disso não é tradução em dia, é alguém re-selar sem traduzir, que é o único jeito de o selo morrer. Eles entram quando alguém quiser pagar esse custo de olhos abertos.*
+
+## Logo para cada tema
+
+Em **Marca**, o campo **Logo** continua sendo a imagem padrão (tema claro e mensagens por e-mail). O campo **Logo para o tema escuro (opcional)** aceita uma segunda imagem PNG ou JPG de até 512 KB, preparada para fundo escuro. Essa imagem aparece sem moldura branca no menu lateral, na tela de entrada da instalação e na prévia. Sem a segunda imagem, o logo padrão conserva a proteção branca no tema escuro. Cada arquivo tem sua própria remoção; remover o escuro restaura o comportamento anterior.
+
+A organização que envia um logo padrão próprio deixa de herdar a arte escura da instalação: assim, os dois temas não mostram marcas diferentes por acidente. Sem logos próprios, herda o par da instalação. O login sempre usa a marca da instalação. [Compatibilidade e reversão](runbooks/logo-por-tema.md).

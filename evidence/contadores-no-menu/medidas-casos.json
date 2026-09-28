@@ -1,0 +1,13 @@
+{
+  "viewport": "1280x900",
+  "casos_esperando_antes": 1,
+  "casos_esperando_com_o_caso": 2,
+  "selo": {
+    "dentro": true,
+    "alturaDoItem": 28,
+    "alturaDoVizinho": 28,
+    "fundo": "lab(48.4493 77.4328 61.5452)"
+  },
+  "folga_do_menu_px": 19,
+  "menu_rola": false
+}

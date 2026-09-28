@@ -14,7 +14,9 @@ import { verifyInviteToken } from "@/lib/auth/invite-token";
 import { authRateLimited, AUTH_LIMITS } from "@/lib/auth/rate-limit";
 import { createClient } from "@/lib/supabase/server";
 import { AcceptInviteForm } from "./AcceptInviteForm";
+import { IdiomaProvider } from "@/lib/i18n/IdiomaProvider";
 import { idiomaDoVisitante } from "@/lib/i18n/idiomaAnonimo";
+import type { Idioma } from "@/lib/i18n/idiomas";
 import { traduzir } from "@/lib/i18n/dicionario";
 
 export const dynamic = "force-dynamic";
@@ -26,7 +28,7 @@ interface PageProps {
 export default async function AcceptInvitePage({ params }: PageProps) {
   const { token } = await params;
 
-  // Rota pública, fora da árvore de `app/app/layout.tsx` — sem `IdiomaProvider`,
+  // Rota pública, fora da árvore de `app/app/layout.tsx` — sem o `IdiomaProvider` de lá,
   // então resolve o idioma direto, como `admin/forbidden/page.tsx`. Buscado
   // ANTES do teto de tentativas e da validação do token porque toda ramificação
   // abaixo (inclusive as de erro) precisa do mesmo idioma — quem ainda não tem
@@ -47,7 +49,7 @@ export default async function AcceptInvitePage({ params }: PageProps) {
   // entre token válido e inválido para quem está varrendo.
   if (await authRateLimited("invite_accept", null, AUTH_LIMITS.invite_accept)) {
     return (
-      <Shell>
+      <Shell idioma={idioma}>
         <h1 className="text-xl font-semibold">{t("Muitas tentativas")}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           {t("Aguarde alguns minutos e abra o link do convite de novo.")}
@@ -60,7 +62,7 @@ export default async function AcceptInvitePage({ params }: PageProps) {
 
   if (!payload) {
     return (
-      <Shell>
+      <Shell idioma={idioma}>
         <h1 className="text-xl font-semibold">{t("Convite inválido ou expirado")}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           {t(
@@ -74,7 +76,7 @@ export default async function AcceptInvitePage({ params }: PageProps) {
   if (!user) {
     const next = encodeURIComponent(`/team/accept-invite/${token}`);
     return (
-      <Shell>
+      <Shell idioma={idioma}>
         <h1 className="text-xl font-semibold">{t("Você foi convidado")}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           {t("Para aceitar o convite como")} <strong>{payload.role}</strong>,{" "}
@@ -108,7 +110,7 @@ export default async function AcceptInvitePage({ params }: PageProps) {
   const userEmail = (user.email ?? "").trim().toLowerCase();
   if (userEmail !== payload.email.trim().toLowerCase()) {
     return (
-      <Shell>
+      <Shell idioma={idioma}>
         <h1 className="text-xl font-semibold">{t("Email não corresponde")}</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           {t("Você está logado como")} <strong>{user.email}</strong>,{" "}
@@ -128,7 +130,7 @@ export default async function AcceptInvitePage({ params }: PageProps) {
   }
 
   return (
-    <Shell>
+    <Shell idioma={idioma}>
       <h1 className="text-xl font-semibold">{t("Aceitar convite")}</h1>
       <p className="mt-2 text-sm text-muted-foreground">
         {t("Você foi convidado para entrar como")} <strong>{payload.role}</strong>.{" "}
@@ -139,10 +141,16 @@ export default async function AcceptInvitePage({ params }: PageProps) {
   );
 }
 
-function Shell({ children }: { children: React.ReactNode }) {
+// Toda ramificação passa por aqui, então é aqui que o idioma chega ao
+// `IdiomaProvider` — o único que acerta o `lang` do documento (ver
+// `admin/forbidden/page.tsx`). Sem ele, o convite em espanhol saía com
+// `lang="pt-BR"`, na primeira tela que o convidado vê.
+function Shell({ idioma, children }: { idioma: Idioma; children: React.ReactNode }) {
   return (
-    <div className="flex min-h-screen items-center justify-center p-6">
-      <div className="w-full max-w-md rounded-lg border bg-card p-8 shadow-sm">{children}</div>
-    </div>
+    <IdiomaProvider locale={idioma}>
+      <div className="flex min-h-screen items-center justify-center p-6">
+        <div className="w-full max-w-md rounded-lg border bg-card p-8 shadow-sm">{children}</div>
+      </div>
+    </IdiomaProvider>
   );
 }

@@ -14,7 +14,12 @@ import {
   resolvePhoneJidDigitsForCall,
   resolveWhatsappIdForContactCard,
 } from "@/lib/waha/resolve-contact-whatsapp-id";
-import { parseWahaMessageId, wahaEchoExternalIds } from "@/lib/waha/message-id";
+import {
+  bareWaMessageId,
+  chatIdFromWaMessageId,
+  parseWahaMessageId,
+  wahaEchoExternalIds,
+} from "@/lib/waha/message-id";
 import { resolveWahaChatId } from "@/lib/waha/send";
 import type { FetchedMedia } from "@/lib/messaging/media/types";
 import { DETALHE_CREDENCIAL_RECUSADA } from "../health";
@@ -37,6 +42,29 @@ import type { ChannelAdapter, ChannelHealth, OutboundEnvelope, RecipientInput } 
 export function statusHttpDoErroWaha(msg: string): number | null {
   const m = /^waha_(?:[a-z]+_)?(\d{3})\b/.exec(msg);
   return m ? Number(m[1]) : null;
+}
+
+/**
+ * O envio NOWEB grava só a cauda do id; o webhook grava o id completo. Quando o
+ * completo existe, ele também preserva o @lid original do chat — por isso ele
+ * vence o endereço resolvido a partir do contato.
+ */
+function enderecoDaMensagem(input: { recipient: string | null; externalId: string }) {
+  const client = getWahaClient();
+  if (!client) throw new Error("waha_not_configured");
+  const chatId = chatIdFromWaMessageId(input.externalId) ?? input.recipient;
+  if (!chatId) throw new Error("recipient_unavailable");
+  return { client, chatId, messageId: idCompletoDaMensagem(input.externalId, chatId) };
+}
+
+/**
+ * O id que a API do WAHA pede (editar, apagar, citar) é o COMPLETO. Só o que é
+ * nosso fica gravado bare — o envio e, desde o #1855, o eco do que o dono digitou
+ * no celular —, e o que é nosso é sempre `fromMe`, daí o `true_`. O inbound
+ * chega composto e passa intacto.
+ */
+function idCompletoDaMensagem(externalId: string, chatId: string): string {
+  return externalId.includes("_") ? externalId : `true_${chatId}_${bareWaMessageId(externalId)}`;
 }
 
 export const wahaAdapter: ChannelAdapter = {
@@ -120,6 +148,25 @@ export const wahaAdapter: ChannelAdapter = {
     const client = getWahaClient();
     if (!client) return;
     await client.setPresence(input.sessionRef, input.recipient, "typing");
+  },
+
+  async editMessage(input: {
+    sessionRef: string;
+    recipient: string | null;
+    externalId: string;
+    text: string;
+  }): Promise<void> {
+    const { client, chatId, messageId } = enderecoDaMensagem(input);
+    await client.editMessage(input.sessionRef, chatId, messageId, input.text);
+  },
+
+  async revokeMessage(input: {
+    sessionRef: string;
+    recipient: string | null;
+    externalId: string;
+  }): Promise<void> {
+    const { client, chatId, messageId } = enderecoDaMensagem(input);
+    await client.deleteMessage(input.sessionRef, chatId, messageId);
   },
 
   /**
@@ -231,7 +278,7 @@ export const wahaAdapter: ChannelAdapter = {
         envelope.body ?? "",
         // A citação é enfeite da conversa, nunca condição de envio: quando não
         // há, o envio segue igual. Ver `OutboundEnvelope.replyToExternalId`.
-        envelope.replyToExternalId,
+        envelope.replyToExternalId ? idCompletoDaMensagem(envelope.replyToExternalId, to) : null,
       );
     }
 

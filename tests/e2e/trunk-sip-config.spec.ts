@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./helpers/test";
 
 import { generateTotp, msUntilNextTotpWindow } from "./utils/totp";
 
@@ -73,7 +73,7 @@ async function entrarComoAdmin(page: Page): Promise<void> {
   await page.goto("/login");
   await page.locator("#email").fill(usuario!.email);
   await page.locator("#password").fill(creds.password);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/login\/mfa/);
 
   for (let tentativa = 0; tentativa < 2; tentativa += 1) {
@@ -99,7 +99,7 @@ async function entrarComoManager(page: Page): Promise<void> {
   await page.goto("/login");
   await page.locator("#email").fill(usuario!.email);
   await page.locator("#password").fill(creds.password);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app(\/|$)/, { timeout: 20_000 });
 }
 
@@ -117,7 +117,9 @@ test.describe("trunk SIP — permissão e conteúdo do bloco pjsip.conf", () => 
     await page.waitForURL(/\/app\/settings\/voip-trunk/);
 
     // ── VALORES ÚNICOS por execução: reconhecíveis no bloco final ──────────
-    const sufixo = Date.now().toString(36);
+    // O sufixo sempre inclui um dígito ('1') para impedir que <sufixo>.invariant.test
+    // forme três segmentos exclusivamente alfabéticos pontuados (#1434).
+    const sufixo = `${Date.now().toString(36)}1`;
     const host = `sip-e2e-${sufixo}.invariant.test`;
     const usuario = `e2e-user-${sufixo}`;
     const senha = `e2e-senha-${sufixo}`;
@@ -139,8 +141,16 @@ test.describe("trunk SIP — permissão e conteúdo do bloco pjsip.conf", () => 
     expect(texto, "o bloco não declara um endpoint [nome]").toMatch(/^\[[^\]]+\]/);
 
     // ── QUALIDADE DE TELA ────────────────────────────────────────────────
+    // O BLOCO SAI DA VARREDURA, e não é conveniência: a guarda abaixo é sobre a
+    // CÓPIA da tela, e um arquivo `.conf` tem token pontuado em minúsculas por
+    // construção. Medido: `sufixo` é `Date.now().toString(36)`, então o host
+    // gerado (`sip-e2e-<sufixo>.invariant.test`) casa com o padrão de chave crua
+    // toda vez que o relógio devolve base36 só com letras (#1434) — o caso reprovava por
+    // hora do dia, e passava na hora seguinte. Além de excluir o bloco, limpamos o host
+    // e garantimos dígito no sufixo.
     const corpo = (await page.locator("body").innerText()).trim();
-    expect(corpo, "a tela mostra o que parece uma chave de tradução crua").not.toMatch(
+    const corpoSemOBloco = corpo.replace(texto, "").replaceAll(host, "").trim();
+    expect(corpoSemOBloco, "a tela mostra o que parece uma chave de tradução crua").not.toMatch(
       /\b[a-z]+(?:[._][a-z]+){2,}\b/,
     );
     expect(corpo).not.toMatch(/\{\{|\}\}|undefined|NaN|\[object Object\]/);

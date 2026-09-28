@@ -365,7 +365,7 @@ DeskcommCRM/
 │   ├── app/                # Rotas autenticadas: inbox, radar, kanban, contacts,
 │   │                       #   connections, ai/*, integrations, metrics, lgpd,
 │   │                       #   audit, team, settings
-│   └── api/v1/             # API REST canônica (196 route handlers)
+│   └── api/v1/             # API REST canônica
 ├── components/             # React (ui/, inbox/, kanban/, shell/, ...)
 ├── lib/                    # supabase/, waha/, channels/, ai/, agent-engine/,
 │                           #   api/, routing/, navigation/, env.ts
@@ -432,7 +432,8 @@ Entre os invariantes está o **teste de isolamento RLS**: cria 2 organizações,
 | [`docs/runbooks/deploy.md`](docs/runbooks/deploy.md) | Deploy em produção |
 | [`CLAUDE.md`](CLAUDE.md) | Convenções não-negociáveis (leitura obrigatória pra contribuir) |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Visão de 1 página da arquitetura |
-| [`docs/index.md`](docs/index.md) | Índice dos 157 documentos, com regra de precedência |
+| [`docs/index.md`](docs/index.md) | Índice geral da documentação, com a regra de precedência |
+| [`docs/handoffs/`](docs/handoffs/) | Diário dos épicos (`HANDOFF*.md`), com o índice em [`docs/handoffs/README.md`](docs/handoffs/README.md) |
 | [`docs/prd/`](docs/prd/) · [`docs/specs/`](docs/specs/) | PRDs e specs técnicas (schema SQL, payloads, MCP, governança) |
 
 ---

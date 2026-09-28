@@ -165,6 +165,104 @@ export const RETENCAO_AVISO_DE_CASO_DIAS_PADRAO = 180;
  */
 export const RETENCAO_AVISO_DE_CASO_DIAS_PISO = 30;
 
+/**
+ * 365 dias para os CANDIDATOS da prospecção nativa (`prospecting_candidates`,
+ * migration 0369; expurgo na 0408, issue #1313).
+ *
+ * Guarda nome, telefone, endereço e identificador de lugar — a pessoa que mais
+ * cedo ou mais tarde vai ser abordada, e que em muitos casos nunca falou com a
+ * empresa. Um ano é a decisão do dono do projeto (24/09/2026, PR #1577),
+ * alinhado ao horizonte da conversa do caso e da captação: depois disso o
+ * funil responde por EVENTOS, não por raspagem parada.
+ *
+ * Quem APLICA é `fn_expurgar_prospeccao_vencida` (migration 0408), chamada em
+ * lotes pelo cron `data-retention` — e o piso mora DENTRO do corpo da função,
+ * `greatest(...)`, como as sete irmãs: só assim ele vale para qualquer
+ * chamador, inclusive um `psql` na mão.
+ *
+ * Duas guardas que a função impõe e esta declaração não pode expressar:
+ * - `status not in ('queued','sending')` — trabalho vivo nunca entra no
+ *   expurgo, em nenhuma idade;
+ * - `suppression_salt is null` — os tokens de supressão (`suppression_salt`,
+ *   `suppression_place`, `suppression_phone`) de quem exerceu opt-out/exclusão
+ *   NUNCA são expurgados: é o tombstone que faz o trigger
+ *   `prospecting_refuse_erased` barrar a reimportação futura da mesma pessoa.
+ *   Expurgá-lo reabriria a porta que a anonimização (0370) fechou.
+ */
+export const RETENCAO_PROSPECCAO_DIAS_PADRAO = 365;
+export const RETENCAO_PROSPECCAO_DIAS_PISO = 90;
+
+/**
+ * 90 dias para as OBSERVAÇÕES DO JEV (`jev_observacoes`, migration 0421).
+ *
+ * A linha não guarda texto de cliente — só os rótulos do Jev e do mecanismo de
+ * hoje e se concordaram. Ela existe para uma pergunta só: "posso deixar o Jev
+ * decidir esta tarefa?", respondida pela concordância recente. Três meses é
+ * folga sobre a janela que o cartão mostra.
+ *
+ * Quem aplica é `fn_expurgar_observacoes_do_jev` (0421), em lotes pelo cron
+ * `data-retention`, com o piso no CORPO da função, como as irmãs.
+ */
+export const RETENCAO_OBSERVACOES_DO_JEV_DIAS_PADRAO = 90;
+/**
+ * Piso de 30 dias: a janela da concordância no cartão
+ * (`app/api/v1/ai/jev/route.ts`). Abaixo dela o cartão continuaria dizendo
+ * "nos últimos 30 dias" contando menos do que isso.
+ */
+export const RETENCAO_OBSERVACOES_DO_JEV_DIAS_PISO = 30;
+
+/**
+ * 30 dias para o RASCUNHO SUGERIDO POR INTEGRAÇÃO já vencido
+ * (`conversation_drafts`, migration 0419 / issue #1611; expurgo pedido na #1686).
+ *
+ * O relógio é `expires_at`, NUNCA `created_at` — a mesma decisão do espelho da
+ * agenda, e pela mesma razão: a linha só responde enquanto a janela dela está
+ * aberta. Depois do vencimento o link `?rascunho=` não abre, `consumirRascunho`
+ * recusa (`lib/inbox/rascunho-sugerido.ts`) e o texto é proposta que NINGUÉM
+ * enviou. Trinta dias é o prazo de apurar "o link chegou, por que não abriu?";
+ * depois disso o que houve de operação está na trilha
+ * (`conversation.draft_created` / `conversation.draft_used`), que responde sem
+ * guardar o texto da pessoa de novo.
+ *
+ * Quem aplica é o cron `data-retention` (a décima poda), em lotes, com este piso
+ * aplicado NO TYPESCRIPT: a poda é um DELETE do admin client
+ * (`app/api/v1/cron/data-retention/route.ts`), não uma `security definer` — não
+ * há função onde enfiar o piso, e é a MESMA exceção declarada para a captação
+ * acima. Por isso a cerca `tests/unit/retencao-todo-piso-tem-dono.test.ts` a
+ * lista em `SEM_FUNCAO_NO_SQL`, com esta razão escrita aqui.
+ */
+export const RETENCAO_RASCUNHO_DIAS_PADRAO = 30;
+/**
+ * Piso de 7 dias CONTADOS DO VENCIMENTO — nunca do `created_at`.
+ *
+ * Sete dias é a janela em que "o link do rascunho não abriu" ainda é pergunta
+ * viva (o texto vale 24 h por padrão, `JANELA_PADRAO_HORAS`). Abaixo disso o
+ * knob viraria apagador de rastro de INCIDENTE; acima, nada se protegeria: a
+ * linha não tem leitor depois do vencimento, e apagá-la cedo ou tarde não muda
+ * o que a trilha de auditoria responde.
+ */
+export const RETENCAO_RASCUNHO_DIAS_PISO = 7;
+
+/**
+ * 90 dias para os CANDIDATOS AO GOLDEN SET (`golden_candidates`, migration 0428).
+ *
+ * A linha não guarda texto de cliente — só o rótulo do near-miss de skill ou da
+ * divergência classificador×modelo e os ponteiros do lead e do job. Ela existe
+ * para uma pergunta só ("este probe merece curadoria?"), respondida nos
+ * primeiros meses; depois disso o rótulo não muda a curadoria de ninguém, e a
+ * issue que criou a tabela (#1695) é justamente sobre dado de titular parado
+ * fora de qualquer prazo.
+ *
+ * Quem aplica é `fn_expurgar_candidatos_do_golden` (0428), em lotes pelo cron
+ * `data-retention`, com o piso no CORPO da função, como as irmãs.
+ */
+export const RETENCAO_CANDIDATOS_GOLDEN_DIAS_PADRAO = 90;
+/**
+ * Piso de 30 dias: a janela em que um near-miss ainda é curável. Abaixo dela a
+ * poda viraria apagador de rastro recente para quem acabou de ligar o knob.
+ */
+export const RETENCAO_CANDIDATOS_GOLDEN_DIAS_PISO = 30;
+
 export interface RetencaoInterpretada {
   /** Dias a pedir ao banco. Nunca abaixo do piso, nunca `NaN`. */
   readonly dias: number;

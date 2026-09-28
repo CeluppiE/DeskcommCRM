@@ -1,15 +1,17 @@
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 
 import {
   enderecoDeRetorno,
   faltaParaConectarOGoogle,
   googleEstaConfigurado,
+  origemLocalDosCabecalhos,
 } from "@/lib/agenda/google/config";
 import { donosDaAgenda } from "@/lib/agenda/donos-da-agenda";
 import { lerOcupacaoExterna } from "@/lib/agenda/ocupacao-externa";
 import { PROVEDOR_GOOGLE } from "@/lib/agenda/tipos";
 import { requireAuth, resolveActiveOrg } from "@/lib/auth/server";
-import { semanaSemente } from "@/lib/agenda/semana-semente";
+import { diaDeHojeNoFuso, semanaSemente } from "@/lib/agenda/semana-semente";
 import { fusoUtilizavel } from "@/lib/tempo/fusos";
 import { nomeDoContato, type ContatoNomeavel } from "@/lib/contacts/rotulo-do-contato";
 import { logger } from "@/lib/logger";
@@ -54,6 +56,8 @@ export default async function AgendaPage() {
   const user = await requireAuth();
   const activeOrg = await resolveActiveOrg(user);
   if (!activeOrg) redirect("/app");
+  const cabecalhos = await headers();
+  const origemLocal = origemLocalDosCabecalhos(cabecalhos);
 
   // `user.timezone` e não `user_metadata.timezone`: o AuthUser deste projeto
   // não expõe o metadata cru — ele extrai o que toda tela precisa no primeiro
@@ -89,25 +93,31 @@ export default async function AgendaPage() {
   const supabase = await createClient();
 
   /**
-   * A semana da âncora, que é o que a grade abre por padrão — calculada no fuso
-   * de QUEM OLHA, não no do processo.
+   * O RELÓGIO É DA ORGANIZAÇÃO — decisão do dono do produto (2026-09-20, #1350):
    *
-   * `startOfWeek(new Date())` usava o fuso do contêiner (UTC), e o cliente
-   * recalcula no fuso do navegador: das 21h de sábado à meia-noite em São Paulo,
-   * UTC já virou domingo e o servidor mandava a SEMANA SEGUINTE. Quem abre a
-   * Agenda nessa janela vê a semana errada até a página hidratar, e a consulta
-   * que este arquivo adianta logo abaixo foi feita para o período errado — o
-   * dado chega e é descartado.
+   *   "Seria da organização com divisão entre pessoas. Uma organização pode por
+   *    exemplo ter 5 pessoas/agendas diferentes."
    *
-   * A ordem do fuso é a mesma que a tela já usa para apresentar: a escolha da
-   * PESSOA primeiro (`user.timezone`, de Configurações › Perfil), a da
-   * ORGANIZAÇÃO depois (`organizations.timezone`, do wizard e de Configurações
-   * › Empresa), e o padrão do produto por último. Nenhum escritor valida essas
-   * colunas, então `fusoUtilizavel` recusa o que o `Intl` não aceita em vez de
-   * deixar a página estourar por causa de um acento no campo de configuração.
+   * A divisão entre pessoas é sobre DE QUEM é cada compromisso dentro da semana
+   * comum — filtro e trilha de cor, que a grade já tem. Não é sobre fuso: cinco
+   * atendentes da mesma clínica olham a MESMA semana.
+   *
+   * ⚠️ `user.timezone` NÃO entra nesta conta, e a versão anterior deste arquivo
+   * o punha como degrau de cima. A escada com duas fontes trazia de volta a
+   * divergência que a issue existe para fechar: o servidor não conhece o fuso do
+   * NAVEGADOR de quem abre, então qualquer degrau que dependa da pessoa volta a
+   * ser palpite no primeiro render. `organizations.timezone` é `NOT NULL` com
+   * default (`baseline.sql`), então aqui sempre há resposta — e é a MESMA que o
+   * cliente vai usar, porque ela viaja como prop logo abaixo.
+   *
+   * `fusoUtilizavel` fica porque a coluna não é validada por escritor nenhum
+   * (`z.string().max(64)` sem `refine`, sem CHECK) e `Intl` LANÇA com fuso
+   * inválido: um acento no campo de configuração viraria tela branca.
    */
-  const fusoDaSemana = fusoUtilizavel(fusoDeApresentacao, activeOrg.timezone);
-  const { de: inicio, ate: fim } = semanaSemente(new Date(), fusoDaSemana);
+  const fusoDaAgenda = fusoUtilizavel(activeOrg.timezone);
+  const { de: inicio, ate: fim } = semanaSemente(new Date(), fusoDaAgenda);
+  /** A data de hoje NO FUSO DA ORGANIZAÇÃO, para o cliente ancorar na mesma. */
+  const hojeNaOrganizacao = diaDeHojeNoFuso(new Date(), fusoDaAgenda);
 
   // `.eq("organization_id", activeOrg.orgId)` em TODA consulta desta página, e
   // não só a RLS. A `fn_user_org_ids()` que as policies usam devolve TODAS as
@@ -239,6 +249,10 @@ export default async function AgendaPage() {
   return (
     <AgendaClient
       fusoDeApresentacao={fusoDeApresentacao}
+      // A MESMA data que a semente acima usou. Sem isto, o cliente recalcula com
+      // `new Date()` do navegador e a divergência volta INTEIRA — não só na
+      // janela de sábado, mas para todo usuário fora do fuso da organização.
+      hojeNaOrganizacao={hojeNaOrganizacao}
       // QUEM ESTÁ LOGADO, do servidor. É o único jeito de a tela saber se o
       // dono da agenda é ela mesma: sem isto, sem lista da equipe (papel abaixo
       // de `agent`, que é o piso de `/api/v1/agenda/pessoas`) a agenda inventava
@@ -247,7 +261,7 @@ export default async function AgendaPage() {
       usuarioId={user.id}
       googleConfigurado={googleConfigurado}
       contaConectada={conexoes?.map((c) => c.account_email).join(", ") || null}
-      enderecoDeRetorno={enderecoDeRetorno()}
+      enderecoDeRetorno={enderecoDeRetorno(origemLocal ?? undefined)}
       faltaNoGoogle={faltaNoGoogle}
       // SÓ para quem administra a INSTALAÇÃO. A tela do app OAuth vive em
       // `/admin` e faz `notFound()` para o resto — oferecer o link a quem não

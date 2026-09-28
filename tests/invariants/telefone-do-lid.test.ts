@@ -125,11 +125,11 @@ afterAll(async () => {
 
 describe("wa_lid — a correlação que sobrevive ao telefone", () => {
   it("é derivada do metadata e normaliza o sufixo @lid", async () => {
-    const id = await upsert({ kind: "lid", lid: "70192801575156@lid", chatId: "70192801575156@lid", notify: "Com Sufixo" });
+    const id = await upsert({ kind: "lid", lid: "100000000000001@lid", chatId: "100000000000001@lid", notify: "Com Sufixo" });
     const c = await ler(id);
     // O WAHA manda `waha_lid` ora com sufixo, ora sem (medido na produção: as
     // duas formas convivem). A coluna precisa devolver a MESMA chave nos dois.
-    expect(c.wa_lid).toBe("70192801575156");
+    expect(c.wa_lid).toBe("100000000000001");
   });
 
   it("contato sem lid tem wa_lid NULO, não string vazia", async () => {
@@ -144,7 +144,7 @@ describe("wa_lid — a correlação que sobrevive ao telefone", () => {
 
 describe("o reencontro — o defeito que duplicava contato", () => {
   it("o MESMO @lid reencontra o contato depois de ele ganhar telefone", async () => {
-    const lid = "80192801575157";
+    const lid = "100000000000005";
     const antes = await quantosContatos();
 
     // 1ª mensagem: só o lid (o WAHA às vezes manda o ack sem `_data`).
@@ -179,8 +179,8 @@ describe("o reencontro — o defeito que duplicava contato", () => {
 
     const doWhats = await upsert({
       kind: "lid",
-      lid: "90192801575158",
-      chatId: "90192801575158@lid",
+      lid: "100000000000006",
+      chatId: "100000000000006@lid",
       notify: "Planilha no Whats",
       phoneAlt: "+5531977776666",
     });
@@ -189,7 +189,7 @@ describe("o reencontro — o defeito que duplicava contato", () => {
     expect(await quantosContatos(), "não pode nascer um gêmeo").toBe(antes + 1);
 
     const c = await ler(existente);
-    expect(c.wa_lid, "e passa a ser alcançável pelo lid também").toBe("90192801575158");
+    expect(c.wa_lid, "e passa a ser alcançável pelo lid também").toBe("100000000000006");
   });
 });
 
@@ -198,7 +198,7 @@ describe("completa o que falta, nunca sobrescreve", () => {
     // Assimetria deliberada: um atendente corrigiu o nome à mão; o WhatsApp
     // manda o pushName que a própria pessoa escolheu, que pode ser um apelido.
     // O que já está lá vence — mesma regra do `coalesce` da versão anterior.
-    const lid = "70192801575159";
+    const lid = "100000000000002";
     const id = await upsert({ kind: "lid", lid, chatId: `${lid}@lid`, notify: "Nome Original" });
     await pool.query("update contacts set display_name = 'Nome Corrigido à Mão' where id = $1", [id]);
 
@@ -211,7 +211,7 @@ describe("completa o que falta, nunca sobrescreve", () => {
     // gravar telefone nem metadata no conflito. Um contato que nasceu sem nome
     // (payload sem `_data`) ficava anônimo mesmo depois de dez mensagens COM
     // nome. Esta é a metade boa do coalesce, agora exercida.
-    const lid = "70192801575160";
+    const lid = "100000000000003";
     const id = await upsert({ kind: "lid", lid, chatId: `${lid}@lid` });
     expect((await ler(id)).display_name).toBeNull();
 
@@ -220,7 +220,7 @@ describe("completa o que falta, nunca sobrescreve", () => {
   });
 
   it("o telefone que já existe não é trocado por outro que chegue depois", async () => {
-    const lid = "70192801575161";
+    const lid = "100000000000004";
     const id = await upsert({ kind: "lid", lid, chatId: `${lid}@lid`, phoneAlt: "+5531911112222" });
     await upsert({ kind: "lid", lid, chatId: `${lid}@lid`, phoneAlt: "+5531933334444" });
     // Trocar o número de um contato por causa de um payload seria mudar para

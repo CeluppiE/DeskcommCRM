@@ -19,7 +19,7 @@
 [![CI](https://github.com/melgarafael/DeskcommCRM/actions/workflows/ci.yml/badge.svg)](https://github.com/melgarafael/DeskcommCRM/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-[**⚡ Install**](#-install-on-your-vps-the-main-path) · [**🔄 Update**](#-updating) · [**🧭 Vision**](VISION.md) · [**🏗️ Architecture**](ARCHITECTURE.md) · [**🤝 Contributing**](CONTRIBUTING.md) · [**🗺️ Roadmap**](#%EF%B8%8F-roadmap)
+[**⚡ Install**](#-install-on-your-vps-the-main-path) · [**🔄 Update**](#-updating) · [**🧭 Vision**](VISION.md) · [**🏗️ Architecture**](ARCHITECTURE.md) · [**🤝 Contributing**](CONTRIBUTING.en.md) · [**🗺️ Roadmap**](#%EF%B8%8F-roadmap)
 
 </div>
 
@@ -130,9 +130,33 @@ onboarding, scan the QR code with your WhatsApp number.
 
 ### 🤖 Rather have an AI install it for you?
 
-Drop the `hostgator-setup-kit/` folder into **Claude Code** running inside the VPS and say
-*"install DeskcommCRM for me"*. It reads the kit's [`CLAUDE.md`](hostgator-setup-kit/CLAUDE.md)
-— which carries the step-by-step and the already-mapped pitfalls — and walks you through it.
+The repository ships **assistant guides** that load on their own in Claude Code, Codex, Cursor,
+OpenCode or Antigravity: install, set up a client per niche, analyze metrics, tune the agent
+prompt and contribute. To have them in **any folder** — including before cloning, on your own
+machine — run once:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/melgarafael/DeskcommCRM/main/scripts/instalar-guias.sh | bash
+```
+
+Then open a new session of your assistant and say *"I want to install the CRM on my VPS"*: asking
+for the subject in Portuguese triggers the right guide in any of the five. To call a guide by name,
+each one has its own way — `/deskcomm-instalar` in Claude Code, Cursor and Antigravity;
+`$deskcomm-instalar` in Codex; in OpenCode, ask for it by name, in natural language.
+
+The guides do **not** update themselves: running the same command again brings the new version. To
+undo:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/melgarafael/DeskcommCRM/main/scripts/instalar-guias.sh | bash -s -- --remover
+```
+
+With the repository already cloned, the guides come inside it (`.agents/skills/`) and none of that
+is needed. If you ran the command anyway, know that in Claude Code the installed guide wins over
+the one in the clone — and stays on the version of the day you ran it, until you run it again (or
+undo). The old way still works too: drop just the `hostgator-setup-kit/` folder into the **Claude
+Code** chat inside the VPS — it reads the kit's [`CLAUDE.md`](hostgator-setup-kit/CLAUDE.md) and
+walks you through everything, in Portuguese.
 
 ---
 
@@ -304,6 +328,30 @@ App: <http://localhost:3000> · Health check: <http://localhost:3000/api/v1/heal
 
 ---
 
+## 📁 Structure
+
+```
+DeskcommCRM/
+├── app/                    # Next.js App Router
+│   ├── (admin)/            # super-admin routes (impersonate, tenants)
+│   ├── (public)/           # Login, recovery
+│   ├── app/                # Authenticated routes: inbox, radar, kanban, contacts,
+│   │                       #   connections, ai/*, integrations, metrics, lgpd,
+│   │                       #   audit, team, settings
+│   └── api/v1/             # Canonical REST API
+├── components/             # React (ui/, inbox/, kanban/, shell/, ...)
+├── lib/                    # supabase/, waha/, channels/, ai/, agent-engine/,
+│                           #   api/, routing/, navigation/, env.ts
+├── workers/                # event_log consumers (AI, RAG, LGPD, media, routines)
+├── supabase/migrations/    # Versioned SQL (+ baseline.sql for self-host)
+├── tests/{e2e,unit,invariants,shell}/
+├── scripts/                # seeds, qa-waves, maintenance
+├── docs/                   # PRDs, specs, runbooks, SETUP.md, ATUALIZANDO.md
+└── hostgator-setup-kit/    # self-host install and update
+```
+
+---
+
 ## 🧪 Tests
 
 ```bash
@@ -326,9 +374,10 @@ gh api repos/melgarafael/DeskcommCRM/branches/main/protection \
 | Check | What it does |
 |---|---|
 | `verify` | typecheck + lint + `lint:channels` + `test:unit` + `test:shell` |
-| `invariants` | boots a clean Postgres, applies `baseline.sql` in **install** mode (`ON_ERROR_STOP=1`) and then in **update** mode (proving idempotency), and runs **618 invariants across 98 files** — RBAC, assignment, scoping, routing, follow-up, webhooks and automations |
+| `invariants` | boots a clean Postgres, applies `baseline.sql` in **install** mode (`ON_ERROR_STOP=1`) and then in **update** mode (proving idempotency), and runs the invariants for RBAC, assignment, scoping, routing, follow-up, webhooks and automations |
 | `build-and-size` | `pnpm build` on Node 22 |
 | `e2e` | boots a local Supabase, applies `baseline.sql` and runs through the frontend every Playwright spec except the ones `FORA_DO_CI` declares |
+| `imagens-ok` | fails when any of the three Docker images (`app`, `worker`, `scheduler`) does not build — it is the artifact the self-hoster installs |
 
 Which specs stay out is a question for a command, not for reading — this line used to claim the only one was `vps-fresh-onboarding`, and since PR #983 it runs in CI:
 
@@ -367,7 +416,7 @@ Among the invariants is the **RLS isolation test**: it creates 2 organizations, 
 This project is open source for the community. Every contribution is welcome — from doc typo fixes to new features.
 
 1. Read [`CLAUDE.md`](CLAUDE.md) (~5 min) — non-negotiable conventions (multi-tenancy, RLS, audit, privacy).
-2. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) — branch flow, commits.
+2. Read [`CONTRIBUTING.en.md`](CONTRIBUTING.en.md) — branch flow, commits.
 3. Follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 **Short flow:**

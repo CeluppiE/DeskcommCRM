@@ -78,6 +78,32 @@ export interface DemandaSemProximoPasso {
   origem: string;
 }
 
+/**
+ * N3 — negócio com proposta VENCIDA e sem proposta mais nova na cadeia. Lista
+ * paralela (como `sem_proximo_passo`), sem misturar com `items`: o radar
+ * classifica esfriamento, isto aqui é desfecho de proposta.
+ */
+export interface PropostaVencidaSemRetomada {
+  lead_id: string;
+  proposal_id: string;
+  numero: number | null;
+  ano: number | null;
+  valid_until: string | null;
+}
+
+/**
+ * C6 — rascunho com aviso `proposta_pronta_para_revisao` ABERTO. Lista
+ * paralela (como `propostas_vencidas_sem_retomada`), sem misturar com
+ * `items`: o radar classifica esfriamento, isto aqui é espera de revisão.
+ */
+export interface PropostaEsperandoRevisao {
+  proposal_id: string;
+  lead_id: string;
+  titulo: string | null;
+  contact_name: string | null;
+  created_at: string;
+}
+
 export interface RadarDeRisco {
   items: AtRiskLead[];
   counts: { critico: number; em_risco: number; em_voo: number };
@@ -89,6 +115,9 @@ export interface RadarDeRisco {
    */
   sem_proximo_passo: DemandaSemProximoPasso[];
   total_sem_proximo_passo: number;
+  propostas_vencidas_sem_retomada: PropostaVencidaSemRetomada[];
+  /** C6 — rascunhos com aviso de revisão aberto na Central. */
+  propostas_esperando_revisao: PropostaEsperandoRevisao[];
 }
 
 export interface OpcoesDoRadar {
@@ -374,11 +403,96 @@ export async function carregaRadarDeRisco(
     };
   });
 
+  // N3 — negócio com proposta VENCIDA e sem proposta mais nova na cadeia.
+  // Consulta paralela (como `sem_proximo_passo`), sem misturar com `items`.
+  // Órfã (lead_id nulo) é descartada no JS abaixo, junto da ordenação
+  // defensiva: sem negócio, não há linha do radar para ela.
+  const { data: todasAsPropostas, error: propostasErr } = await admin
+    .from("crm_proposals")
+    .select("id, lead_id, contact_id, titulo, status, numero, ano, valid_until, versao, created_at")
+    .eq("organization_id", organizationId)
+    .order("lead_id", { ascending: true })
+    .order("created_at", { ascending: false })
+    .limit(SCAN_CAP);
+  if (propostasErr) throw new Error(`radar_propostas_failed: ${propostasErr.message}`);
+  // A "mais recente por lead" é por `created_at` desc — monotônico em
+  // QUALQUER proposta nova (cadeia nova ou versão nova dentro da mesma),
+  // ao contrário de `versao`, que só ordena dentro da mesma cadeia.
+  // O cruzamento com `crm_leads` reaproveita o `rows` já buscado (zero query
+  // extra): negócio perdido/ganho ou de funil arquivado não entra no radar.
+  const leadsValidos = new Set(rows.map((l) => l.id as string));
+  // Ordenação refeita em JS de propósito (não só confiada ao ORDER BY do
+  // fio): se alguém mexer nos `.order()` acima, a classificação continua
+  // certa — o preço é um sort sobre um array pequeno.
+  const ordenadas = [...(todasAsPropostas ?? [])].sort((a, b) => {
+    const porLead = String(a.lead_id).localeCompare(String(b.lead_id));
+    if (porLead !== 0) return porLead;
+    return String(b.created_at).localeCompare(String(a.created_at));
+  });
+  const maisRecentePorLead = new Map<string, (typeof todasAsPropostas)[number]>();
+  for (const p of ordenadas) {
+    // Órfã (lead_id nulo) cai aqui, não no fio — ver comentário acima.
+    if (p.lead_id == null) continue;
+    if (!leadsValidos.has(p.lead_id as string)) continue;
+    // a primeira ocorrência de cada lead_id É a mais recente (created_at desc).
+    if (!maisRecentePorLead.has(p.lead_id as string)) maisRecentePorLead.set(p.lead_id as string, p);
+  }
+  const propostas_vencidas_sem_retomada: PropostaVencidaSemRetomada[] = [...maisRecentePorLead.values()]
+    .filter((p) => p.status === "vencida")
+    .map((p) => ({ lead_id: p.lead_id as string, proposal_id: p.id as string, numero: p.numero as number | null, ano: p.ano as number | null, valid_until: p.valid_until as string | null }));
+
+  // C6 — "Propostas esperando revisão": RASCUNHO com aviso
+  // `proposta_pronta_para_revisao` ABERTO. Cruza o aviso com as propostas JÁ
+  // lidas acima (zero query extra de proposta) — órfã (lead_id nulo) é
+  // descartada aqui, sem negócio não há linha do radar para ela. O nome do
+  // contato segue o MESMO padrão das outras listas: o mapa `nameByContact`
+  // resolvido acima, complementado em um lote só para os contatos das
+  // propostas que ele ainda não conhece.
+  const { data: avisosDeRevisao, error: avisosErr } = await admin
+    .from("agent_inbox_items")
+    .select("ref_id")
+    .eq("organization_id", organizationId)
+    .eq("kind", "proposta_pronta_para_revisao")
+    .eq("status", "open");
+  if (avisosErr) throw new Error(`radar_avisos_failed: ${avisosErr.message}`);
+  const comAvisoAberto = new Set((avisosDeRevisao ?? []).map((a) => a.ref_id as string));
+  const rascunhosEsperando = (todasAsPropostas ?? []).filter(
+    (p) => p.status === "rascunho" && p.lead_id != null && comAvisoAberto.has(p.id as string),
+  );
+  const nomePorContato = new Map<string, string | null>(nameByContact);
+  const contatosFaltando = [
+    ...new Set(
+      rascunhosEsperando
+        .map((p) => p.contact_id as string | null)
+        .filter((id): id is string => id !== null && !nomePorContato.has(id)),
+    ),
+  ];
+  if (contatosFaltando.length > 0) {
+    const { data: contatosExtras, error: contatosExtrasErr } = await admin
+      .from("contacts")
+      .select("id, name, display_name")
+      .eq("organization_id", organizationId)
+      .in("id", contatosFaltando);
+    if (contatosExtrasErr) throw new Error(`radar_proposta_contatos_failed: ${contatosExtrasErr.message}`);
+    for (const c of (contatosExtras ?? []) as Array<{ id: string; name: string | null; display_name: string | null }>) {
+      nomePorContato.set(c.id, nomeDoContato(c));
+    }
+  }
+  const propostas_esperando_revisao: PropostaEsperandoRevisao[] = rascunhosEsperando.map((p) => ({
+    proposal_id: p.id as string,
+    lead_id: p.lead_id as string,
+    titulo: (p.titulo as string | null) ?? null,
+    contact_name: (p.contact_id as string | null) ? (nomePorContato.get(p.contact_id as string) ?? null) : null,
+    created_at: p.created_at as string,
+  }));
+
   return {
     items: radar.slice(0, limit),
     counts: { critico: counts.critico, em_risco: counts.em_risco, em_voo: counts.em_voo },
     total: radar.length,
     sem_proximo_passo: semProximoPasso.slice(0, limit),
     total_sem_proximo_passo: semProximoPasso.length,
+    propostas_vencidas_sem_retomada,
+    propostas_esperando_revisao,
   };
 }

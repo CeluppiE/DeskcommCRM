@@ -165,7 +165,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     organizationId: authz.org.orgId,
     tarefa,
     tipo: "task_created",
-    actorUserId: authz.user.id,
+    actor: { type: "user", id: authz.user.id },
   });
 
   return ok({ task: tarefa }, { requestId, status: 201 });

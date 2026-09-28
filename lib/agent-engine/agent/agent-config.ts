@@ -33,12 +33,15 @@ export interface PublishedAgentConfig {
   historyTokenWindow: number;
   handoffKeywords: string[];
   handoffToolEnabled: boolean;
+  proposalAiDraftEnabled: boolean;
   splitMessages: boolean;
   splitMaxChars: number;
   /** input multimodal (imagem/áudio/pdf) habilitado no turno (Onda 3). */
   multimodalInput: boolean;
   /** tools open_human_case/provide_case_update habilitadas no turno (spec 15). */
   casesEnabled: boolean;
+  /** JSON versionado com `followup.callback_enabled` e os fluxos normais. */
+  followup?: unknown;
   /** tool_ids do catálogo MCP habilitadas na tela (2B-tools). */
   toolIds: string[];
   /**
@@ -106,10 +109,12 @@ interface Row {
   history_token_window: number;
   handoff_keywords: string[] | null;
   handoff_tool_enabled: boolean;
+  proposal_ai_draft_enabled: boolean;
   split_messages: boolean;
   split_max_chars: number;
   multimodal_input: boolean;
   cases_enabled: boolean;
+  followup: unknown;
   tool_ids: string[] | null;
   active_kb_version_id: string | null;
   config: Record<string, unknown> | null;
@@ -135,10 +140,12 @@ const SELECT_AGENT_CONFIG_COLUMNS = `a.operation_mode,a.paused_at,a.operation_re
             v.history_token_window,
             v.handoff_keywords,
             v.handoff_tool_enabled,
+            v.proposal_ai_draft_enabled,
             v.split_messages,
             v.split_max_chars,
             v.multimodal_input,
             v.cases_enabled,
+            v.followup,
             v.tool_ids,
             a.active_kb_version_id,
             a.config,
@@ -190,10 +197,12 @@ function mapAgentConfigRow(r: Row): PublishedAgentConfig {
       .map((k) => k.toLowerCase().trim())
       .filter((k) => k !== ''),
     handoffToolEnabled: r.handoff_tool_enabled,
+    proposalAiDraftEnabled: r.proposal_ai_draft_enabled,
     splitMessages: r.split_messages,
     splitMaxChars: r.split_max_chars,
     multimodalInput: r.multimodal_input,
     casesEnabled: r.cases_enabled,
+    followup: r.followup,
     toolIds: r.tool_ids ?? [],
     // `?? []` cobre o clone sem a 0181: sem a coluna, o agente cai no ponteiro
     // legado abaixo em vez de ficar sem material nenhum.

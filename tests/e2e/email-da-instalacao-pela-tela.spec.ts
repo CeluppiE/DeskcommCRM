@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./helpers/test";
 
 import { generateTotp, msUntilNextTotpWindow } from "./utils/totp";
 
@@ -75,7 +75,7 @@ async function loginComTotp(page: Page, email: string, secret: string): Promise<
   await page.goto("/login");
   await page.locator("#email").fill(email);
   await page.locator("#password").fill(creds.password);
-  await page.getByRole("button", { name: /entrar/i }).click({ timeout: 15_000 });
+  await page.getByRole("button", { name: "Entrar", exact: true }).click({ timeout: 15_000 });
   await page.waitForURL(/\/login\/mfa/);
 
   const digito1 = page.locator('input[aria-label="Dígito 1"]');

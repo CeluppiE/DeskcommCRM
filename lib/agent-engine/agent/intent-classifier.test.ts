@@ -18,6 +18,38 @@ describe('buildClassifierPrompt', () => {
     expect(p).toContain('none');
     expect(p).toContain('quanto custa o plano?');
   });
+
+  it('contexto recente vem antes da mensagem a classificar, na ordem recebida, com rótulo Lead/Agente', () => {
+    const p = buildClassifierPrompt(members, 'Primeira', [
+      { direction: 'inbound', body: 'Quero marcar uma consulta' },
+      { direction: 'outbound', body: 'Qual data prefere: a primeira ou a segunda?' },
+    ]);
+    const posicoes = [
+      'Contexto recente da conversa',
+      'Lead: Quero marcar uma consulta',
+      'Agente: Qual data prefere: a primeira ou a segunda?',
+      'Mensagem do lead a classificar:\nPrimeira',
+    ].map((trecho) => p.indexOf(trecho));
+    expect(posicoes.every((i) => i >= 0)).toBe(true);
+    expect([...posicoes].sort((a, b) => a - b)).toEqual(posicoes);
+  });
+
+  it('sem contexto, o prompt é byte a byte o de antes do contexto curto', () => {
+    const antes = [
+      'Você é um classificador auxiliar de intenção (NÃO responde ao lead).',
+      'Intenções possíveis:',
+      '- vendas: Quer comprar ou saber preço. Exemplos: quanto custa.',
+      '- suporte: Problema técnico.',
+      '- none: nenhuma das intenções acima se aplica.',
+      '',
+      'Mensagem do lead a classificar:',
+      'oi',
+      '',
+      'Responda SOMENTE JSON: {"intent": "<nome exato de uma intenção da lista ou none>", "confidence": <0 a 1>}',
+    ].join('\n');
+    expect(buildClassifierPrompt(members, 'oi')).toBe(antes);
+    expect(buildClassifierPrompt(members, 'oi', [])).toBe(antes);
+  });
 });
 
 describe('parseIntentVerdict', () => {
@@ -31,10 +63,13 @@ describe('parseIntentVerdict', () => {
     expect(parseIntentVerdict('{"intent":"none","confidence":0.2}', members)).toEqual({ intentName: null, confidence: 0.2 });
   });
   it('intenção que não existe no router é recusada (modelo alucinou)', () => {
-    expect(parseIntentVerdict('{"intent":"financeiro","confidence":0.95}', members)).toEqual({ intentName: null, confidence: 0 });
+    expect(parseIntentVerdict('{"intent":"financeiro","confidence":0.95}', members)).toEqual({ intentName: null, confidence: 0, falhou: true });
   });
   it('JSON inválido vira veredito nulo, sem throw', () => {
-    expect(parseIntentVerdict('desculpe, não sei', members)).toEqual({ intentName: null, confidence: 0 });
+    expect(parseIntentVerdict('desculpe, não sei', members)).toEqual({ intentName: null, confidence: 0, falhou: true });
+  });
+  it('JSON sem intenção não é resposta', () => {
+    expect(parseIntentVerdict('{"confidence":0.9}', members)).toEqual({ intentName: null, confidence: 0, falhou: true });
   });
   it('confiança fora de 0..1 é clampada', () => {
     expect(parseIntentVerdict('{"intent":"vendas","confidence":7}', members).confidence).toBe(1);
@@ -51,6 +86,15 @@ describe('classifyIntent', () => {
     const call = runModelCall.mock.calls[0]![2];
     expect(call.model).toBe('claude-haiku-4-5');
     expect(call.purpose).toBe('intent_router');
+  });
+
+  it('leva o contexto recente até o prompt que vai ao modelo', async () => {
+    const runModelCall = vi.fn().mockResolvedValue({ result: { text: '{"intent":"vendas","confidence":0.9}' } });
+    await classifyIntent({} as never, {} as never,
+      { tenantId: 'o1', leadId: 'l1', jobId: 'j1', router, signal: 'Primeira',
+        recentMessages: [{ direction: 'outbound', body: 'Qual data prefere?' }] },
+      { log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never, runModelCall } as never);
+    expect(runModelCall.mock.calls[0]![2].messages[0].content).toContain('Agente: Qual data prefere?');
   });
 
   it('falha do modelo devolve null (chamador cai no fallback) e NÃO lança', async () => {

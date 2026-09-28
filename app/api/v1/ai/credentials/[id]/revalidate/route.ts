@@ -14,6 +14,8 @@ import { audit } from "@/lib/audit";
 import { requireRole } from "@/lib/auth/require-role";
 import { byteaToBuffer, decryptKey } from "@/lib/crypto/aes_gcm";
 import { validateProviderKey } from "@/lib/ai/provider-validators";
+import { lerBaseUrlDaCredencial } from "@/lib/ai/credenciais/guardar";
+import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { traduzir } from "@/lib/i18n/dicionario";
 
@@ -69,11 +71,18 @@ export async function POST(
       tag: byteaToBuffer(row.api_key_tag),
     });
   } catch (err) {
-    console.error("[ai.credentials] decrypt failed during revalidate", err);
+    logger.error("[ai.credentials] decifragem falhou durante a revalidação", {
+      credentialId: id,
+      erro: err instanceof Error ? err.name : typeof err,
+    });
     return fail("decrypt_failed", t("Falha ao decifrar credential."), 500, { requestId });
   }
 
-  const result = await validateProviderKey(row.provider, apiKey);
+  // O provedor personalizado (#1642) valida pelo endereço GRAVADO na linha —
+  // sem ele, revalidar marcaria como inválida a credencial que funciona.
+  const baseUrl =
+    row.provider === "custom" ? await lerBaseUrlDaCredencial(admin, row.id) : undefined;
+  const result = await validateProviderKey(row.provider, apiKey, baseUrl);
   const patch = result.ok
     ? {
         validated_at: new Date().toISOString(),
@@ -83,6 +92,9 @@ export async function POST(
     : {
         validated_at: null,
         validation_error: result.error,
+        // Não conservar o catálogo de uma validação anterior: a credencial
+        // deixou de ser confiável e a lista antiga faria a tela parecer pronta.
+        models_available: null,
       };
 
   const { data: updated, error: updErr } = await admin

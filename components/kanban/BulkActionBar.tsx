@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/dialog";
 import { useActiveOrg, useUser } from "@/hooks/auth/AuthProvider";
 import { useAssignableMembers } from "@/hooks/inbox/useAssignableMembers";
+import { apiClient } from "@/lib/api/client";
 import { ROLE_RANK } from "@/lib/auth/types";
 import { useBulkAction } from "@/hooks/kanban/useBulkAction";
 import { resolveVocabulary } from "@/lib/kanban/vocabulary";
@@ -66,6 +67,36 @@ export function BulkActionBar({
   const bulk = useBulkAction(pipelineId);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [tagInput, setTagInput] = useState("");
+  // D10: só olha propostas quando a confirmação de excluir abre, e no máximo
+  // 50 negócios (o mesmo teto que a rota em lote já aplica por chamada) — um
+  // aviso agregado, sem citar cada número, porque consultar um a um aqui
+  // custaria uma chamada por card selecionado.
+  const [algumTemProposta, setAlgumTemProposta] = useState(false);
+  useEffect(() => {
+    if (!confirmDelete || selectedIds.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAlgumTemProposta(false);
+      return;
+    }
+    let cancelado = false;
+    Promise.all(
+      selectedIds.slice(0, 50).map((id) =>
+        apiClient.get<{ data: Array<{ status: string }> }>(`/api/v1/proposals?lead_id=${id}`),
+      ),
+    )
+      .then((respostas) => {
+        if (cancelado) return;
+        setAlgumTemProposta(
+          respostas.some((r) => r.data.some((p) => p.status !== "rascunho" && p.status !== "cancelada")),
+        );
+      })
+      .catch(() => {
+        if (!cancelado) setAlgumTemProposta(false);
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, [confirmDelete, selectedIds]);
 
   // Reatribuir dono em lote é ≥manager NA ROTA (spec 04 §6.5). Sem este gate a
   // barra oferecia "Atribuir a…" para um `agent`, que clicava e recebia 403 —
@@ -301,6 +332,9 @@ export function BulkActionBar({
             </DialogTitle>
             <DialogDescription>
               {t("Esta ação remove o que está selecionado. Não pode ser desfeita.")}
+              {algumTemProposta && (
+                <> {t("Propostas já enviadas continuam disponíveis em Propostas.")}</>
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

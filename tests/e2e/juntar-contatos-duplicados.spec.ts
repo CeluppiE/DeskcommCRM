@@ -40,14 +40,14 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "./helpers/test";
 import { createClient } from "@supabase/supabase-js";
 
 import { carregarEnvLocal } from "../../scripts/lib/env-de-teste";
 
 const CREDS_PATH = path.join(process.cwd(), ".e2e-creds.json");
 const EVIDENCIA =
-  process.env.E2E_EVIDENCIA ?? path.join(process.cwd(), ".superpowers/evidence/juntar-contatos");
+  process.env.E2E_EVIDENCIA ?? path.join(process.cwd(), "evidence/juntar-contatos");
 
 interface Creds {
   password: string;
@@ -89,7 +89,7 @@ async function login(page: Page, email: string, senha: string): Promise<void> {
   await page.goto("/login");
   await page.locator("#email").fill(email);
   await page.locator("#password").fill(senha);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app/, { timeout: 60_000 });
 }
 

@@ -39,6 +39,34 @@
  * São dois passos porque `supabase-js` não escreve `update ... where id in
  * (select ... limit n)`: primeiro escolhe os ids, depois esvazia por id. As
  * duas idas custam menos que a trava que a alternativa pediria.
+ *
+ * ─── A ordem e o erro, na MESMA régua das podas irmãs (issue #1769) ─────────
+ *
+ * O segundo passo nasceu no molde antigo e ficou nele em dois pontos, ambos
+ * medidos contra a poda irmã (`webhook_lead_captures`, consertada no #1721
+ * logo depois de a casa corrigir a décima poda do `data-retention` no #1719):
+ *
+ *   1. o DELETE ia `.limit(lote)` SEM `order`. O PostgREST 12.2 recusa isso
+ *      com 400 PGRST109 (medido no v12.2.12 pelo mantenedor; com `order=id`
+ *      volta 200) — e, aqui, a recusa virava `apagadas: 0`. Esta é a poda que
+ *      segura o ESPAÇO: o arquivo medido é 468 MB de um banco de 545 MB, e
+ *      `limit` sem `order` é a diferença entre ele deixar de crescer e ele
+ *      continuar crescendo ~23 MB/dia contra o teto de 500 MB do plano
+ *      gratuito. Onde o banco aceitasse, sem ordem o lote sai ARBITRÁRIO e
+ *      a drenagem deixa de ser reproduzível.
+ *   2. o erro do DELETE era ENGOLIDO (`logger.warn` + `apagadas: 0`). Na
+ *      resposta do cron, "o banco recusou o DELETE" e "não havia nada
+ *      vencido" eram a MESMA linha, e o único sinal vivia num log de
+ *      contêiner atrás de um `curl -fsS` que joga tudo para /dev/null. Agora a
+ *      falha SOBE, e quem chama (o handler do cron) a reporta pelos três
+ *      canais das irmãs: `logger.error`, a linha `retention.sweep_run` com
+ *      `falhou: true` e Sentry.
+ *
+ * O que NÃO mudou, e é deliberado: o PRIMEIRO passo (a busca) continua
+ * devolvendo zero em vez de subir. A busca é idempotente e o lote volta a ser
+ * escolhido na rodada seguinte de 5 em 5 minutos, enquanto o DELETE é a linha
+ * que some para sempre — e é por isso que só a segunda falha é irreversível
+ * o bastante para derrubar o 200.
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -54,6 +82,31 @@ export interface ResultadoDaPoda {
   apagadas: number;
   /** `true` quando o lote encheu — ainda há trabalho para a próxima rodada. */
   temMais: boolean;
+}
+
+/**
+ * O DELETE das linhas velhas foi recusado, e o que o passo 1 já esvaziou vem
+ * PRESO na exceção (issue #1769).
+ *
+ * Por que uma classe e não um `Error` com uma propriedade ad hoc: quem chama
+ * precisa distinguir "o DELETE foi recusado, e aqui está o que o passo 1
+ * conseguiu" de "a chamada estourou em outro ponto" — e o `catch` do handler
+ * tem de continuar devolvendo um relatório honesto nos dois casos, sem
+ * inventar um `esvaziadas: 0` que nunca aconteceu. Um `name` ou uma
+ * `instanceof` sobre um objeto ad hoc seria o mesmo contrato com menos régua:
+ * o `instanceof` é o que impede uma exceção vinda de baixo (uma falha de
+ * rede dentro do próprio `supabase-js`, por exemplo) de ser lida como se fosse
+ * o banco recusando o DELETE.
+ */
+export class ErroAoApagarLinhasVelhas extends Error {
+  /** O que a rodada JÁ tinha esvaziado antes de o DELETE ser recusado. */
+  readonly parcial: ResultadoDaPoda;
+
+  constructor(mensagem: string, parcial: ResultadoDaPoda) {
+    super(mensagem);
+    this.name = "ErroAoApagarLinhasVelhas";
+    this.parcial = parcial;
+  }
 }
 
 function limiteEm(dias: number): string {
@@ -131,11 +184,50 @@ export async function podarArquivoDeWebhooks(
     .delete()
     .lt("received_at", limiteEm(opcoes.diasParaApagar))
     .select("id")
+    // O `order` ANTES do `limit` (issue #1769), na MESMA coluna e na MESMA
+    // direção da poda irmã (`webhook_lead_captures`, #1721) e da décima poda do
+    // `data-retention`: `id` ASCENDENTE. Duas propriedades, e as duas
+    // importam.
+    //
+    // A PRIMEIRA é o que o PostgREST 12.2 exige: `limit` sem `order` num
+    // DELETE volta 400 PGRST109 (medido pelo mantenedor no v12.2.12), e sem
+    // esta linha esta poda nunca apaga nada em nenhum clone novo. Para esta
+    // tabela, cujo arquivo é 468 MB de um banco de 545 MB, isso é a diferença
+    // entre o banco deixar de crescer e ele continuar crescendo ~23 MB/dia sem
+    // teto — em silêncio, porque o erro vivia num `warn`.
+    //
+    // A SEGUNDA é a drenagem: sem ordem o banco devolve um subconjunto
+    // ARBITRÁRIO dentro de `lt(received_at, limite)`, então duas rodadas com o
+    // mesmo backlog não apagam as mesmas linhas e a sequência de lotes deixa
+    // de ser reproduzível. A coluna é `id` e não `received_at` pela mesma razão
+    // das irmãs: é a chave primária, logo a ordem é estável — `received_at`
+    // muda de valor conforme entra linha nova, e a ordem junto.
+    .order("id")
     .limit(lote);
 
   if (erroDelete) {
-    logger.warn("[retencao-webhook] não consegui apagar as velhas", {
-      detail: erroDelete.message.slice(0, 160),
+    // A falha SOBE — o mesmo caminho de `podarHistoricoDeCaptacao`
+    // (`lib/webhooks/retencao-da-captacao.ts`, #1721) e de `drenar`
+    // (`app/api/v1/cron/data-retention/route.ts`, #1719). O `warn` que vivia
+    // aqui dizia a causa e devolvia `apagadas: 0`, que na resposta do cron é a
+    // MESMA linha de "não havia nada vencido": um banco que parou de aceitar o
+    // DELETE ficava indistinguível de um banco em dia, e o único sinal morava
+    // num log de contêiner atrás de um `curl -fsS` que joga tudo para
+    // /dev/null. O NOME da tabela vai na frente porque a mesma rodada tem uma
+    // poda irmã, e o operador precisa saber qual das duas falhou. E o que o
+    // PASSO 1 já esvaziou vai PRESO na exceção (`ErroAoApagarLinhasVelhas`),
+    // porque essa é a informação que o `catch` do handler não tem e não pode
+    // reconstruir: uma rodada que esvaziou 500 linhas e falhou ao apagar não
+    // é a mesma que uma que não fez nada, e reportar `esvaziadas: 0` na
+    // segunda seria inventar um número.
+    throw new ErroAoApagarLinhasVelhas(`webhook_events_log: ${erroDelete.message}`, {
+      esvaziadas,
+      apagadas: 0,
+      // `temMais` olha o que a BUSCA escolheu, e não o que o DELETE apaga: a
+      // fila continua cheia de linhas que o passo 1 ainda tem que esvaziar, e
+      // quem chama usa este sinal para saber que a poda não chegou ao regime
+      // estável — o que, numa falha, é literalmente verdade.
+      temMais: ids.length >= lote,
     });
   }
 

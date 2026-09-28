@@ -108,8 +108,9 @@ export function formatCentsUSD(cents: number): string {
  * `es-Latn-MX`, e o CLDR indexa o símbolo de moeda por `es-MX` — com o script
  * no meio, o MXN volta a sair como `"249,90 MXN"`. Medido nos dois sentidos.
  *
- * Moeda sem país (EUR→`en-EU`, XOF→`en-XO`) e código desconhecido caem em
- * `en-US`, que escreve o código ISO e não mente sobre a unidade.
+ * Código desconhecido cai em `en-US`, que escreve o código ISO e não mente
+ * sobre a unidade. Moeda SEM país é a exceção que a regra acima não alcança, e
+ * tem locale declarado em `LOCALE_DA_MOEDA_SEM_PAIS`.
  *
  * ─── `_cents` nem sempre é centésimo ───────────────────────────────────────
  *
@@ -135,11 +136,11 @@ export function formatCentsUSD(cents: number): string {
  * Aceitar `currency` e fixar `pt-BR` é o defeito medido: o lead em MXN sai
  * `MX$ 249,90`, com vírgula decimal brasileira, para quem opera no México.
  *
- * **Elas convergem aqui, mas não neste PR** — são kanban, inbox e o PDF de
- * LGPD, três frentes que a doutrina não deixa misturar com o catálogo. A
- * conversão não é mecânica: as três do kanban usam `maximumFractionDigits: 0`
- * de propósito (o card não mostra centavos), e isso precisa virar parâmetro
- * antes de trocá-las. Enquanto não convergem, a duplicação fica DECLARADA aqui
+ * **As três do kanban já convergiram** — em `formatValorDoNegocio`, e não em
+ * `formatCents`, porque o negócio guarda ×100 em qualquer moeda (ver a função);
+ * o `maximumFractionDigits: 0` delas virou a opção `semCentavos`. Faltam o
+ * inbox e o PDF de LGPD, frentes que a doutrina não deixa misturar com esta.
+ * Enquanto não convergem, a duplicação fica DECLARADA aqui
  * — que é o que separa o anti-pattern 2 ("duplicação sem source of truth
  * declarado") de uma dívida com dono e endereço.
  *
@@ -153,22 +154,76 @@ export function formatCentsUSD(cents: number): string {
  */
 const formatadores = new Map<string, Intl.NumberFormat>();
 
+/**
+ * Moeda cujo código ISO não começa por um país. `EU` maximiza para `en-EU`, e
+ * `en-EU` escreve `€249.90` — ponto decimal e símbolo na frente, a convenção da
+ * Irlanda. Português, espanhol, francês, alemão e italiano escrevem `249,90 €`,
+ * e é o que `pt-PT` devolve (medido no ICU do Node 22, junto com `de-DE`,
+ * `fr-FR`, `es-ES` e `it-IT`).
+ *
+ * ponytail: um formato só para a zona euro. Holanda (`€ 249,90`) e Irlanda
+ * (`€249.90`) leem a convenção vizinha; quando `organizations.country` puder
+ * escolher o locale, é ele que decide, e esta tabela some.
+ */
+const LOCALE_DA_MOEDA_SEM_PAIS: Readonly<Record<string, string>> = {
+  EUR: "pt-PT",
+  // PYG tem país, mas a maximização responde o idioma ERRADO para dinheiro:
+  // `und-PY` vira `gn-Latn-PY` (guarani), que o ICU não tem, e o formatador
+  // caía em `en-US` — `PYG 125,000`, com vírgula de milhar. `es-PY` escreve
+  // `Gs. 125.000`, como se lê no Paraguai. Medido no ICU do Node 22.
+  PYG: "es-PY",
+};
+
+function localeDaMoeda(moeda: string): string {
+  let locale = LOCALE_DA_MOEDA_SEM_PAIS[moeda] ?? "en-US";
+  if (!LOCALE_DA_MOEDA_SEM_PAIS[moeda]) {
+    try {
+      const provavel = new Intl.Locale(`und-${moeda.slice(0, 2)}`).maximize();
+      const tag = `${provavel.language}-${provavel.region}`;
+      if (Intl.NumberFormat.supportedLocalesOf(tag).length > 0) locale = tag;
+    } catch {
+      // Região que o ICU não conhece: fica o padrão.
+    }
+  }
+  return locale;
+}
+
 function formatadorDa(moeda: string): Intl.NumberFormat {
   const cacheado = formatadores.get(moeda);
   if (cacheado) return cacheado;
 
-  let locale = "en-US";
-  try {
-    const provavel = new Intl.Locale(`und-${moeda.slice(0, 2)}`).maximize();
-    const tag = `${provavel.language}-${provavel.region}`;
-    if (Intl.NumberFormat.supportedLocalesOf(tag).length > 0) locale = tag;
-  } catch {
-    // Região que o ICU não conhece: fica o padrão.
-  }
-
-  const novo = new Intl.NumberFormat(locale, { style: "currency", currency: moeda });
+  const novo = new Intl.NumberFormat(localeDaMoeda(moeda), { style: "currency", currency: moeda });
   formatadores.set(moeda, novo);
   return novo;
+}
+
+const formatadoresSemCentavos = new Map<string, Intl.NumberFormat>();
+
+function formatadorSemCentavosDa(moeda: string): Intl.NumberFormat {
+  const cacheado = formatadoresSemCentavos.get(moeda);
+  if (cacheado) return cacheado;
+  const novo = new Intl.NumberFormat(localeDaMoeda(moeda), {
+    style: "currency",
+    currency: moeda,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  });
+  formatadoresSemCentavos.set(moeda, novo);
+  return novo;
+}
+
+/**
+ * Quantas casas decimais a moeda tem — a régua de `_cents` de `formatCents`
+ * (unidades menores). Sai do MESMO formatador de `formatCents`, para as duas
+ * pontas nunca divergirem: BRL 2, PYG e JPY 0, KWD 3. Moeda que o `Intl`
+ * recusa fica em 2.
+ */
+function casasDaMoeda(moeda: string): number {
+  try {
+    return formatadorDa(moeda).resolvedOptions().maximumFractionDigits ?? 2;
+  } catch {
+    return 2;
+  }
 }
 
 /**
@@ -198,6 +253,120 @@ export function formatCents(cents: number, moeda: string): string {
 }
 
 /**
+ * O VALOR DE UM NEGÓCIO (`crm_leads.value_cents`), escrito na moeda dele.
+ *
+ * ⚠️ DUAS RÉGUAS DE `_cents` CONVIVEM, e esta função é a ponte entre elas.
+ * `formatCents` lê UNIDADES MENORES da moeda — as casas vêm do `Intl`, e em
+ * moeda sem subunidade (guarani, iene, peso chileno) o número já é a moeda
+ * inteira. O negócio guarda o valor × 100 em QUALQUER moeda: o formulário
+ * (`parseReaisToCents`) multiplica por 100 sem olhar a moeda, e o card e o
+ * dossiê do funil sempre dividiram por 100 fixo.
+ *
+ * O total da coluna do funil passava o valor do negócio direto a `formatCents`:
+ * dois pedidos de ₲125.000 (`value_cents` 12.500.000 cada) apareciam como
+ * `Gs. 25.000.000` — cem vezes mais —, enquanto o card, com o `/100` fixo, dizia
+ * o certo. Medido numa instalação real em 25/09/2026. Em BRL, USD e MXN (duas
+ * casas) as duas réguas coincidem, e por isso o defeito só aparece em moeda sem
+ * centavos.
+ *
+ * `semCentavos` é o formato do card e do dossiê do funil, que nunca mostraram
+ * centavos; o total da coluna mostra.
+ */
+export function formatValorDoNegocio(
+  valueCents: number,
+  moeda: string,
+  opcoes: { semCentavos?: boolean } = {},
+): string {
+  const valor = (valueCents ?? 0) / 100;
+  try {
+    if (opcoes.semCentavos) return formatadorSemCentavosDa(moeda).format(valor);
+    // Da régua do negócio (×100) para a de `formatCents` (unidades menores).
+    return formatCents(Math.round((valueCents ?? 0) / 10 ** (2 - casasDaMoeda(moeda))), moeda);
+  } catch {
+    return `${moeda || "?"} ${valor.toFixed(opcoes.semCentavos ? 0 : 2)}`;
+  }
+}
+
+/**
+ * SOMA POR MOEDA — cada moeda no seu balde, nunca uma soma entre elas (#1531).
+ *
+ * R$ 5.000 mais 5.000 € não são 10.000 de nada: somar `_cents` de moedas
+ * diferentes produz um número que não existe em moeda nenhuma, e escrevê-lo no
+ * símbolo de uma delas o faz parecer verdade. O total da coluna do funil fazia
+ * isso — somava tudo e escrevia na moeda do primeiro negócio. A regra já valia
+ * em dois lugares (`lib/leads/previsao.ts` e `lib/metrics/perdas.ts`, cada um
+ * com o seu balde interno); esta é a versão exportada, para o próximo total não
+ * reinventar a terceira.
+ *
+ * Item com `cents` `null`/`undefined` não entra e NÃO cria a moeda — "sem valor"
+ * não é "zero". Zero entra e cria: é valor declarado, e é o que mantém o
+ * ponderado de uma etapa de perda (chance 0) com as mesmas moedas do total.
+ * Nada é convertido.
+ */
+export function somaPorMoeda<T>(
+  itens: readonly T[],
+  cents: (item: T) => number | null | undefined,
+  moeda: (item: T) => string,
+): Map<string, number> {
+  const soma = new Map<string, number>();
+  for (const item of itens) {
+    const valor = cents(item);
+    if (valor == null) continue;
+    const m = moeda(item);
+    soma.set(m, (soma.get(m) ?? 0) + valor);
+  }
+  return soma;
+}
+
+/**
+ * Escreve uma soma por moeda como texto: `"R$ 5.000,00 + 5000,00 €"`.
+ *
+ * ⚠️ O FORMATADOR É OBRIGATÓRIO, e não um padrão escondido, por causa das duas
+ * réguas de `_cents` (ver `formatValorDoNegocio`): valor de negócio é ×100 em
+ * qualquer moeda, preço e lançamento financeiro são unidades menores. Um padrão
+ * serviria a uma e mostraria a outra cem vezes maior em guarani — o defeito que
+ * o total da coluna já pagou uma vez.
+ *
+ * - Com UMA moeda, o texto é exatamente `formatar(cents, moeda)`: quem somava
+ *   uma moeda só não vê diferença nenhuma.
+ * - Ordem: `primeira` (quando está na soma), depois as demais em ordem
+ *   alfabética do código ISO — determinística, para o texto não mudar de lugar
+ *   a cada render.
+ * - Peso mexicano e dólar escrevem os dois `$` (e também CLP, COP e ARS), e
+ *   `"$1,500.00 + $100.00"` não diz qual é qual. Só quando o símbolo se repete
+ *   DENTRO da soma, cada parcela afetada leva o código: `"$1,500.00 MXN +
+ *   $100.00 USD"`. Símbolo único fica limpo — `"5000,00 € EUR"` seria ruído.
+ * - Soma vazia devolve `""`.
+ */
+export function formatSomaPorMoeda(
+  soma: ReadonlyMap<string, number>,
+  formatar: (cents: number, moeda: string) => string,
+  opcoes: { primeira?: string } = {},
+): string {
+  const moedas = [...soma.keys()].sort((a, b) =>
+    a === opcoes.primeira ? -1 : b === opcoes.primeira ? 1 : a.localeCompare(b),
+  );
+  // `simboloDaMoeda` lança para código malformado; aí o próprio código é o
+  // símbolo — é o que `formatCents` escreve nesse caso.
+  const simbolo = (moeda: string) => {
+    try {
+      return simboloDaMoeda(moeda);
+    } catch {
+      return moeda;
+    }
+  };
+  const simbolos = moedas.map(simbolo);
+  return moedas
+    .map((moeda) => {
+      const texto = formatar(soma.get(moeda) ?? 0, moeda);
+      const s = simbolo(moeda);
+      const repetido = simbolos.filter((outro) => outro === s).length > 1;
+      return repetido ? `${texto} ${moeda}` : texto;
+    })
+    .join(" + ");
+}
+
+/**
  * As moedas que o produto SERVE — e servir quer dizer três coisas juntas: o
  * seletor da organização a oferece, o schema a aceita, e `formatCents` sabe
  * escrevê-la na convenção de quem a usa.
@@ -215,7 +384,7 @@ export function formatCents(cents: number, moeda: string): string {
  * ABERTO que a doutrina de modelagem descreve. O conjunto vive só aqui, no
  * TypeScript.
  *
- * As quatro têm subunidade de 2 casas, então nenhuma esbarra na ressalva de
+ * As cinco têm subunidade de 2 casas, então nenhuma esbarra na ressalva de
  * unidades menores de `formatCents`. Acrescentar JPY ou CLP funciona — o
  * formatador já os cobre —, mas exige olhar `precoParaCentavos`, que ainda
  * multiplica por 100 na leitura do que a pessoa digita.
@@ -226,8 +395,13 @@ export function formatCents(cents: number, moeda: string): string {
  * `maximumFractionDigits` responde 2, então a régua de centavos vale. Entrar na
  * lista NÃO muda o padrão de ninguém — `MOEDA_PADRAO` continua `BRL`, e é isso
  * que o `default` da coluna grava em quem não escolheu.
+ *
+ * `EUR` entrou pelo mesmo motivo, para quem opera em Portugal e no resto da
+ * zona euro. É o caso que a maximização não resolve (ver
+ * `LOCALE_DA_MOEDA_SEM_PAIS`): sem a exceção, `formatCents(24990, "EUR")`
+ * sairia `€249.90`, e a varredura de degradação deixaria passar.
  */
-export const MOEDAS_SERVIDAS = ["AOA", "BRL", "MXN", "USD"] as const;
+export const MOEDAS_SERVIDAS = ["AOA", "BRL", "EUR", "MXN", "USD"] as const;
 export type MoedaServida = (typeof MOEDAS_SERVIDAS)[number];
 
 /** O que o `default` da coluna grava quando ninguém escolheu. */

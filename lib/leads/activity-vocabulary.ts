@@ -166,7 +166,21 @@ export type ActivityType =
    * quem abre o card no destino precisa ler. O outro lado da troca é a
    * `demand_closed` da origem, com a razão "Levado para o funil X".
    */
-  | "moved_from_pipeline";
+  | "moved_from_pipeline"
+  | "proposal_drafted"
+  | "proposal_sent"
+  | "proposal_accepted"
+  | "proposal_declined"
+  | "proposal_expired"
+  | "proposal_value_changed"
+  /**
+   * N2 — o envio tentou agendar o follow-up automático e NÃO conseguiu por um
+   * motivo que não é "já existe retorno" (esse tem atividade própria, a do
+   * retorno que já serve). Sem esta linha, "a proposta foi enviada e nenhum
+   * retorno veio" seria indistinguível de "o retorno está a caminho" — e é
+   * justamente no silêncio que a demanda morre. O PORQUÊ vai no `reason`.
+   */
+  | "proposal_followup_skipped";
 
 export const ACTIVITY_LABELS: Record<ActivityType, string> = {
   lead_created: "Entrou pelo WhatsApp",
@@ -267,6 +281,13 @@ export const ACTIVITY_LABELS: Record<ActivityType, string> = {
   // ter mudado de contato sem ninguém tê-lo movido.
   contacts_merged: "Contatos duplicados juntados",
   moved_from_pipeline: "Veio de outro funil",
+  proposal_drafted: "Rascunho de proposta criado",
+  proposal_sent: "Proposta enviada",
+  proposal_accepted: "Proposta aceita",
+  proposal_declined: "Proposta recusada",
+  proposal_expired: "Proposta venceu sem decisão",
+  proposal_value_changed: "Valor do negócio atualizado pela proposta",
+  proposal_followup_skipped: "Follow-up automático não agendado",
 };
 
 /** Quando o tipo é legado/desconhecido, a linha ainda é honesta — sem jargão. */

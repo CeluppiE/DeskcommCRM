@@ -490,6 +490,20 @@ Resposta:
 }
 ```
 
+#### Follow-up configurado por versão
+
+`ai_agent_versions.followup` é a configuração JSONB versionada. `enabled` e
+`flow_pointer_ids` controlam apenas os fluxos publicados inscritos pelo agente.
+`callback_enabled` é independente: controla a criação de um retorno pontual
+prometido pelo agente (`schedule_followup` nativa e `crm_schedule_followup` no
+catálogo MCP). Campo ausente mantém o comportamento legado habilitado.
+
+Quando `callback_enabled=false`, o runtime não oferece as duas ferramentas de
+criação, inclusive ao papel Operador. As ferramentas para consultar e cancelar
+retornos, inscrever um cliente num fluxo configurado e agendar compromissos
+continuam disponíveis. PATCH de `followup` mescla somente as propriedades
+enviadas; desligar callbacks não muda `enabled` nem `flow_pointer_ids`.
+
 ### 4.5 Publish / lifecycle
 
 **POST `/api/v1/ai/agents/:id:publish`** body `{ version_id }`:

@@ -92,7 +92,7 @@ const CHAVE_OK: EstadoDaChave = {
   explicacao: "Usando a chave OpenAI cadastrada em Credenciais.",
   chave_em_uso: "Chave principal",
   avisos: [],
-  credenciais_openai: [],
+  credenciais_embedding: [],
 };
 
 beforeEach(() => {
@@ -316,5 +316,30 @@ describe("ChaveDeConhecimento — o beco vira saída", () => {
     render(<ChaveDeConhecimento estado={CHAVE_OK} onChaveCadastrada={() => {}} />);
     expect(screen.getByTestId("conhecimento-chave-ok")).toBeInTheDocument();
     expect(screen.getByText(/Chave principal/)).toBeInTheDocument();
+  });
+
+  it("cadastrar chave OpenRouter pela tela envia o provedor correto", async () => {
+    const spy = dublarFetch();
+    render(
+      <ChaveDeConhecimento
+        estado={{ ...CHAVE_OK, pode_indexar: false, chave_em_uso: null }}
+        onChaveCadastrada={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("conhecimento-cadastrar-chave"));
+    fireEvent.click(screen.getByTestId("conhecimento-provedor-openrouter"));
+    expect(screen.getByTestId("conhecimento-chave-input")).toHaveAttribute("placeholder", "sk-or-…");
+    fireEvent.change(screen.getByTestId("conhecimento-chave-input"), {
+      target: { value: "chave-ficticia-openrouter" },
+    });
+    fireEvent.click(screen.getByTestId("conhecimento-chave-salvar"));
+
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+    expect(corpoEnviado(spy)).toMatchObject({
+      provider: "openrouter",
+      label: "Chave da OpenRouter",
+      api_key: "chave-ficticia-openrouter",
+    });
   });
 });

@@ -51,7 +51,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page } from "./helpers/test";
 
 import { lerCreds, loginComoAdmin, type CredsE2E } from "./helpers/login-admin";
 
@@ -173,6 +173,8 @@ test.describe("acervo de conhecimento", () => {
       // O aviso não é um beco: o conserto abre na própria tela.
       await page.getByTestId("conhecimento-cadastrar-chave").click();
       await expect(page.getByTestId("conhecimento-chave-input")).toBeVisible();
+      await page.getByTestId("conhecimento-provedor-openrouter").check();
+      await expect(page.getByTestId("conhecimento-chave-input")).toHaveAttribute("placeholder", "sk-or-…");
     }
   });
 

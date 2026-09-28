@@ -2,7 +2,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api/client";
 import { showApiError } from "@/components/feedback/ApiErrorToast";
-import { PROVEDORES } from "@/lib/ai/pontos/provedores";
+import type { PROVEDORES, ProvedorComChave } from "@/lib/ai/pontos/provedores";
 
 /**
  * Derivado de `lib/ai/pontos/provedores.ts` — a lista única desde a migration
@@ -14,9 +14,18 @@ export type Provider = (typeof PROVEDORES)[number]["id"];
 export interface CredentialRow {
   id: string;
   organization_id: string;
-  provider: Provider;
+  /**
+   * A união, não `Provider`: a linha pode ser a chave do Jev, que não conversa.
+   * `Provider` segue sendo só quem conversa — é o que o agente escolhe.
+   */
+  provider: ProvedorComChave;
   label: string;
-  api_key_last4: string | null;
+  // `ai_provider_credentials.api_key_last4` é `text NOT NULL` no baseline: os
+  // quatro dígitos são gravados junto com a chave e nunca somem. Declarar
+  // `| null` aqui era o TypeScript mentindo sobre a coluna — e o mentiroso é o
+  // lado que não dá para o `tsc` conferir (o dado entra por `as unknown as`).
+  // Cobrado por `tests/invariants/tipo-de-coluna-x-typescript.test.ts`.
+  api_key_last4: string;
   validated_at: string | null;
   validation_error: string | null;
   models_available: string[] | null;

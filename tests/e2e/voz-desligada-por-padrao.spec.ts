@@ -44,7 +44,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./helpers/test";
 
 import { generateTotp, msUntilNextTotpWindow } from "./utils/totp";
 
@@ -87,7 +87,7 @@ async function entrarComoAdmin(page: Page): Promise<void> {
   await page.goto("/login");
   await page.locator("#email").fill(creds.users.admin!.email);
   await page.locator("#password").fill(creds.password);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/login\/mfa/);
 
   for (let tentativa = 0; tentativa < 2; tentativa += 1) {

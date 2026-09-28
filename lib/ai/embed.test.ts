@@ -20,7 +20,7 @@
  * a chave da organização é usada, e a ausência dela vira erro TIPADO em vez de
  * uma falha genérica que a tela não sabe traduzir.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const embedSpy = vi.fn();
 vi.mock("ai", () => ({
@@ -53,12 +53,15 @@ beforeEach(() => {
   chaveMock = () => ({
     apiKey: "sk-da-organizacao",
     baseUrl: null,
+    provedor: "openai",
     viaGateway: false,
     origem: "credencial_da_organizacao",
     rotulo: "Chave principal",
     avisos: [],
   });
 });
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("embedText", () => {
   it("SEM gateway, usa o provider OpenAI explícito — nunca a string com barra", async () => {
@@ -79,6 +82,7 @@ describe("embedText", () => {
     chaveMock = () => ({
       apiKey: null,
       baseUrl: null,
+      provedor: "gateway",
       viaGateway: true,
       origem: "gateway_da_instalacao",
       rotulo: null,
@@ -96,6 +100,38 @@ describe("embedText", () => {
     const r = await embedText("oi", { organizationId: "org-1" });
     expect(r.embedding).toHaveLength(1536);
     expect(r.promptTokens).toBe(7);
+  });
+
+  it("OpenRouter recebe o id completo do modelo fixo de embedding", async () => {
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({
+      data: [{ object: "embedding", index: 0, embedding: Array(1536).fill(0) }],
+      usage: { prompt_tokens: 1, total_tokens: 1 },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchSpy);
+    chaveMock = () => ({
+      apiKey: "chave-ficticia-openrouter",
+      baseUrl: "https://openrouter.ai/api/v1",
+      provedor: "openrouter",
+      viaGateway: false,
+      origem: "credencial_da_organizacao",
+      rotulo: "OpenRouter",
+      avisos: [],
+    });
+
+    await embedText("oi", { organizationId: "org-1" });
+
+    const arg = embedSpy.mock.calls[0]?.[0] as {
+      model: { modelId: string; doEmbed: (args: { values: string[] }) => Promise<unknown> };
+    };
+    expect(arg.model.modelId).toBe("openai/text-embedding-3-small");
+    await arg.model.doEmbed({ values: ["oi"] });
+    const [url, request] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://openrouter.ai/api/v1/embeddings");
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      model: "openai/text-embedding-3-small",
+      input: ["oi"],
+    });
+    expect(request.headers).toMatchObject({ authorization: "Bearer chave-ficticia-openrouter" });
   });
 
   it("organização SEM chave nenhuma vira erro tipado, não uma falha genérica", async () => {
@@ -125,6 +161,7 @@ describe("embedText", () => {
     const chave = {
       apiKey: "sk-x",
       baseUrl: null,
+      provedor: "openai" as const,
       viaGateway: false,
       origem: "credencial_da_organizacao" as const,
       rotulo: "x",

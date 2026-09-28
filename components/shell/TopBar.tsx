@@ -1,5 +1,6 @@
 "use client";
 import { AlertsBell } from "./AlertsBell";
+import { AvisoDePropostaEmDestaque } from "./AvisoDePropostaEmDestaque";
 import { MobileSidebar } from "./MobileSidebar";
 import { TenantSwitcher } from "./TenantSwitcher";
 import { UserMenu } from "./UserMenu";
@@ -17,6 +18,7 @@ export function TopBar() {
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <AlertsBell />
+        <AvisoDePropostaEmDestaque />
         <UserMenu />
       </div>
     </header>

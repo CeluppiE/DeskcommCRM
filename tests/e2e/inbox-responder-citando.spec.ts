@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { createClient } from "@supabase/supabase-js";
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./helpers/test";
 
 import { credenciaisSupabaseDeTeste } from "../../scripts/lib/env-de-teste";
 
@@ -36,7 +36,7 @@ interface E2ECreds {
 
 const CREDS_PATH = path.join(process.cwd(), ".e2e-creds.json");
 const creds = JSON.parse(fs.readFileSync(CREDS_PATH, "utf8")) as E2ECreds;
-const EVIDENCE = path.join(process.cwd(), ".superpowers/evidence");
+const EVIDENCE = path.join(process.cwd(), "evidence");
 
 /**
  * Login simples — e por isso o usuário é o `agent`, nunca o `admin`.
@@ -51,7 +51,7 @@ async function login(page: Page, email: string): Promise<void> {
   await page.goto("/login");
   await page.locator("#email").fill(email);
   await page.locator("#password").fill(creds.password);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app\//);
 }
 
@@ -181,12 +181,15 @@ test.describe("responder citando", () => {
     await login(page, creds.users.agent!.email);
     await abrirConversa(page, conversas[0]!);
 
-    const responder = page.getByRole("button", { name: /Responder a esta mensagem/i }).first();
-
-    // O botão vive em `opacity-0` até o hover. `toBeVisible` do Playwright
-    // considera opacidade 0 como visível, então o hover é o que prova de
-    // verdade que ele é alcançável — e o clique, que é clicável.
+    // Desde o #1626 responder é um item do menu da mensagem. O gatilho vive em
+    // `opacity-0` até o hover. `toBeVisible` do Playwright considera opacidade 0
+    // como visível, então o hover é o que prova de verdade que ele é alcançável
+    // — e o clique, que é clicável.
+    const opcoes = bolhas(page).first().getByRole("button", { name: /Opções da mensagem/i });
     await bolhas(page).first().hover();
+    await expect(opcoes).toBeVisible();
+    await opcoes.click();
+    const responder = page.getByRole("menuitem", { name: /Responder a esta mensagem/i });
     await expect(responder).toBeVisible();
     await responder.click();
 
@@ -209,8 +212,8 @@ test.describe("responder citando", () => {
     await abrirConversa(page, conversas[0]!);
 
     await bolhas(page).first().hover();
-    const responder = page.getByRole("button", { name: /Responder a esta mensagem/i }).first();
-    await responder.click();
+    await bolhas(page).first().getByRole("button", { name: /Opções da mensagem/i }).click();
+    await page.getByRole("menuitem", { name: /Responder a esta mensagem/i }).click();
     await expect(page.getByRole("button", { name: /Cancelar resposta/i })).toBeVisible();
 
     // Entra em OUTRA conversa semeada — pelo id, não pela lista: "a segunda da

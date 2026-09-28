@@ -125,7 +125,7 @@ export const COLUNAS_POR_ENTIDADE: Record<EntidadeDoCatalogo, string> = {
   regras_de_comissao:
     "id, name, attendant_user_id, event_type_id, percent, is_active, created_at",
   recorrencias:
-    "id, name, account_id, account_plan_id, direction, amount_cents, day_of_month, is_active, created_at",
+    "id, name, account_id, account_plan_id, direction, amount_cents, currency, day_of_month, is_active, created_at",
 };
 
 /** O que a tela chama cada coisa. Nunca o nome da tabela. */

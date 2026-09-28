@@ -149,6 +149,24 @@ describe("projeção — o que o Conversador pode ver", () => {
       expect(projetarContexto(comJargao).mensagens[0]!.texto).toBe("meu webhook parou de funcionar");
     });
 
+    it("a última proposta chega traduzida — o agente não oferece de novo o que já foi recusado (N7)", () => {
+      const comPropostaRecusada: LeadContext = {
+        ...cru,
+        last_proposal: { status: "recusada", total_cents: 500000, decision_reason: "preço acima do orçamento", numero: 42, ano: 2026 },
+      };
+      const p = projetarContexto(comPropostaRecusada);
+      expect(p.ultima_proposta).toEqual({
+        numero_e_ano: "42/2026",
+        status: "recusada pelo cliente",
+        motivo_recusa: "preço acima do orçamento",
+      });
+    });
+
+    it("sem proposta (nunca houve uma): ultima_proposta é null, não some por omissão", () => {
+      const p = projetarContexto(cru);
+      expect(p.ultima_proposta).toBeNull();
+    });
+
     it("campo novo no contexto NÃO passa por omissão — allowlist falha fechado", () => {
       // Uma denylist deixaria o campo novo chegar ao cliente até alguém lembrar
       // de bani-lo. Aqui o default é não aparecer.

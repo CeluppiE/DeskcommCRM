@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { isPublicPath, PUBLIC_PATHS } from "@/lib/auth/public-paths";
-import { letraDoIcone } from "@/lib/branding/icone";
+import { ICONE_DESENHADO, iconeDaAba, letraDoIcone } from "@/lib/branding/icone";
 
 const RAIZ = process.cwd();
 
@@ -89,7 +89,33 @@ describe("o ícone carrega para quem NÃO entrou", () => {
   it("o layout declara o ícone — é o que mata o pedido a /favicon.ico", () => {
     // O 404 de /favicon.ico não é barato: em produção ele devolve a
     // `app/not-found.tsx` inteira (19.435 bytes) para um pedido de ícone.
+    // Desde a migration 0443 o link passa por `iconeDaAba`, que devolve o
+    // ícone desenhado (`/icon`) quando não há arquivo subido — os casos dela
+    // estão logo abaixo. O que não pode sumir é a DECLARAÇÃO no layout.
     const layout = fs.readFileSync(path.join(RAIZ, "app/layout.tsx"), "utf8");
-    expect(layout).toMatch(/icons:\s*\{\s*icon:\s*"\/icon"\s*\}/);
+    expect(layout).toMatch(/icons:\s*\{\s*icon:\s*iconeDaAba\(/);
+    expect(ICONE_DESENHADO).toBe("/icon");
+  });
+});
+
+describe("ícone da aba subido em /admin/marca (migration 0443)", () => {
+  const BASE = "https://proj.supabase.co";
+  const CAMINHO = "platform/33333333-3333-4333-8333-333333333333.png";
+
+  it("sem arquivo, a aba segue com o ícone desenhado", () => {
+    expect(iconeDaAba(null, BASE)).toBe("/icon");
+    expect(iconeDaAba(undefined, BASE)).toBe("/icon");
+    expect(iconeDaAba("   ", BASE)).toBe("/icon");
+  });
+
+  it("com arquivo, aponta para a URL pública dele no bucket da marca", () => {
+    expect(iconeDaAba(CAMINHO, BASE)).toBe(
+      `${BASE}/storage/v1/object/public/brand-logos/${CAMINHO}`,
+    );
+  });
+
+  it("sem base de storage conhecida, não monta URL relativa — cai no desenhado", () => {
+    // Uma URL relativa (`/storage/v1/...`) iria ao próprio app e voltaria 404.
+    expect(iconeDaAba(CAMINHO, "")).toBe("/icon");
   });
 });

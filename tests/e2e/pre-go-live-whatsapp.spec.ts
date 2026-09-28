@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/test";
 import { createClient } from "@supabase/supabase-js";
 import { metadataInicialDoCanal } from "../../lib/ai/elegibilidade/pre-go-live";
+import { nomeDaSessaoCabeNoWaha } from "../../lib/channels/nome-da-sessao";
 
 // Banco e auth reais, sem interceptar a API da feature. Não envia WhatsApp real.
 test.use({ locale: "pt-BR" });
@@ -24,8 +25,13 @@ test("admin configura testes, remove número, confirma abertura e volta a restri
   const orgId = org!.id;
   // Esta spec cobre a configuração do canal após onboarding, não o wizard.
   expect((await admin.from("organizations").update({ onboarded_at: new Date().toISOString() }).eq("id", orgId)).error).toBeNull();
+  // Este spec monta o nome à mão (#686) e nunca chama o gerador: o que ele
+  // monta tem de caber no que o WAHA aceita, senão a prova de tela continua
+  // passando ao lado do mesmo defeito que o invariante passava.
+  const sessao = `prego_${suffix}`;
+  expect(nomeDaSessaoCabeNoWaha(sessao)).toBe(true);
   const { data: channel, error } = await admin.from("channel_sessions").insert({
-    organization_id: orgId, display_name: "Canal de validação", waha_session_name: `prego_${suffix}`,
+    organization_id: orgId, display_name: "Canal de validação", waha_session_name: sessao,
     webhook_secret_encrypted: "\\x00", metadata: metadataInicialDoCanal(), status: "STOPPED",
   }).select("id").single();
   expect(error).toBeNull();
@@ -34,7 +40,7 @@ test("admin configura testes, remove número, confirma abertura e volta a restri
   await page.goto("/login");
   await page.locator("#email").fill(email);
   await page.locator("#password").fill(password);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app/);
   await page.goto("/app/connections");
   await expect(page.getByText("Canal de validação", { exact: true })).toBeVisible();

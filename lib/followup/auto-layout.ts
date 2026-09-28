@@ -41,8 +41,13 @@ const TYPE_ORDER: Record<NodeType, number> = {
   ai_classify: 3,
   match_reply: 4,
   repeat: 5,
-  action: 6,
-  end: 7,
+  collect: 6,
+  skill: 7,
+  // Lembrete interno (#1540) entra DEPOIS de tudo que o cliente vê — o layout
+  // automático ordena por papel no fluxo, e este nó é o epílogo.
+  internal_task: 10,
+  action: 8,
+  end: 9,
 };
 
 export type NodeSize = { width: number; height: number };

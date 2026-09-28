@@ -12,6 +12,8 @@
  */
 import { graphVersion } from "@/lib/graph-version";
 
+import { graphBaseUrl } from "./graph-base";
+
 export type ValidacaoCredencial =
   | { ok: true; displayPhoneNumber: string | null; verifiedName: string | null; qualityRating: string | null }
   | { ok: false; motivo: string };
@@ -30,7 +32,7 @@ export async function validateMetaCredentials(input: {
   const version = input.graphVersion ?? graphVersion();
   try {
     const res = await fetch(
-      `https://graph.facebook.com/${version}/${input.phoneNumberId}` +
+      `${graphBaseUrl(version)}/${input.phoneNumberId}` +
         `?fields=display_phone_number,verified_name,quality_rating`,
       { headers: { Authorization: `Bearer ${input.token}` } },
     );
@@ -97,7 +99,7 @@ async function numeroPertenceAWaba(input: {
 }): Promise<{ ok: true } | { ok: false; motivo: string }> {
   try {
     const res = await fetch(
-      `https://graph.facebook.com/${input.version}/${input.wabaId}/phone_numbers?fields=id&limit=200`,
+      `${graphBaseUrl(input.version)}/${input.wabaId}/phone_numbers?fields=id&limit=200`,
       { headers: { Authorization: `Bearer ${input.token}` } },
     );
     const body = (await res.json().catch(() => ({}))) as {

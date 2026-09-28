@@ -26,7 +26,7 @@ owner: Rafael Melgaço
 
 - `@modelcontextprotocol/sdk` server (TypeScript)
 - Hospedado em `app/api/mcp/route.ts` (Next.js Route Handler com Streamable HTTP transport)
-- Auth: Bearer token (`tok_...`) — mesma API key do REST `/api/v1/` (Spec 01 §api-tokens). Tabela `api_tokens` reutilizada
+- Auth: Bearer token (`dsk_...`) — mesma API key do REST `/api/v1/` (Spec 01 §api-tokens). Tabela `api_tokens` reutilizada
 - RLS: tools executam via Supabase client autenticado, **mesma policy** do REST. Zero código de autorização ad-hoc dentro das tools
 
 ### 1.3 Princípios
@@ -34,7 +34,7 @@ owner: Rafael Melgaço
 1. **Cada tool = 1 endpoint REST existente**. Nada de tool que faça query SQL custom — sempre via mesmo handler/RPC do REST. Garante que regras (audit, rate limit, RLS) já testadas se aplicam.
 2. **Zod schemas são o contrato.** Mesmas schemas usadas no REST. DRY.
 3. **Mutações registram audit log idêntico ao REST**. `actor_type='ai_agent'`, `actor_id=run.id` em vez do user.
-4. **Idempotência opcional via `Idempotency-Key`** propagada do agent loop (run_id como prefix).
+4. **Idempotência nas criações**: clientes MCP externos podem enviar `Idempotency-Key`; o runtime interno deriva a chave de `sourceJobId` e do hash do input validado. A escrita usa o recibo compartilhado do handler, sem usar `claim` como identidade da operação.
 5. **Handoff é uma tool nativa (não um endpoint REST)** — única exceção: `crm_request_human_handoff` é específica de runtime de agente, não tem espelho REST.
 
 ---
@@ -53,10 +53,10 @@ Transport conforme MCP spec 2025-06: Streamable HTTP recomendado, fallback SSE l
 ### 2.2 Auth
 
 ```
-Authorization: Bearer tok_xxxxxxxxxxxxxxxxxxxx
+Authorization: Bearer dsk_xxxxxxxxxxxxxxxxxxxx
 ```
 
-- Token plain prefix `tok_`. Validado via SHA256 hash em `api_tokens` (Spec 01).
+- Token plain prefix `dsk_`. Validado via SHA256 hash em `api_tokens` (Spec 01).
 - Token resolve `organization_id` + `role` + `actor_type` (`user` ou `system`).
 - Para agentes (Spec 10), o runner mints um token efêmero (TTL 5min) escopado: `actor_type='ai_agent'`, `agent_run_id=run.id`. Não aparece na UI; é interno.
 - Token escopo: tools podem checar `tok.role >= manager` para mutations sensíveis (mesmas regras do REST).
@@ -292,6 +292,13 @@ validateToolIds(version.tool_ids).forEach(t => {
 ```
 
 Endpoint `GET /api/v1/mcp/tools` (admin+) retorna o catálogo completo com schemas para a UI Spec 12 §3 popular o checklist.
+
+No runtime interno dos agentes, `ai_agent_versions.followup.callback_enabled=false`
+remove `crm_schedule_followup` depois da seleção por `tool_ids`, para o
+Conversador e para o Operador. O filtro mantém `crm_list_followups`,
+`crm_cancel_followup`, `crm_enroll_followup_flow` e ferramentas de agendamento
+de compromisso. A superfície pública genérica `/api/mcp` não recebe política
+por-agente: ela continua obedecendo ao token e às permissões do seu chamador.
 
 ---
 

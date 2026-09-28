@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/test";
 
 import { irParaASemanaDoCompromisso } from "./helpers/agenda-semana-integra";
 
@@ -242,7 +242,7 @@ test.describe("o agente marca consulta", () => {
     await page.goto(`${APP_URL}/login`);
     await page.getByLabel(/e-?mail/i).fill(usuario.email);
     await page.getByLabel(/senha/i).fill(creds.password);
-    await page.getByRole("button", { name: /entrar/i }).click();
+    await page.getByRole("button", { name: "Entrar", exact: true }).click();
     // Timeout explícito: o padrão do Playwright é curto para um login que sobe sessão.
     await page.waitForURL(/\/app(\/|$)/, { timeout: 20_000 });
 

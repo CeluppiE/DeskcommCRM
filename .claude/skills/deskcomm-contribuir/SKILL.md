@@ -92,8 +92,13 @@ bash .agents/skills/deskcomm-contribuir/scripts/armar-hooks.sh
 ```
 
 Três guardas, e só isso: `pre-commit` reprova migration nova sem apêndice no `baseline.sql` e sem
-linha no `MANIFEST.md` no mesmo commit, e número (`NNNN`) ou timestamp já usado na `origin/main`
-ou em branch local; `pre-push` reprova push na `main`; e os dois avisam (sem bloquear) quando o
+linha no `MANIFEST.md` no mesmo commit, e número (`NNNN`) ou timestamp já usado na **população da
+pergunta** — a main do PRODUTO (o remoto que aponta para `melgarafael/DeskcommCRM`, com qualquer
+nome; num fork, a sua `origin/main` é a main do fork e não vale) mais `refs/heads` e `refs/remotes`.
+O que essa população não cobre são os PRs abertos, e a mensagem do hook diz isso e aponta
+`pnpm checar:colisao-de-migration`, que mede também eles. O `NNNN` sai da posição do nome canônico
+(`^[0-9]{14}_([0-9]{4})_`), e a regra está em `migration-populacao.sh`, na pasta `scripts/` da raiz do repositório (issue #1273);
+`pre-push` reprova push na `main`; e os dois avisam (sem bloquear) quando o
 commit está assinado como `root@…` ou sem e-mail — trabalho assinado assim não aparece no perfil
 do GitHub de quem fez. O mantenedor roda hooks próprios (`loop/hooks`); o script recusa
 sobrescrevê-los.
@@ -153,6 +158,29 @@ diga que a prova de tela ficou com o mantenedor — é o combinado público, nã
 
 Spec nova entra em `SPECS_PARTE_N` do `.github/workflows/e2e.yml` (ou em `FORA_DO_CI` com o
 motivo escrito); o teste `tests/unit/e2e-cobertura-completa.test.ts` reprova spec órfã.
+
+### Se o caminho passa por um agente de IA, meça o par
+
+Um caso de aceite que atravessa o agente **não se prova com o verde dele sozinho**. Todo caso de
+aceite que atravessa o agente **vem em par** com a medição direta da ferramenta, com o **mesmo texto
+cru**: pela tela, pelo agente; e pela ferramenta, chamada direto, fora do agente. Não é "além de" — é
+"junto de". **O par é a unidade**, e um lado sozinho não diz o que foi medido.
+
+As duas medições entram no PR, e o caso só conta como prova quando **as duas concordam**.
+
+```
+"quero 2 iphone 15"
+   pelo agente     -> "é o 128 ou o 256?"        VERDE  (e o verde era real)
+   pela ferramenta -> []                          VERMELHO
+```
+
+Quando os dois discordam, **o que você mediu foi o modelo**, não a ferramenta: o verde real media a
+capacidade do modelo de compensar a ferramenta, e o defeito continua onde estava. Foi assim que o
+defeito #476 passou por uma bateria que o esperava reprovar. A regra inteira, com o caso que a
+produziu: [`docs/doctrine/prova-em-par.md`](../../../docs/doctrine/prova-em-par.md).
+
+O par **não substitui** a prova pela tela — a tela segue sendo a única que pega prompt que não
+chama a tool e agente que escala em vez de atender.
 
 ## Passo 7 — o fragmento de release (não o CHANGELOG)
 

@@ -1,4 +1,4 @@
-<!-- traduzido-de: docs/white-label.md@e1d374bb48e0 -->
+<!-- traduzido-de: docs/white-label.md@6a25e768d53e -->
 
 [🇧🇷 Português](white-label.md) · 🇺🇸 English · [🇪🇸 Español](white-label.es.md)
 
@@ -17,6 +17,8 @@ The license is MIT: you may modify it, host it for third parties, resell it and 
 The color is **derived**, not applied raw: one hex yields eleven shades in both themes (light and dark), with a contrast floor computed per role and per surface. If the color you picked would be illegible as button text in the dark theme, the system walks the steps it needs and the screen **shows you** which shade each thing will land on, before you save. None of that "I picked yellow and the button turned white on white".
 
 **The logo too.** On the same screen you **upload the file** — PNG or JPG, up to 512 KB. It goes to your own installation's storage and takes effect right away, with no restart and without you hosting an image anywhere. Fixed height, free width, so that artwork of any proportion is not distorted; with no logo, the name shows up as text.
+
+**And the application and browser icon.** Below the logo, this field accepts a square PNG or JPG up to 512 KB, preferably 512×512 or larger. The same image identifies browser tabs, including login, and the installed app. The manifest supplies 192×192 and 512×512 PNGs, rendered from the bounded installation file in Storage; arbitrary URLs are never fetched. Without a valid file, the product symbol or brand initial remains. Removing the file restores that drawing. This is installation branding, not per-organization branding. Browsers may cache an existing installation; reinstall the app to check a new icon.
 
 The file is accepted **by its bytes, not by its extension**. Renaming an `.svg` to `.png` fools nothing: the system reads the content, refuses it and says why. This is not fussiness — SVG is XML and can carry script, which would run if someone opened the image directly by its address, in a bucket that is public by necessity.
 
@@ -165,7 +167,9 @@ If your client asks "where does my data live?", the dedicated installation has t
 
 **Resolution CD/ANPD nº 19/2024** made standard contractual clauses mandatory for **international transfers of personal data**, with the compliance deadline closing on **23 August 2025**.
 
-Every client of yours who uses a foreign CRM performs such a transfer and needs the contractual artifact. Hosting on a VPS in Brazil, **there is no international transfer** — and the obligation does not apply.
+Every client of yours who uses a foreign CRM performs such a transfer and needs the contractual artifact. Hosting on a VPS in Brazil, **the CRM itself transfers no data out of the country** — and, for the CRM, the obligation does not apply.
+
+⚠️ **The caveat is AI, and it applies to almost every installation.** The sentence above only holds while no foreign AI provider is switched on. Automated customer service sends the conversation to the provider the client connected (Anthropic, OpenAI, Google, DeepSeek or OpenRouter, all outside Brazil). Jev, once the administrator switches it on under AI › Providers, sends every message a customer writes to TypeSafe AI, in the United States, one at a time and without the rest of the conversation, after stripping CPF, phone number and email. Each Jev task has its own purpose — measuring the mood of the conversation, noticing attempts to manipulate the automated service and choosing which agent answers — and all of them use only that one message, on its own. To choose the agent, the intents the company itself registered in the router go along (the company's text, not the customer's). Those flows are international transfers, and the standard clauses apply to them. Jev ships switched off and asks for the administrator's consent before sending anything; the customer-service AI does not.
 
 ⚠️ **Do not sell this as "server in Brazil = LGPD compliance".** That is false, and a lawyer takes it apart on the first question: compliance depends on legal basis, purpose, security and data-subject rights. The correct and defensible argument is the one above: with no international transfer, there is no requirement for standard clauses.
 
@@ -200,3 +204,9 @@ Full installation guide: [`hostgator-setup-kit/README.md`](../hostgator-setup-ki
 *This document exists in three languages, and the prerequisite that the previous version of this footer named has been paid for: the translations carry, on their first line, a seal with the hash of the original, and editing `docs/white-label.md` without re-sealing fails `pnpm test:unit`. After translating, re-seal with `pnpm exec tsx scripts/selar-traducao.ts --todas`.*
 
 *The three READMEs were deliberately left **out** of the seal. They are the most edited file in the repository: with a seal, every fix would become a PR blocked until ~490 lines were re-translated twice — and the realistic outcome of that is not up-to-date translations, it is somebody re-sealing without translating, which is the only way for the seal to die. They come in when someone chooses to pay that cost with their eyes open.*
+
+## A logo for each theme
+
+In **Brand**, **Logo** remains the default image (light theme and email). **Logo for dark theme (optional)** accepts a second PNG or JPG image up to 512 KB, designed for dark backgrounds. It appears without a white frame in the sidebar, installation sign-in screen and preview. Without the second image, the default logo keeps its white protection in dark mode. Each image has its own removal control; removing the dark image restores the previous behavior.
+
+An organization that uploads its own default logo stops inheriting the installation’s dark image, preventing accidental mixing of brands. Without its own logos, it inherits the installation’s pair. Sign-in always uses the installation brand. [Compatibility and rollback](runbooks/logo-por-tema.md).

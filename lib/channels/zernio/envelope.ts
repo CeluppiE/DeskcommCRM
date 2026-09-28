@@ -68,7 +68,8 @@ export const zernioEnvelopeSchema = z.looseObject({
   account: z.looseObject({ id: texto, accountId: texto }).nullish(),
   conversation: z.looseObject({ participantId: texto, participantName: texto }).nullish(),
   template: z.looseObject({ name: texto, status: texto, reason: texto }).nullish(),
-  number: z.looseObject({ reason: texto }).nullish(),
+  /** `phoneNumber` decide se o evento de número é DESTA sessão (ver `zernioInbound`). */
+  number: z.looseObject({ reason: texto, phoneNumber: texto }).nullish(),
   /**
    * O `code` chega como NÚMERO no payload real (`"code": 131047`) e o leitor
    * trata as duas formas — medido nos logs de entrega, ver `explicacaoDoErro`.

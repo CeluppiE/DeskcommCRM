@@ -52,7 +52,10 @@ describe("endereço e observação existem na marcação e chegam ao compromisso
   });
 
   it("o detalhe lê e mostra o que foi gravado", () => {
-    expect(get).toMatch(/select\(\s*"id,title,description,location_kind,location_details,/);
+    // A anotação interna entrou na mesma leitura, ao lado da observação — a
+    // asserção é de FORMA do `select`, então ela acompanha a string. O que ela
+    // vigia continua igual: a rota lê `description` e o par de local.
+    expect(get).toMatch(/select\(\s*"id,title,description,notes,location_kind,location_details,/);
     expect(detalhe).toContain('data-testid="compromisso-local"');
     expect(detalhe).toContain('data-testid="compromisso-observacao"');
   });

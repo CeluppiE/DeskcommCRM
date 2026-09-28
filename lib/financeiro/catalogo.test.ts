@@ -85,6 +85,12 @@ describe("o mapa de entidades", () => {
     }
   });
 
+  it("a recorrência devolve a moeda — sem ela, a tela escreve o valor numa moeda fixa (#1531)", () => {
+    // `recurring_entries.currency` existe desde que a tabela nasceu; o que
+    // faltava era a coluna sair na resposta, e a tela caía em "BRL" fixo.
+    expect(COLUNAS_POR_ENTIDADE.recorrencias.split(", ")).toContain("currency");
+  });
+
   it("o guarda do path recusa nome de tabela cru", () => {
     // O path aceita `contas`, nunca `financial_accounts`: vocabulário de banco
     // na URL vaza o schema e amarra a API à tabela.

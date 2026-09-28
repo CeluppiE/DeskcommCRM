@@ -18,7 +18,7 @@ describe("cookieSecure — derivado do protocolo do app, não de NODE_ENV", () =
   });
 
   it("http → NÃO-Secure (self-host sem TLS — o caso da VPS em porta alta)", () => {
-    env.NEXT_PUBLIC_APP_URL = "http://129.121.45.100:18080";
+    env.NEXT_PUBLIC_APP_URL = "http://203.0.113.10:18080";
     expect(cookieSecure()).toBe(false);
   });
 

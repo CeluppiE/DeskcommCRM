@@ -71,13 +71,13 @@ export function useKnowledgeSources(opts?: { initialData?: SourceRow[] }) {
  * ## Por que isto tem `refetchInterval`
  *
  * A validação da chave com o provedor acontece EM SEGUNDO PLANO — `guardarCredencial`
- * responde assim que cifra e grava, e só depois confirma com a OpenAI. Entre os
+ * responde assim que cifra e grava, e só depois confirma com o provedor. Entre os
  * dois momentos a chave existe e ainda não é utilizável, então a tela continua
  * dizendo "falta uma chave" para quem acabou de colá-la. Medido na prova de
  * tela: a credencial estava no banco e validada, e a tela seguia mostrando o
  * aviso — só um F5 mudava.
  *
- * O intervalo é ligado APENAS nesse estado transitório: existe credencial OpenAI
+ * O intervalo é ligado APENAS nesse estado transitório: existe credencial de embedding
  * e ela ainda não serve. Fora dele o polling seria custo sem informação.
  */
 export function useEstadoDaChave(initial?: EstadoDaChave) {
@@ -90,7 +90,7 @@ export function useEstadoDaChave(initial?: EstadoDaChave) {
     refetchInterval: (query) => {
       const d = query.state.data;
       if (!d) return false;
-      const esperandoValidacao = !d.pode_indexar && d.credenciais_openai.length > 0;
+      const esperandoValidacao = !d.pode_indexar && d.credenciais_embedding.length > 0;
       return esperandoValidacao ? 2_000 : false;
     },
     ...(initial ? { initialData: initial } : {}),
@@ -111,6 +111,31 @@ export function useReindexSource() {
     },
     onSuccess: () => {
       toast.success(t("Vou preparar este material de novo — leva alguns instantes."));
+    },
+    onError: (err) => showApiError(err),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: sourcesQueryKey() });
+    },
+  });
+}
+
+export function useReindexAll() {
+  const t = useT();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: ["ai", "knowledge", "sources", "reindex-all"],
+    mutationFn: async () => {
+      const res = await apiClient.post<{
+        data: { total: number; prioridade1: number; prioridade2: number; emitidos: number };
+      }>("/api/v1/ai/knowledge/reindex-all", {});
+      return res.data;
+    },
+    onSuccess: (r) => {
+      toast.success(
+        r.total === 0
+          ? t("Não há material para reindexar.")
+          : t("Vou preparar o que falta e o que mudou; o material sem alteração é pulado."),
+      );
     },
     onError: (err) => showApiError(err),
     onSettled: () => {

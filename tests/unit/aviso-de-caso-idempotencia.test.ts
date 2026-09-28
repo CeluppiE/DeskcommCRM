@@ -110,6 +110,9 @@ function monta(existente: Record<string, unknown> | null) {
       async carregaCanal() {
         return { id: CANAL, status: "WORKING", archived_at: null, aceitaMensagemLivre: true } as never;
       },
+      async destinoEhDaPropriaOrganizacao() {
+        return false;
+      },
       async avisaNaCentral(e) {
         central.push(e as unknown as Record<string, unknown>);
       },

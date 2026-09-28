@@ -53,9 +53,10 @@ import {
   type ChannelSessionRef,
 } from "@/lib/channels";
 import { sincronizarSaudeDaConexao } from "@/lib/channels/health";
-import { env } from "@/lib/env";
+import { ehNomeDeSessaoE2E } from "@/lib/channels/sessoes-e2e";
 import { logger } from "@/lib/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { autorizaCron } from "@/lib/auth/cron-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -74,10 +75,7 @@ type LinhaDeSessao = ChannelSessionRef & {
 async function handle(req: NextRequest): Promise<Response> {
   const requestId = randomUUID();
 
-  const auth = req.headers.get("authorization") ?? "";
-  const provided = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length).trim() : "";
-  const accepted = [env.INTERNAL_CRON_SECRET, env.INTERNAL_SECRET].filter(Boolean);
-  if (accepted.length === 0 || !provided || !accepted.includes(provided)) {
+  if (!autorizaCron(req)) {
     return fail("forbidden", "Cron secret missing or invalid.", 403, { requestId });
   }
 
@@ -119,6 +117,23 @@ async function handle(req: NextRequest): Promise<Response> {
     }
 
     try {
+      // Sessão de teste não é conexão de ninguém (#1032): os seeds do e2e
+      // gravam em `channel_sessions` e nada apaga a linha, então ela continua
+      // aqui entre uma suíte e outra — parada, num status que abre aviso. A
+      // pergunta abaixo transformaria esse resíduo de teste em alarme
+      // permanente na Central de quem opera, e é o alarme que ninguém lê que
+      // faz o alarme verdadeiro deixar de ser lido.
+      //
+      // O nome vem do seam (`resolveSessionRef`), como no resto do vigia: a
+      // rota continua sem nomear coluna nem provedor, e a lista é a MESMA que a
+      // limpeza de fim de suíte apaga — uma segunda cópia envelheceria ao lado
+      // da primeira e passaria verde sozinha.
+      const sessionRef = resolveSessionRef(s);
+      if (ehNomeDeSessaoE2E(sessionRef)) {
+        ignoradas++;
+        continue;
+      }
+
       // Pergunta ao CANAL, não ao provider: quem tem sessão para consultar
       // implementa `checkHealth`; quem não tem simplesmente não o expõe, e o
       // vigia segue adiante sem nunca perguntar QUEM ele é — o invariante 1 da
@@ -132,7 +147,6 @@ async function handle(req: NextRequest): Promise<Response> {
       // TODOS os tenants seguintes daquela rodada ficavam sem vigia, e o
       // operador via 500 no cron sem nenhuma pista de qual linha o derrubou.
       const adapter = getAdapter((s.provider ?? DEFAULT_CHANNEL_PROVIDER) as ChannelProvider);
-      const sessionRef = resolveSessionRef(s);
       if (!adapter.checkHealth || !sessionRef) continue;
 
       const saude = await adapter.checkHealth({

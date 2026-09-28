@@ -39,6 +39,41 @@ describe("o texto do compromisso", () => {
     expect(es).toMatch(/compromiso/i);
   });
 
+  it("⛔ REMARCADO diz que mudou, em vez de repetir a mesma frase com outra data", () => {
+    // Mandar "está marcado para…" duas vezes, com datas diferentes e sem
+    // explicação, é pior que o silêncio: a pessoa não sabe qual vale, e a
+    // segunda parece erro do sistema.
+    const texto = textoDoCompromisso({
+      motivo: "remarcado",
+      startsAt: EM,
+      timeZone: "UTC",
+      url: "https://meet.google.com/abc-defg-hij",
+      idioma: "pt-BR",
+    });
+    expect(texto).toMatch(/mudou/i);
+    expect(texto).not.toMatch(/está marcada para/i);
+  });
+
+  it("⛔ remarcação SEM link também diz que mudou, e segue sem falar de link", () => {
+    const texto = textoDoCompromisso({
+      motivo: "remarcado",
+      startsAt: EM,
+      timeZone: "UTC",
+      url: null,
+      idioma: "pt-BR",
+    });
+    expect(texto).toMatch(/mudou/i);
+    expect(texto).not.toMatch(/link/i);
+  });
+
+  it("⛔ CONTROLE: sem motivo declarado, é o texto de sempre", () => {
+    // O padrão tem de ser o comportamento ANTIGO: toda entrega que já estava na
+    // fila quando isto entrou não declara motivo, e não pode virar "mudou".
+    const texto = textoDoCompromisso({ startsAt: EM, timeZone: "UTC", url: null, idioma: "pt-BR" });
+    expect(texto).not.toMatch(/mudou/i);
+    expect(texto).toMatch(/está marcado para/i);
+  });
+
   it("⛔ há UMA régua: `meetingDeliveryBody` delega em vez de repetir o molde", () => {
     // Duas réguas para o mesmo texto divergem na primeira mudança.
     const url = "https://meet.google.com/abc-defg-hij";

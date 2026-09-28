@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
 
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./helpers/test";
 
 /**
  * VOLTAR DO CONSENTIMENTO NÃO DESLOGA — e o teste segue o DESFECHO, não o header.
@@ -71,7 +71,7 @@ async function entrar(page: Page, creds: Creds) {
   await page.goto("/login");
   await page.getByLabel(/e-?mail/i).fill(usuario.email);
   await page.getByLabel(/senha/i).fill(creds.password);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app(\/|$)/, { timeout: 20_000 });
 }
 

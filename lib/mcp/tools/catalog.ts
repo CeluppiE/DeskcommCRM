@@ -27,4 +27,6 @@ export {
   VALID_TOOL_IDS,
   catalogEntry,
   declararTools,
+  deModuloDesligado,
+  deCapacidadeDesligada,
 } from "./catalogo";

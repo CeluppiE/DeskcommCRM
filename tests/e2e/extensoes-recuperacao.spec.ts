@@ -1,6 +1,6 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 
-import { expect as expectBase, test, type Page, type TestInfo } from "@playwright/test";
+import { expect as expectBase, test, type Page, type TestInfo } from "./helpers/test";
 
 import {
   criarAtoresDasExtensoes,
@@ -21,7 +21,7 @@ import {
 // verdadeira continua passando na hora.
 const expect = expectBase.configure({ timeout: 20_000 });
 
-const EVIDENCE = ".superpowers/evidence/extensoes-integracao/e2e/recuperacao";
+const EVIDENCE = "evidence/extensoes-integracao/e2e/recuperacao";
 const CAPTURES = [
   "recuperacao-dark.png",
   "recuperacao-es-fallback.png",
@@ -39,7 +39,7 @@ async function login(page: Page, email: string, senha: string): Promise<void> {
   await page.goto("/login");
   await page.getByLabel(/e-?mail/i).fill(email);
   await page.getByLabel(/senha/i).fill(senha);
-  await page.getByRole("button", { name: /entrar/i }).click();
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page.waitForURL(/\/app(?:\/|$)/, { timeout: 60_000 });
 }
 

@@ -14,7 +14,7 @@ describe("whatsappIdFromCheckResult", () => {
       whatsappIdFromCheckResult({
         numberExists: true,
         pn: "553198966398@c.us",
-        chatId: "70192801575156@lid",
+        chatId: "100000000000001@lid",
       }),
     ).toBe("553198966398");
   });

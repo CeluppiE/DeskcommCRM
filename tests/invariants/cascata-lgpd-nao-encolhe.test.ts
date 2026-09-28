@@ -48,6 +48,15 @@ import { sql } from "./psql-transporte";
  * tabela está aqui" é a pergunta que a próxima entrega vai fazer.
  */
 const TABELAS_NA_CASCATA = [
+  // 0375/0376 — `rendered_body` é a MENSAGEM que a pessoa recebeu e
+  // `recipient_address` o telefone para onde foi. A LINHA fica (é a prova de
+  // que ela esteve na campanha, e apagá-la desfaria a contagem de quem
+  // recebeu); o conteúdo sai.
+  "campaign_recipients",
+  // 0376 — a cauda do telefone e o motivo. O HASH do endereço PERMANECE: é
+  // ele que faz o "não me mande mais" continuar valendo depois da
+  // anonimização — apagá-lo faria a pessoa voltar a receber campanha.
+  "campaign_suppressions",
   "agent_case_chat_messages", // 0281 — o `body` da consulta interna da equipe sobre o caso
   "agent_case_events", //  0280 — body/metadata da linha do tempo do caso
   "agent_cases", //        0280 — title/summary/blocker/context_snapshot
@@ -56,6 +65,10 @@ const TABELAS_NA_CASCATA = [
   "conversations", //      0019 — metadata e prévia da última mensagem
   "crm_lead_activities", //0071 — payload, metadata e `reason` escrito por LLM
   "crm_leads", //          0019 — título, descrição, campos personalizados, tags
+  // 0477 — destinatario_nome (nome impresso no PDF), briefing_json e
+  // resumo_comercial. O número, os valores, os itens, as datas e o status
+  // FICAM: é o documento comercial que a organização precisa poder auditar.
+  "crm_proposals",
   "demandas", //           0280 — o assunto do pedido
   // 0292 — `erro_detalhe` do registro de entrega do aviso: é o texto CRU que o
   // transporte devolveu, e um provedor que recusa um envio costuma devolver o

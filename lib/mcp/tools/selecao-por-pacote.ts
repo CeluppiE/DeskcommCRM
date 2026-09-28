@@ -43,8 +43,7 @@ import { entraPorPacote, type ToolBundle, type ToolRisk } from "./pacotes";
  *    default de hoje NENHUM segundo pacote cabia: evoluir exigia 21, reter 22,
  *    escalar 28, atender 30, organizar 32.
  *
- * 25 é o MENOR passo que resolve: dá a um agente cheio as 5 vagas da família de
- * agenda e mantém `vender` inteiro com folga real. Não é número redondo
+ * 25 ERA o MENOR passo que resolvia naquele catálogo. Não é número redondo
  * escolhido no olho — subir mais seria apostar contra um argumento que continua
  * de pé só porque ninguém o mediu.
  *
@@ -52,8 +51,36 @@ import { entraPorPacote, type ToolBundle, type ToolRisk } from "./pacotes";
  * degradação que a heurística prevê. O lugar de observá-la é
  * `app/api/v1/ai/agents/[id]/tool-usage` e o log de invocação do run, com
  * "ferramenta errada escolhida" como sinal. Quem for subir de novo mede antes.
+ *
+ * ═══ 25 → 27: a proposta comercial entrou no pacote `vender` ═══════════════════
+ *
+ * Duas capacidades de proposta comercial (`crm_draft_proposal` e
+ * `crm_preparar_proposta`) entraram no pacote `vender`, e a régua de "menor passo
+ * que resolve" foi medida de novo a partir do agente que NASCE — o `vender`
+ * inteiro, que é o default do onboarding (`lib/ai/agents/capacidades-padrao.ts`).
+ *
+ * O que a medição diz agora (catálogo 68 → 70, default 20 → 22 capacidades):
+ *
+ *  - NO TETO 25 NENHUM segundo pacote cabe mais. O menor passou a exigir 27:
+ *    evoluir 27, reter 30, escalar 34, atender 35, organizar 41. Antes da
+ *    proposta comercial o menor era o `evoluir` com 25 exatas — era por ele que
+ *    25 tinha sido escolhido;
+ *  - `vender` sozinho passou a exigir 24 vagas (22 automáticas + 2 críticas), e o
+ *    default do onboarding já é o `vender` inteiro — a jornada com que todo
+ *    agente nasce. No teto 25 a folga que sobra depois de ligar `vender` cai de
+ *    3 vagas para 1. Eram 3 as que o teto 25 existia para deixar, e a proposta
+ *    comercial comeu uma por capacidade.
+ *
+ * 27 é de novo o MENOR passo que resolve, um degrau adiante e por um degrau:
+ * cada capacidade nova que entra no `vender` consome uma vaga de folga. Passar
+ * de 27 deixa de ser restaurar a mesma folga e vira escolher QUAL pacote ganha a
+ * vaga — duas perguntas diferentes. Subir até 35 daria quatro das cinco jornadas
+ * como segundo pacote; até 41 daria todas, e as duas escolhas são contra um
+ * argumento (a heurística de degradação) que ninguém mediu, que é exatamente o
+ * que o bloco ⚠️ acima diz. O dia em que o `evoluir` exigir 28, o passo volta a
+ * ser ele.
  */
-export const TETO_TOOLS_POR_AGENTE = 25;
+export const TETO_TOOLS_POR_AGENTE = 27;
 
 /** O mínimo que a regra precisa saber de uma capacidade. */
 export interface CapacidadeSelecionavel {

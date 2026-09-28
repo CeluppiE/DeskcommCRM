@@ -3,6 +3,7 @@ import { loadEnv } from '../env';
 import { crmEdgeConfigFromEnv } from '../edge/crm/mcp-client';
 import { llmEdgeConfigFromEnv } from '../edge/llm/run-model-call';
 import { createLogger } from '../obs/logger';
+import { urlDoSupabaseNoServidor } from '@/lib/supabase/url-do-servidor';
 import { turnKnobsFromEnv } from './turn-knobs';
 import type { InboundTurnDeps } from './inbound-turn';
 export function requestTurnDeps(): InboundTurnDeps {
@@ -22,7 +23,10 @@ export function requestTurnDeps(): InboundTurnDeps {
         }
       : {}),
     crmCfg: crmEdgeConfigFromEnv({
-      SUPABASE_URL: env.NEXT_PUBLIC_SUPABASE_URL,
+      SUPABASE_URL: urlDoSupabaseNoServidor(
+        env.SUPABASE_SERVER_URL,
+        env.NEXT_PUBLIC_SUPABASE_URL,
+      ),
       SUPABASE_SERVICE_ROLE_KEY: env.SUPABASE_SERVICE_ROLE_KEY,
     }),
     llmCfg,
