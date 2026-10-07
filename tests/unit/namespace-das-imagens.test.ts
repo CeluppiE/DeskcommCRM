@@ -408,6 +408,16 @@ describe("catraca: ninguém mais repete o namespace", () => {
       // árvores do repo, com o gate delas próprio.
       "evidence",
       ".claude",
+      // Fragmentos de `git format-patch` que o `sync-upstream.sh` reaplica a
+      // cada sincronização com o upstream (ver `docs/DIVERGENCIA-DO-FORK.md`).
+      // Um deles É a mudança de namespace — o diff carrega o literal porque
+      // REGISTRA o que foi escrito em `hostgator-setup-kit/_common.sh`, não
+      // porque alguém escreveu o namespace à mão aqui. Mesma lógica de
+      // `promessas-reais.json` acima, mas por diretório: o nome de cada
+      // arquivo muda a cada sync (o assunto do commit vira o nome do patch),
+      // então uma entrada exata em `PERMITIDO` ficaria obsoleta no ciclo
+      // seguinte.
+      "fork-patches",
     ].map((d) => `--exclude-dir=${d}`);
     // `.bak`/`.orig`/`.rej`/`~` são sobra de editor e de `sed -i.bak`. Sem isto,
     // uma sabotagem local deixa o gate vermelho pelo motivo errado.
