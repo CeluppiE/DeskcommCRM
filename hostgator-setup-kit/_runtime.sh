@@ -21,7 +21,12 @@ runtime_service() { # role; all strings emitted below are validated or escaped
         version="$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" 2>/dev/null | sed -n 's/^APP_VERSION=//p')" || version=""
         # APP_VERSION only locates a release. The tag must come from origin,
         # and its commit must really be an ancestor of the image's revision.
-        if [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$revision" =~ ^[a-f0-9]{40,64}$ ]] && [ "$RUNTIME_TAGS_OK" = true ]; then
+        #
+        # Fork (fork-patches/0005): this fork publishes `vX.Y.Z-aN`, not plain
+        # `vX.Y.Z`. Without `(-a[0-9]+)?` here, $base never resolves on a fork
+        # install, source_verified is always false, and the self-update screen
+        # reports "não confirmado"/"não deu certo" on every single release.
+        if [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-a[0-9]+)?$ ]] && [[ "$revision" =~ ^[a-f0-9]{40,64}$ ]] && [ "$RUNTIME_TAGS_OK" = true ]; then
           base="$(git rev-parse --verify "refs/deskcomm-runtime-tags/v${version#v}^{commit}" 2>/dev/null)" || base=""
           if [[ "$base" =~ ^[a-f0-9]{40,64}$ ]] && git merge-base --is-ancestor "$base" "$revision" 2>/dev/null; then verified=true; fi
         fi
@@ -32,7 +37,7 @@ runtime_service() { # role; all strings emitted below are validated or escaped
   [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]] || image=""
   [[ "$revision" =~ ^[a-f0-9]{40,64}$ ]] || revision=""
   [[ "$base" =~ ^[a-f0-9]{40,64}$ ]] || base=""
-  [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || version=""
+  [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-a[0-9]+)?$ ]] || version=""
   [ "$running" = true ] || running=false
   if [ "$verified" != true ] || [ "$running" != true ] || [ "$healthy" != true ]; then RUNTIME_CONFIRMED=false; fi
   RUNTIME_SELECTIONS="${RUNTIME_SELECTIONS}${role}:${ids}"$'\n'
@@ -56,7 +61,7 @@ collect_runtime_confirmation() {
   # An isolated ref namespace: no checkout, existing tags or branches change.
   git fetch --quiet origin '+refs/tags/v*:refs/deskcomm-runtime-tags/v*' 2>/dev/null && RUNTIME_TAGS_OK=true
   local role services="" issues="" voice_ids published="${LATEST_TAG:-}"
-  [[ "$published" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || published=""
+  [[ "$published" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-a[0-9]+)?$ ]] || published=""
   for role in app worker scheduler; do
     runtime_service "$role"
     services="${services}${services:+,}${RUNTIME_SERVICE}"
