@@ -4,7 +4,13 @@ import { z } from "zod";
 export const RUNTIME_MAX_AGE_MS = 15 * 60_000;
 const sha = z.string().regex(/^[a-f0-9]{40,64}$/);
 const imageId = z.string().regex(/^sha256:[a-f0-9]{64}$/);
-const release = z.string().regex(/^v?\d+\.\d+\.\d+$/);
+// Fork: toda release daqui sai como `vX.Y.Z-aN` (o patch do fork em cima
+// do upstream — ver DIVERGENCIA-DO-FORK.md). Sem o `(-a\d+)?` aqui, nenhuma
+// instalação deste fork jamais confirma a própria identidade: a release NUNCA
+// casa com `vX.Y.Z` puro, `base_revision` nunca é resolvido, e a tela/rodapé
+// mostram "não confirmado" pra sempre — inclusive pros clientes de quem
+// revende o fork, que não têm como agir sobre isso.
+const release = z.string().regex(/^v?\d+\.\d+\.\d+(-a\d+)?$/);
 
 export const runtimeConfirmationSchema = z.object({
   schema: z.literal(1),
