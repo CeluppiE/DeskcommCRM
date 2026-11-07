@@ -1,0 +1,117 @@
+From b80da879777c1737ac79ea3b8311ddbe9d487e47 Mon Sep 17 00:00:00 2001
+From: Eduardo Celuppi <joseceluppieduardo@gmail.com>
+Date: Mon, 21 Sep 2026 18:06:46 +0000
+Subject: [PATCH 2/4] fix(hostgator-setup-kit): usar o namespace do nosso fork
+ no registry de imagens
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+O toolkit herdado do repositório original (melgarafael/DeskcommCRM) tinha o
+namespace do GHCR cravado em ghcr.io/melgarafael em três lugares: IMG_NS em
+_common.sh (a fonte única lida pelos testes do kit), as tags `image:` em
+docker-compose.prod.yml e os defaults em .env.hostgator.example.
+
+Isso fazia o update.sh puxar (ou tentar buildar) a imagem do registry do
+projeto original mesmo com o remote git da VPS já apontando para o nosso
+fork (CeluppiE/DeskcommCRM) — dois mecanismos independentes: de onde vem o
+código (git) e de onde vem a imagem já publicada (registry). Foi a causa
+raiz de :stable ficar parado e de um bug de produção (risk_agenda_indisponivel)
+ficar preso atrás disso.
+
+NÃO altera NAMESPACE_DESTE_REPO (tests/unit/_identidade-deste-repo.ts),
+install.sh, comecar.sh nem os 3 Dockerfiles — esses continuam ancorados no
+projeto original de propósito, e editar isso isoladamente foi exatamente o
+erro cometido na PR #1130 do repositório original. Escopo validado
+empiricamente simulando o CI real do fork (GITHUB_ACTIONS=true
+GITHUB_REPOSITORY_OWNER=CeluppiE): os testes de guarda deferem corretamente
+sem tocar nesses arquivos.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GHLJEtkhhxdqocnuGKhpe5
+---
+ .env.hostgator.example         | 6 +++---
+ docker-compose.prod.yml        | 8 ++++----
+ hostgator-setup-kit/_common.sh | 2 +-
+ 3 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/.env.hostgator.example b/.env.hostgator.example
+index 805a7ce69..a9910ba91 100644
+--- a/.env.hostgator.example
++++ b/.env.hostgator.example
+@@ -29,16 +29,16 @@
+ # última release). O install.sh sobrescreve com o NÚMERO da versão, que é o que
+ # uma instalação de verdade usa — ver a regra de ouro na doutrina.
+ # troque pelo seu fork se publicar o seu
+-APP_IMAGE=ghcr.io/melgarafael/deskcommcrm:stable
++APP_IMAGE=ghcr.io/celuppie/deskcommcrm:stable
+ APP_PULL_POLICY=always
+ 
+ # O worker (agente de IA 24/7) e o scheduler (crons) acompanham a versão do app.
+ # Até 2026-08-13 eles não tinham imagem: eram compilados na sua VPS no install e
+ # nenhum update.sh jamais os reconstruía — o agente ficava congelado no código
+ # do dia da instalação. Deixe-os na mesma versão do APP_IMAGE acima.
+-WORKER_IMAGE=ghcr.io/melgarafael/deskcomm-worker:stable
++WORKER_IMAGE=ghcr.io/celuppie/deskcomm-worker:stable
+ WORKER_PULL_POLICY=always
+-SCHEDULER_IMAGE=ghcr.io/melgarafael/deskcomm-scheduler:stable
++SCHEDULER_IMAGE=ghcr.io/celuppie/deskcomm-scheduler:stable
+ SCHEDULER_PULL_POLICY=always
+ 
+ # ── Chamada de voz WhatsApp (spec 18) — DESLIGADA, e é assim que ela nasce ────
+diff --git a/docker-compose.prod.yml b/docker-compose.prod.yml
+index 001a75202..97d51f98a 100644
+--- a/docker-compose.prod.yml
++++ b/docker-compose.prod.yml
+@@ -32,7 +32,7 @@ services:
+     # default é quem NÃO tem APP_IMAGE no .env — avaliação, ou um .env que
+     # perdeu a chave. Nenhum desses casos quer código não lançado; quem quiser o
+     # topo da main pede `APP_IMAGE=…:latest` explicitamente.
+-    image: ${APP_IMAGE:-ghcr.io/melgarafael/deskcommcrm:stable}
++    image: ${APP_IMAGE:-ghcr.io/celuppie/deskcommcrm:stable}
+     pull_policy: ${APP_PULL_POLICY:-always}
+     restart: unless-stopped
+     env_file: .env
+@@ -91,7 +91,7 @@ services:
+     # default): o app pinado numa release e o runtime do agente de
+     # IA rodando código não lançado, sobre o banco da release. `:stable` é a
+     # última release publicada — pareia com o app em vez de correr na frente.
+-    image: ${WORKER_IMAGE:-ghcr.io/melgarafael/deskcomm-worker:stable}
++    image: ${WORKER_IMAGE:-ghcr.io/celuppie/deskcomm-worker:stable}
+     pull_policy: ${WORKER_PULL_POLICY:-always}
+     build:
+       context: .
+@@ -214,7 +214,7 @@ services:
+     # serviço `restart: unless-stopped`, isso significa que o cron do cliente só
+     # voltava se a VPS tivesse internet e o mirror do Alpine estivesse de pé,
+     # justamente no momento em que a máquina está se recuperando de algo.
+-    image: ${SCHEDULER_IMAGE:-ghcr.io/melgarafael/deskcomm-scheduler:stable}
++    image: ${SCHEDULER_IMAGE:-ghcr.io/celuppie/deskcomm-scheduler:stable}
+     pull_policy: ${SCHEDULER_PULL_POLICY:-always}
+     build:
+       context: .
+@@ -381,7 +381,7 @@ services:
+   voice-agent:
+     profiles: ["telefonia"]
+     mem_limit: 512m
+-    image: ${VOICE_AGENT_IMAGE:-ghcr.io/melgarafael/deskcomm-voice-agent:stable}
++    image: ${VOICE_AGENT_IMAGE:-ghcr.io/celuppie/deskcomm-voice-agent:stable}
+     pull_policy: ${VOICE_AGENT_PULL_POLICY:-always}
+     build:
+       context: .
+diff --git a/hostgator-setup-kit/_common.sh b/hostgator-setup-kit/_common.sh
+index cb16022ee..54531aa7c 100755
+--- a/hostgator-setup-kit/_common.sh
++++ b/hostgator-setup-kit/_common.sh
+@@ -1768,7 +1768,7 @@ ler_rodada_do_banco() {
+ # `publish-image.yml` digam o mesmo. Se você é um fork, é lá que está a lista do
+ # que trocar junto — e, desde 18/09/2026, o CI do SEU fork não cobra este valor:
+ # a asserção só vale quando o dono do runner é o dono deste repositório.
+-IMG_NS="ghcr.io/melgarafael"
++IMG_NS="ghcr.io/celuppie"
+ IMG_APP="${IMG_NS}/deskcommcrm"
+ IMG_WORKER="${IMG_NS}/deskcomm-worker"
+ IMG_SCHEDULER="${IMG_NS}/deskcomm-scheduler"
+-- 
+2.34.1
+
