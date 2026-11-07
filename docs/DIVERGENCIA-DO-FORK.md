@@ -22,12 +22,12 @@ git diff "$BASE" origin/main --stat
 Se a lista de arquivos que sair daí for diferente da tabela abaixo, **esta tabela está velha** —
 atualize-a (e esta nota), não o contrário.
 
-## O que é realmente nosso hoje (2 mudanças: fix da agenda + namespace de imagem)
+## O que é realmente nosso hoje (2 mudanças: namespace de imagem + identidade de versão)
 
 | # | O quê | Arquivo(s) | Por quê ainda existe |
 |---|---|---|---|
-| 1 | **Fix da agenda** | `lib/agenda/protecao-followup.ts` | `.in("contact_id", ...)` sem teto estoura o limite de URL do PostgREST em org com muitos leads abertos. Upstream **ainda não corrigiu** (confirmado contra o HEAD do upstream em 2026-10-06). Já causou incidente real em produção (`risk_agenda_indisponivel`). **Não descartar.** |
-| 2 | **Namespace próprio da imagem Docker** | `.env.hostgator.example`, `docker-compose.prod.yml`, `hostgator-setup-kit/_common.sh` | `IMG_NS="ghcr.io/celuppie"` + os defaults `*_IMAGE` (app/worker/scheduler/voice-agent) apontando pro nosso registry, porque o fork publica as próprias imagens. **Nunca** vira PR — é identidade do fork, não melhoria do produto. |
+| 1 | **Namespace próprio da imagem Docker** | `.env.hostgator.example`, `docker-compose.prod.yml`, `hostgator-setup-kit/_common.sh` | `IMG_NS="ghcr.io/celuppie"` + os defaults `*_IMAGE` (app/worker/scheduler/voice-agent) apontando pro nosso registry, porque o fork publica as próprias imagens. **Nunca** vira PR — é identidade do fork, não melhoria do produto. |
+| 2 | **Identidade de versão aceita sufixo `-aN`** | `hostgator-setup-kit/_runtime.sh`, `lib/system/runtime-identity.ts` | O regex de versão só casava `vX.Y.Z` puro; toda release deste fork sai como `vX.Y.Z-aN`, então a verificação de identidade em execução nunca confirmava a própria versão — "não confirmado" pra sempre, inclusive pros clientes do white-label que não têm como agir nisso. **Nunca** vira PR — o sufixo `-aN` só existe neste fork. |
 
 ### Nota desta rodada — 2026-10-06 (redução a 2 mudanças)
 
@@ -45,6 +45,31 @@ esse passo precisa de **~16 GB de RAM** (runner público), que nem a máquina Wi
 ambiente de nuvem usado (7,8 GB) têm. Fica a cargo do **CI do fork no GitHub Actions**, que é o ambiente
 dimensionado pra isso.
 
+### Nota desta rodada — 2026-11-07 (fix da agenda aposentado; identidade de versão documentada)
+
+O **fix da agenda** (item 1 da tabela até esta rodada) foi **retirado** de `fork-patches/` — o
+upstream resolveu o mesmo bug sozinho, na v1.103.0 (commit `5b20efae8`, PR #4124), com uma
+implementação melhor que a nossa: lotes em paralelo (4 por vez) e isolamento de falha por lote (um
+lote que falha só adia os contatos **daquele** lote, não todo mundo — a nossa versão ainda carregava
+esse risco, só numa escala menor). Ver a entrada nova em "Já absorvido pelo upstream" abaixo.
+
+Também ficou registrado aqui pela primeira vez o patch de **identidade de versão**
+(`fork-patches/0005`, criado em 2026-11-03, nunca documentado neste arquivo até agora): sem ele,
+nenhuma instalação deste fork confirma a própria versão em execução, porque o regex de runtime só
+aceitava `vX.Y.Z` e toda release do fork sai como `vX.Y.Z-aN`.
+
+Com isso, a tabela continua com **2 mudanças reais** — não por coincidência de contagem, mas porque
+uma saiu (agenda) e uma que já existia só não estava documentada (identidade de versão) entrou.
+
+> **Nota operacional desta rodada**: a primeira tentativa de registrar esta mudança (commit
+> `0067617`) editou este arquivo direto em `main`, sem regenerar a patch `0003` que o recria do
+> zero a cada sync — o `sync-upstream.sh sync --yes` seguinte sobrescreveu a edição silenciosamente,
+> porque `main` é descartável por design (é reconstruído a partir da tag do upstream + patches, não
+> editado em cima). A correção virou a patch `fork-patches/0006` abaixo, deste commit em diante:
+> **qualquer edição de conteúdo neste arquivo (ou em qualquer arquivo só nosso) precisa virar uma
+> patch nova em `fork-patches/`, nunca só um commit direto em `main`** — senão o próximo sync apaga
+> a edição sem avisar.
+
 ## Já absorvido pelo upstream — não reaplicar
 
 - **Kanban/board em lotes** (`34f7e6dcb`, `4986930c9`) — o `app/api/v1/pipelines/[id]/board/route.ts`
@@ -52,6 +77,12 @@ dimensionado pra isso.
   `lib/supabase/em-lotes.ts`). Zero diff no arquivo de produção contra o upstream atual.
   Sobrou só `tests/unit/consultas-do-quadro-em-lotes.test.ts`, que duplica a cobertura do
   próprio teste do upstream — pode apagar.
+- **Fix da agenda em lotes** (era `fork-patches/0001`) — o upstream corrigiu o mesmo bug na v1.103.0
+  (commit `5b20efae8`, PR #4124: "a proteção de agenda lê os contatos em lotes, não num `.in()` só").
+  A versão deles usa a mesma constante compartilhada `IDS_POR_LOTE` de `lib/supabase/em-lotes.ts` e vai
+  além do nosso patch: lotes em paralelo e isolamento de falha por lote. Confirmado arquivo a arquivo
+  contra `v1.99.0..v1.103.0` (`git diff v1.99.0 origin/main --stat`): nenhuma outra mudança nossa foi
+  afetada.
 
 ## Baixo valor, pode descartar sem dor
 
@@ -73,7 +104,7 @@ dimensionado pra isso.
 ## Falhas conhecidas — não corrigir
 
 - **`tests/unit/namespace-das-imagens.test.ts` falha LOCALMENTE por design.** O teste exige
-  `IMG_NS == ghcr.io/melgarafael`; o fork usa `ghcr.io/celuppie` de propósito (item 2 da tabela).
+  `IMG_NS == ghcr.io/melgarafael`; o fork usa `ghcr.io/celuppie` de propósito (item 1 da tabela).
   **Decisão (2026-10-06): NÃO trocar o anchor `NAMESPACE_DESTE_REPO`.** Ele é a fonte única de onde
   `DONO_DESTE_REPO` deriva (`tests/unit/_identidade-deste-repo.ts`); trocá-lo para `ghcr.io/celuppie`
   puxaria o caso de **URL de clone** (sem skip) a exigir `github.com/celuppie/DeskcommCRM` em **6
@@ -85,10 +116,16 @@ dimensionado pra isso.
 
 ## Próxima sincronização (passo a passo, sem surpresa)
 
+> Hoje os passos 1–3 são automatizados por `scripts/sync-upstream.sh sync` — os passos abaixo
+> continuam valendo como checklist conceitual, e o passo 4 ele não faz sozinho: precisa de alguém
+> olhando cada item da tabela contra o changelog do upstream. **E qualquer edição de CONTEÚDO num
+> arquivo que uma patch recria (como este doc) precisa virar patch nova — ver a nota operacional
+> acima.**
+
 1. Rode o comando do topo deste arquivo pra achar o diff real atual — não assuma que a tabela
    acima ainda vale.
 2. Reset `main` pro `upstream/main` atual (ou pro ponto que a equipe decidir).
-3. Reaplique só os itens 1–2 da tabela (o fix da agenda primeiro — é o que mais importa).
-4. Confirme de novo se o upstream não corrigiu o item 1 por outro caminho antes de reaplicar às
-   cegas.
+3. Reaplique os itens que ainda sobrarem na tabela.
+4. Confirme de novo, pra CADA item, se o upstream não absorveu ele por outro caminho antes de
+   reaplicar às cegas — foi exatamente isso que aconteceu com o fix da agenda nesta rodada.
 5. Rode a verificação do Definition of Done (`CLAUDE.md`) antes de dar push.
