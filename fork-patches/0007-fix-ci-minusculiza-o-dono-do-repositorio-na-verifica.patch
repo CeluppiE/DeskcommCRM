@@ -1,0 +1,35 @@
+From 466c040643a1b7d0448a3f1af2ed599af14e2aca Mon Sep 17 00:00:00 2001
+From: CeluppiE <joseceluppieduardo@gmail.com>
+Date: Wed, 25 Nov 2026 18:29:19 -0300
+Subject: [PATCH] fix(ci): minusculiza o dono do repositorio na verificacao de
+ BUILD_ID
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .github/workflows/publish-image.yml | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/.github/workflows/publish-image.yml b/.github/workflows/publish-image.yml
+index 04385c339..82935b20d 100644
+--- a/.github/workflows/publish-image.yml
++++ b/.github/workflows/publish-image.yml
+@@ -329,8 +329,15 @@ jobs:
+           set -euo pipefail
+           # Pelo DIGEST: é exatamente o byte que este job empurrou, não uma tag que
+           # outro run pode ter movido entretanto.
++          #
++          # O dono do repositório entra em minúsculas: o GHCR exige referência de
++          # imagem toda em lowercase, e forks com usuário de maiúscula (como
++          # CeluppiE) quebravam aqui mesmo com a imagem publicada certa (o
++          # docker/metadata-action já faz esse lowercase sozinho nas tags; este
++          # passo monta a referência à mão e precisa do mesmo tratamento).
++          dono_minusculo=$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+           bash scripts/verifica-build-id.sh \
+-            "${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.name }}@${{ steps.build.outputs.digest }}"
++            "${{ env.REGISTRY }}/${dono_minusculo}/${{ matrix.name }}@${{ steps.build.outputs.digest }}"
+ 
+   juntar-manifestos:
+     needs: [build-and-push]
+-- 
+2.55.0.windows.3
+
