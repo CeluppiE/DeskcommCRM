@@ -22,12 +22,14 @@ git diff "$BASE" origin/main --stat
 Se a lista de arquivos que sair daí for diferente da tabela abaixo, **esta tabela está velha** —
 atualize-a (e esta nota), não o contrário.
 
-## O que é realmente nosso hoje (2 mudanças: namespace de imagem + identidade de versão)
+## O que é realmente nosso hoje (4 mudanças: namespace de imagem + identidade de versão (sufixo `-aN`) + exclusão de teste de namespace + BUILD_ID no CI)
 
 | # | O quê | Arquivo(s) | Por quê ainda existe |
 |---|---|---|---|
 | 1 | **Namespace próprio da imagem Docker** | `.env.hostgator.example`, `docker-compose.prod.yml`, `hostgator-setup-kit/_common.sh` | `IMG_NS="ghcr.io/celuppie"` + os defaults `*_IMAGE` (app/worker/scheduler/voice-agent) apontando pro nosso registry, porque o fork publica as próprias imagens. **Nunca** vira PR — é identidade do fork, não melhoria do produto. |
 | 2 | **Identidade de versão aceita sufixo `-aN`** | `hostgator-setup-kit/_runtime.sh`, `lib/system/runtime-identity.ts` | O regex de versão só casava `vX.Y.Z` puro; toda release deste fork sai como `vX.Y.Z-aN`, então a verificação de identidade em execução nunca confirmava a própria versão — "não confirmado" pra sempre, inclusive pros clientes do white-label que não têm como agir nisso. **Nunca** vira PR — o sufixo `-aN` só existe neste fork. |
+| 3 | **Exclusão de `fork-patches/` da catraca de namespace** | `tests/unit/namespace-das-imagens.test.ts` | `fix(tests)` (`fork-patches/0004`): os fragmentos de `git format-patch` que o `sync-upstream.sh` reaplica a cada sincronização registram texto já escrito em outro lugar — um deles **é** a mudança de namespace do item 1 — e não escrevem o literal à mão. Sem a exclusão, a catraca acusava o próprio diretório de patches. Mesmo motivo pelo qual o teste já exclui `docs/` e `evidence/`: artefato e prosa, não código que executa. **Nunca** vira PR — `fork-patches/` só existe neste fork. |
+| 4 | **Dono do repositório em minúsculas na verificação de BUILD_ID** | `.github/workflows/publish-image.yml` | `fix(ci)`: o passo "O BUILD_ID do servidor bate com o de .next/static?" do job `build-and-push` montava a referência da imagem à mão com `github.repository_owner` cru, e o GHCR exige referência toda em lowercase — forks com usuário em maiúscula (como `CeluppiE`) falhavam nessa checagem mesmo com a imagem publicada corretamente. O `docker/metadata-action` já minusculiza as tags sozinho; este passo agora faz o mesmo com `tr '[:upper:]' '[:lower:]'`. No upstream (`melgarafael`, já minúsculo) o efeito é nulo — candidato a PR, ao contrário dos itens 1, 2 e 3. |
 
 ### Nota desta rodada — 2026-10-06 (redução a 2 mudanças)
 
