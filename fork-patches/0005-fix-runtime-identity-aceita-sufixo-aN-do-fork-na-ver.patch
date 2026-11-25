@@ -1,0 +1,77 @@
+From 2e6b8e21eea7002572b358b94aeeca113b4307be Mon Sep 17 00:00:00 2001
+From: CeluppiE <joseceluppieduardo@gmail.com>
+Date: Tue, 3 Nov 2026 16:34:08 +0000
+Subject: [PATCH] =?UTF-8?q?fix(runtime-identity):=20aceita=20sufixo=20-aN?=
+ =?UTF-8?q?=20do=20fork=20na=20verifica=C3=A7=C3=A3o=20de=20vers=C3=A3o?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+O regex de versão só casava vX.Y.Z puro. Como toda release deste fork
+sai como vX.Y.Z-aN, a verificação de identidade em execução nunca
+confirmava: base_revision nunca era resolvido, e a tela/rodapé de
+atualização mostravam "não confirmado" para sempre — inclusive para
+quem não tem como agir sobre isso (clientes do white-label).
+---
+ hostgator-setup-kit/_runtime.sh | 11 ++++++++---
+ lib/system/runtime-identity.ts  |  8 +++++++-
+ 2 files changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/hostgator-setup-kit/_runtime.sh b/hostgator-setup-kit/_runtime.sh
+index fe8a3fb74..5eeed3a7a 100644
+--- a/hostgator-setup-kit/_runtime.sh
++++ b/hostgator-setup-kit/_runtime.sh
+@@ -21,7 +21,12 @@ runtime_service() { # role; all strings emitted below are validated or escaped
+         version="$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" 2>/dev/null | sed -n 's/^APP_VERSION=//p')" || version=""
+         # APP_VERSION only locates a release. The tag must come from origin,
+         # and its commit must really be an ancestor of the image's revision.
+-        if [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$revision" =~ ^[a-f0-9]{40,64}$ ]] && [ "$RUNTIME_TAGS_OK" = true ]; then
++        #
++        # Fork (fork-patches/0005): this fork publishes `vX.Y.Z-aN`, not plain
++        # `vX.Y.Z`. Without `(-a[0-9]+)?` here, $base never resolves on a fork
++        # install, source_verified is always false, and the self-update screen
++        # reports "não confirmado"/"não deu certo" on every single release.
++        if [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-a[0-9]+)?$ ]] && [[ "$revision" =~ ^[a-f0-9]{40,64}$ ]] && [ "$RUNTIME_TAGS_OK" = true ]; then
+           base="$(git rev-parse --verify "refs/deskcomm-runtime-tags/v${version#v}^{commit}" 2>/dev/null)" || base=""
+           if [[ "$base" =~ ^[a-f0-9]{40,64}$ ]] && git merge-base --is-ancestor "$base" "$revision" 2>/dev/null; then verified=true; fi
+         fi
+@@ -32,7 +37,7 @@ runtime_service() { # role; all strings emitted below are validated or escaped
+   [[ "$image" =~ ^sha256:[a-f0-9]{64}$ ]] || image=""
+   [[ "$revision" =~ ^[a-f0-9]{40,64}$ ]] || revision=""
+   [[ "$base" =~ ^[a-f0-9]{40,64}$ ]] || base=""
+-  [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || version=""
++  [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-a[0-9]+)?$ ]] || version=""
+   [ "$running" = true ] || running=false
+   if [ "$verified" != true ] || [ "$running" != true ] || [ "$healthy" != true ]; then RUNTIME_CONFIRMED=false; fi
+   RUNTIME_SELECTIONS="${RUNTIME_SELECTIONS}${role}:${ids}"$'\n'
+@@ -56,7 +61,7 @@ collect_runtime_confirmation() {
+   # An isolated ref namespace: no checkout, existing tags or branches change.
+   git fetch --quiet origin '+refs/tags/v*:refs/deskcomm-runtime-tags/v*' 2>/dev/null && RUNTIME_TAGS_OK=true
+   local role services="" issues="" voice_ids published="${LATEST_TAG:-}"
+-  [[ "$published" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || published=""
++  [[ "$published" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-a[0-9]+)?$ ]] || published=""
+   for role in app worker scheduler; do
+     runtime_service "$role"
+     services="${services}${services:+,}${RUNTIME_SERVICE}"
+diff --git a/lib/system/runtime-identity.ts b/lib/system/runtime-identity.ts
+index 64466359f..77d190cc4 100644
+--- a/lib/system/runtime-identity.ts
++++ b/lib/system/runtime-identity.ts
+@@ -4,7 +4,13 @@ import { z } from "zod";
+ export const RUNTIME_MAX_AGE_MS = 15 * 60_000;
+ const sha = z.string().regex(/^[a-f0-9]{40,64}$/);
+ const imageId = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+-const release = z.string().regex(/^v?\d+\.\d+\.\d+$/);
++// Fork: toda release daqui sai como `vX.Y.Z-aN` (o patch do fork em cima
++// do upstream — ver DIVERGENCIA-DO-FORK.md). Sem o `(-a\d+)?` aqui, nenhuma
++// instalação deste fork jamais confirma a própria identidade: a release NUNCA
++// casa com `vX.Y.Z` puro, `base_revision` nunca é resolvido, e a tela/rodapé
++// mostram "não confirmado" pra sempre — inclusive pros clientes de quem
++// revende o fork, que não têm como agir sobre isso.
++const release = z.string().regex(/^v?\d+\.\d+\.\d+(-a\d+)?$/);
+ 
+ export const runtimeConfirmationSchema = z.object({
+   schema: z.literal(1),
+-- 
+2.34.1
+
