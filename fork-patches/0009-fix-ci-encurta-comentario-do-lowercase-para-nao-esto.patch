@@ -1,0 +1,33 @@
+From 1d88b00bc2d16a15195ee66a7840d6829fe9d690 Mon Sep 17 00:00:00 2001
+From: CeluppiE <joseceluppieduardo@gmail.com>
+Date: Wed, 25 Nov 2026 19:41:27 -0300
+Subject: [PATCH] fix(ci): encurta comentario do lowercase para nao estourar a
+ janela de 600 caracteres do teste de heap
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .github/workflows/publish-image.yml | 8 ++------
+ 1 file changed, 2 insertions(+), 6 deletions(-)
+
+diff --git a/.github/workflows/publish-image.yml b/.github/workflows/publish-image.yml
+index 82935b20d..e6f3ee977 100644
+--- a/.github/workflows/publish-image.yml
++++ b/.github/workflows/publish-image.yml
+@@ -329,12 +329,8 @@ jobs:
+           set -euo pipefail
+           # Pelo DIGEST: é exatamente o byte que este job empurrou, não uma tag que
+           # outro run pode ter movido entretanto.
+-          #
+-          # O dono do repositório entra em minúsculas: o GHCR exige referência de
+-          # imagem toda em lowercase, e forks com usuário de maiúscula (como
+-          # CeluppiE) quebravam aqui mesmo com a imagem publicada certa (o
+-          # docker/metadata-action já faz esse lowercase sozinho nas tags; este
+-          # passo monta a referência à mão e precisa do mesmo tratamento).
++          # Minúsculas: GHCR exige lowercase na referência; fork com usuário em
++          # maiúscula (como CeluppiE) quebra aqui sem isso.
+           dono_minusculo=$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+           bash scripts/verifica-build-id.sh \
+             "${{ env.REGISTRY }}/${dono_minusculo}/${{ matrix.name }}@${{ steps.build.outputs.digest }}"
+-- 
+2.55.0.windows.3
+
